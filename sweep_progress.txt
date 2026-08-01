@@ -1,0 +1,66 @@
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /home/Chenyang/ibrl_deps/robosuite/robosuite/scripts/setup_macros.py (macros.py:55)
+nominal(none)                           succ=0.980  (n=50)
+peg_size 1.15                           succ=0.980  (n=50)
+peg_size 1.25                           succ=0.980  (n=50)
+peg_size 1.35                           succ=0.860  (n=50)
+gripper_kp 0.12                         succ=0.080  (n=50)
+gripper_kp 0.05                         succ=0.000  (n=50)
+peg_friction 4.0                        succ=0.800  (n=50)
+nut mass3+fric0.5                       succ=1.000  (n=50)
+COMBO m3/f.5/kp.12/peg1.25/pf2          succ=0.000  (n=50)
+Traceback (most recent call last):
+  File "/tmp/claude-1003/-home-Chenyang-ibrl/1c70675b-0c77-4a48-9fa0-1c2d847cef66/scratchpad/sweep_square_target.py", line 37, in <module>
+    print("\n===== SQUARE TARGET SWEEP (expert=RNN-prior 97.8%, n=%d) =====" % NGAME)
+ValueError: unsupported format character ',' (0x2c) at index 50
+Exception ignored in: <function MjRenderContext.__del__ at 0x7f3e34af12d0>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/utils/binding_utils.py", line 199, in __del__
+    self.gl_ctx.free()
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+    EGL.eglMakeCurrent(EGL_DISPLAY, EGL.EGL_NO_SURFACE, EGL.EGL_NO_SURFACE, EGL.EGL_NO_CONTEXT)
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+    raise self._errorClass(
+OpenGL.raw.EGL._errors.EGLError: EGLError(
+	err = EGL_NOT_INITIALIZED,
+	baseOperation = eglMakeCurrent,
+	cArguments = (
+		<OpenGL._opaque.EGLDisplay_pointer object at 0x7f3e410587c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f3e352376c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f3e352376c0>,
+		<OpenGL._opaque.EGLContext_pointer object at 0x7f3e35237640>,
+	),
+	result = 0
+)
+Exception ignored in: <function EGLGLContext.__del__ at 0x7f3e34af1120>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 155, in __del__
+    self.free()
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+    EGL.eglMakeCurrent(EGL_DISPLAY, EGL.EGL_NO_SURFACE, EGL.EGL_NO_SURFACE, EGL.EGL_NO_CONTEXT)
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+    raise self._errorClass(
+OpenGL.raw.EGL._errors.EGLError: EGLError(
+	err = EGL_NOT_INITIALIZED,
+	baseOperation = eglMakeCurrent,
+	cArguments = (
+		<OpenGL._opaque.EGLDisplay_pointer object at 0x7f3e410587c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f3e352376c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f3e352376c0>,
+		<OpenGL._opaque.EGLContext_pointer object at 0x7f3e35237640>,
+	),
+	result = 0
+)
+Exception ignored in: <function MjRenderContext.__del__ at 0x7f3e34af12d0>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/utils/binding_utils.py", line 199, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 150, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>
+Exception ignored in: <function EGLGLContext.__del__ at 0x7f3e34af1120>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 155, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 150, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>

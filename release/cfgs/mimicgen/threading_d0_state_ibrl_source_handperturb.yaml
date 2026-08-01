@@ -1,0 +1,67 @@
+# IBRL on Threading_D0 — SOURCE domain (no contact-phase shift) but with
+# LARGE EE-space hand-init perturbation. Use this when:
+#   - You have a BC checkpoint trained on the source-domain demos.
+#   - You want RL to learn robustness to robot init pose (much wider than
+#     the demos provide), while keeping all other env physics nominal.
+#
+# Init regime: hand_init_perturb=(0.03, 0.03, 0.02) → at each reset,
+#   uniform sample EE offset from ±30mm × ±30mm × ±20mm box, IK there.
+#   That's ~3-4× the demo collection's σ=0.02 gaussian (≈22mm EE std).
+#   Threading's success radius is 12 mm — at 30mm EE init noise the
+#   needle starts up to ~3× the success radius away from a "good" pose,
+#   forcing RL to learn approach-from-distance behaviors.
+#
+# Tuning notes:
+#   - Wider box (e.g. 0.04, 0.04, 0.03) starts to hit IK failures on
+#     extreme corners — keep ≤ 0.03 in x,y unless you also verify IK
+#     converges for those reset states.
+#   - z is kept smaller (0.02) so the needle doesn't start too close to
+#     or too far from the tripod ring.
+#   - For DR / curriculum, schedule from (0.01,0.01,0.005) → (0.03,0.03,0.02)
+#     via your training loop (no built-in scheduler yet).
+#
+# CLI: bc_policy is left blank — pass the BC ckpt path as a CLI override.
+#   python train_rl.py --config_path release/cfgs/mimicgen/threading_d0_state_ibrl_source_handperturb.yaml \
+#     --bc_policy /path/to/bc/run/model0.pt \
+#     --save_dir exps/rl/threading_ibrl_source_perturb
+task_name: "Threading_D0"
+episode_length: 400
+stddev_max: 0.1
+use_state: 1
+state_stack: 3
+mix_rl_rate: 0.5
+
+# BC seed data (state-mode hdf5 produced by tools/dataset_states_to_obs.py)
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 40
+
+num_train_step: 200000
+replay_buffer_size: 1000
+use_wb: 1
+mp_eval: 1
+log_per_step: 10000
+num_eval_episode: 50
+num_critic_update: 5
+
+q_agent:
+  act_method: "ibrl"
+  state_critic:
+    num_q: 5
+    layer_norm: 1
+    hidden_dim: 1024
+  state_actor:
+    hidden_dim: 1024
+    dropout: 0
+
+# Source domain — no contact-phase shift on either env. (Leave both
+# eval_domain_shift and train_domain_shift fields out; default is mode="none".)
+
+# Larger-than-demo EE-space init perturbation on BOTH train rollouts and
+# in-training eval. (Eval matches train so the in-training score reflects
+# the true distribution RL is being asked to handle.)
+train_hand_init_perturb: [0.03, 0.03, 0.02]
+eval_hand_init_perturb: [0.03, 0.03, 0.02]
+
+# Filled in via CLI: --bc_policy /path/to/your/bc/model0.pt
+bc_policy: ""

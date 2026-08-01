@@ -1,0 +1,80 @@
+# Diffusion Policy (Transformer variant) on Threading_D0 (state, low-dim).
+# Port of real-stanford/diffusion_policy's `TransformerForDiffusion` adapted
+# to ibrl's chunked-eval interface (see bc/diffusion_transformer.py).
+#
+# vs the UNet1D Diffusion config (threading_d0_state_diffusion_bc.yaml):
+#   - Same chunk shape (Tp=16, Ta=8), same DDIM scheduler / EMA / training
+#     budget — only the noise-prediction network changes.
+#   - Transformer is GPT-style encoder-decoder: noisy-action tokens attend
+#     to a (1 time + 1 obs)-token memory; causal self-attn on action axis.
+#   - Defaults mirror the diffusion_policy paper's published lowdim config:
+#       n_layer=8, n_head=4, n_emb=256, p_drop_attn=0.3, causal_attn=1,
+#       n_cond_layers=0 (per-token MLP encoder).
+#   - ~2-3M params (vs UNet1D ~5M) at the same lr.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 16          # = diffusion_policy.pred_horizon
+  num_data: -1
+  eval_episode_len: 400
+  val_ratio: 0.1
+  # null → robosuite default (σ=0.02 gaussian on joint qpos, matches MimicGen demos).
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 0
+use_diffusion: 1
+diffusion_policy:
+  backbone: "transformer"
+  # Obs encoder (shared with UNet1D variant).
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  # Transformer hyperparams — diffusion_policy paper lowdim defaults.
+  tf_n_layer: 8
+  tf_n_head: 4
+  tf_n_emb: 256
+  tf_p_drop_emb: 0.0
+  tf_p_drop_attn: 0.3
+  tf_causal_attn: 1
+  tf_n_cond_layers: 0
+  # Horizons.
+  pred_horizon: 16
+  action_horizon: 8
+  # Scheduler.
+  scheduler: "ddim"
+  num_train_timesteps: 100
+  num_inference_steps: 10
+  beta_schedule: "squaredcos_cap_v2"
+  clip_sample: 1
+  prediction_type: "epsilon"
+  # EMA.
+  use_ema: 1
+  ema_power: 0.75                  # robomimic default (warmup-decay EMA)
+# Same training budget as the flow / UNet1D-diffusion configs.
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+# Transformer config in diffusion_policy paper uses AdamW with lr=1e-4,
+# betas=(0.9, 0.95), and weight_decay=1e-3 on the transformer body (the
+# `get_optim_groups` split lives on the transformer module itself). The
+# current train_bc.py creates a single AdamW group, so we set a single
+# weight_decay here. If you want the paper's exact grouping, plumb
+# `noise_pred_net.get_optim_groups(weight_decay)` into train_bc.py.
+lr: 1e-4
+weight_decay: 1e-3
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+eval_hand_init_perturb: null
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

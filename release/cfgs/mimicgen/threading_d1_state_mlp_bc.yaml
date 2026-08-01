@@ -1,0 +1,49 @@
+# Deterministic single-step MLP BC on Threading_D1 (broad initial distribution).
+# Trains on the SAME data as threading_d1_flow_bc_seed1 (the registered D1 task,
+# native D1 broad reset), but with a DETERMINISTIC StateBcPolicy head instead of
+# the generative flow head. Purpose: a cheap, deterministic base policy a_base(s)
+# for residual off-policy RL (train_residual.py) — flow BC is stochastic + slow
+# to query, which breaks/penalizes the residual structure.
+#
+# Eval = in-domain D1 (mode=none) + sigma=0.1 + strict success, so the number is
+# directly comparable to threading_recovery_d1_sigma0.1_seed1 and the residual run.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d1/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 1         # single-step (StateBcPolicy is NOT chunked) → deterministic
+  num_data: -1              # all D1 demos (matches the flow BC base)
+  eval_episode_len: 400
+  val_ratio: 0.1
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 0
+use_diffusion: 0
+task_name: Threading_D1
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0
+  layer_norm: 0
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 0
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+# eval-time arm init: σ=0.1 (matches recovery_d1_sigma0.1 + the residual run).
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_target_during_training: 1
+# IN-DOMAIN: no domain shift — train and eval are the same (source) dynamics.
+eval_domain_shift:
+  mode: "none"
+# strict success gate at eval (same as the RL / residual evals) so all numbers
+# are comparable.
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

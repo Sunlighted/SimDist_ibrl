@@ -1,0 +1,64 @@
+# Square_D0 IBRL — RNN-BC prior, SOURCE, 1M steps, hand-init sigma 0.1 on BOTH
+# train and eval. Same as square_d0_state_ibrl_source_rnnprior.yaml except the
+# joint-space init noise is widened from robosuite's default sigma=0.02 (which
+# matches the official demos) to sigma=0.1 (wider start distribution, as the
+# Threading source runs used). snapshot every 100k for the quality spectrum.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/square_d0_state_ibrl_source_rnnprior_sig01.yaml \
+#       --save_dir exps/mimicgen/square_ibrl_source_rnnprior_sig01_1000k_seed1
+task_name: "Square_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# RNN-BC prior (83% source) + seed demos from the official core data.
+bc_policy: "exps/mimicgen/square_source_rnn_bc_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/square_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1000000
+snapshot_period: 50000        # denser quality spectrum: 20 snapshots over 1M
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+# Wider joint-space init (sigma 0.1) on BOTH the RL exploration env and the
+# eval env (vs the default sigma 0.02).
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# SOURCE domain (no shift), no strict-success gating (both Threading-only).
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

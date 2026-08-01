@@ -1,0 +1,59 @@
+# DR baseline on Threading_D0: train under per-reset random shift, evaluate
+# on the FIXED target shift. Classic sim-to-real DR setup. Per sgft's design,
+# the DR ranges are narrow and centered on 1.0 so the target values fall
+# outside the training distribution — DR is NOT an oracle.
+#
+# Dataset prep: see threading_d0_state_ibrl_shifted.yaml header.
+task_name: "Threading_D0"
+episode_length: 400
+stddev_max: 0.1
+use_state: 1
+state_stack: 3
+mix_rl_rate: 0.5
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 40
+num_train_step: 800000
+replay_buffer_size: 1000
+use_wb: 1
+mp_eval: 1
+log_per_step: 10000
+num_eval_episode: 50
+num_critic_update: 5
+q_agent:
+  act_method: "rl"
+  state_critic:
+    num_q: 5
+    layer_norm: 1
+    hidden_dim: 1024
+  state_actor:
+    hidden_dim: 1024
+    dropout: 0
+train_domain_shift:
+  mode: "dr"
+  dr_friction_range: [0.9, 1.1]
+  dr_mass_range:     [0.9, 1.1]
+  dr_solref_range:   [0.9, 1.1]
+  dr_solimp_range:   [0.85, 1.15]
+  dr_arm_mass_range: [0.9, 1.1]
+  dr_damping_range:  [0.9, 1.1]
+  dr_ring_size_range:     [0.9, 1.1]
+  dr_ring_friction_range: [0.8, 1.2]
+  dr_seed: 1
+# Target = dynamics-only target (see threading_d0_state_ibrl_newtarget.yaml).
+# Pure dynamics gap (no hole_offset). The DR ranges above (centered on 1.0)
+# do NOT cover the target's friction_scale=0.5, mass_scale=3.0, gripper_kp=0.12,
+# ring_size=0.85, ring_friction=2.0 — so DR remains a blind baseline (not oracle).
+# (ring_size/ring_friction now jitter around nominal 1.0 but stop short of the
+# target's 0.85 / 2.0, keeping the gap blind.)
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

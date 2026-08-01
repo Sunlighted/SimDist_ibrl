@@ -1,0 +1,251 @@
+add_bc_loss: 0
+batch_size: 256
+bc_policy: ''
+discount: 0.99
+end_on_success: 1
+env_reward_scale: 1.0
+episode_length: 400
+eval_domain_shift:
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 0.5
+  gripper_kp_scale: 0.12
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  mask_hole_offset_in_obs: false
+  mass_scale: 3.0
+  mode: fixed
+  ring_friction_scale: 2.0
+  ring_size_scale: 0.85
+  solimp_scale: 1.0
+  solref_scale: 1.0
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_init_dist:
+  enabled: true
+  needle_x:
+  - -0.2375
+  - -0.0125
+  needle_y:
+  - 0.125
+  - 0.275
+  needle_z_rot:
+  - -2.0943951023931953
+  - -1.0471975511965976
+  tripod_x:
+  - 0.0
+  - 0.0
+  tripod_y:
+  - -0.15
+  - -0.15
+  tripod_z_rot:
+  - 1.5707963267948966
+  - 1.5707963267948966
+freeze_bc_replay: 1
+image_size: 224
+load_policy_only: 0
+load_pretrained_agent: exps/mimicgen/threading_ibrl_rlprior_prior_sig01_seed1/model0.pt
+log_per_step: 10000
+mix_rl_rate: 0.5
+mp_eval: 1
+nstep: 3
+num_critic_update: 5
+num_eval_episode: 50
+num_train_step: 1000000
+num_warm_up_episode: 80
+obs_stack: 1
+preload_datapath: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+preload_num_data: 10
+pretrain_epoch_len: 10000
+pretrain_num_epoch: 0
+pretrain_only: 1
+prop_stack: 1
+q_agent:
+  act_method: ibrl
+  actor:
+    dropout: 0.0
+    feature_dim: 128
+    hidden_dim: 1024
+    max_action_norm: -1.0
+    orth: 1
+    spatial_emb: 0
+  bc_loss_coef: 0.1
+  bc_loss_dynamic: 0
+  bootstrap_method: ibrl
+  critic:
+    drop: 0.0
+    feature_dim: 128
+    fuse_patch: 1
+    hidden_dim: 1024
+    norm_weight: 0
+    orth: 1
+    spatial_emb: 0
+  critic_target_tau: 0.01
+  device: cuda
+  enc_type: vit
+  ibrl_eps_greedy: 1.0
+  lr: 0.0001
+  resnet:
+    downsample: default
+    norm_layer: gnn
+    shallow: 0
+    stem: default
+  resnet96:
+    shallow: 0
+    use_1x1: 0
+  sgft_coef: 1.0
+  sgft_shaping: 0
+  soft_ibrl_beta: 10.0
+  state_actor:
+    dropout: 0.0
+    hidden_dim: 1024
+    layer_norm: 0
+    num_layer: 3
+    orth: 0
+  state_critic:
+    append_action: 0
+    dropout: 0.0
+    hidden_dim: 1024
+    layer_norm: 1
+    num_k: 2
+    num_layer: 3
+    num_q: 5
+    orth: 0
+  stddev_clip: 0.3
+  use_prop: 0
+  vit:
+    depth: 3
+    embed_dim: 128
+    embed_norm: 0
+    embed_style: embed1
+    num_heads: 4
+    patch_size: 8
+    stride: -1
+replay_buffer_size: 1000
+rl_camera: robot0_eye_in_hand
+rl_image_size: 96
+save_dir: exps/mimicgen/threading_ibrl_target_wide15_seed1
+save_per_success: -1
+save_replay_buffer: ''
+seed: 1
+sgft_source_agent: exps/mimicgen/threading_ibrl_rlprior_prior_sig01_seed1/model0.pt
+snapshot_period: 100000
+state_stack: 1
+stddev_max: 0.1
+stddev_min: 0.1
+stddev_step: 500000
+strict_success:
+  dwell_steps: 3
+  enabled: true
+  max_needle_speed: 0.0
+  max_tripod_disp: 0.04
+task_name: Threading_D0
+train_domain_shift:
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 0.5
+  gripper_kp_scale: 0.12
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  mask_hole_offset_in_obs: false
+  mass_scale: 3.0
+  mode: fixed
+  ring_friction_scale: 2.0
+  ring_size_scale: 0.85
+  solimp_scale: 1.0
+  solref_scale: 1.0
+train_hand_init_perturb: null
+train_hand_init_perturb_joint_sigma: 0.1
+train_init_dist:
+  enabled: true
+  needle_x:
+  - -0.2375
+  - -0.0125
+  needle_y:
+  - 0.125
+  - 0.275
+  needle_z_rot:
+  - -2.0943951023931953
+  - -1.0471975511965976
+  tripod_x:
+  - 0.0
+  - 0.0
+  tripod_y:
+  - -0.15
+  - -0.15
+  tripod_z_rot:
+  - 1.5707963267948966
+  - 1.5707963267948966
+update_freq: 2
+use_state: 1
+use_wb: 1

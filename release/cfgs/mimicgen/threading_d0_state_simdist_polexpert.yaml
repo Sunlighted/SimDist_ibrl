@@ -1,0 +1,177 @@
+batch_size: 256
+bc_expert_only: 1
+policy_replay_path: release/data/mimicgen/threading_d0_source_sigma0.1_n5000/dataset.hdf5
+policy_replay_num_data: -1
+discount: 0.99
+distill_steps: 400000
+end_on_success: 1
+env_reward_scale: 1
+episode_length: 400
+eval_domain_shift:
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 0.5
+  gripper_kp_scale: 0.12
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  mask_hole_offset_in_obs: false
+  mass_scale: 3.0
+  mode: fixed
+  ring_friction_scale: 2.0
+  ring_size_scale: 0.85
+  solimp_scale: 1.0
+  solref_scale: 1.0
+eval_hand_init_perturb_joint_sigma: null
+eval_source: 1
+expert_collect_steps: 0
+expert_demo_num_data: -1
+expert_demo_path: ''
+image_size: 224
+log_per_step: 10000
+mp_eval: 1
+num_eval_episode: 50
+num_warm_up_episode: 20
+obs_stack: 1
+prop_stack: 1
+rl_camera: robot0_eye_in_hand
+rl_image_size: 96
+save_dir: exps/mimicgen/threading_simdist_polexpert_seed1
+seed: 1
+seq_replay_max_episode: 55000
+simdist:
+  finetune_dynamics: 1
+  finetune_lr: 0.0003
+  finetune_policy: 1
+  finetune_steps: 0
+  planner:
+    discount: 0.99
+    horizon: 5
+    init_std: 0.15
+    iterations: 6
+    min_std: 0.03
+    mixture_coef: 0.8
+    momentum: 0.1
+    num_elites: 64
+    num_samples: 512
+    temperature: 2.0
+    warm_start: 0
+  use_planner: 1
+  world_model:
+    consistency_coef: 20.0
+    decoder_coef: 1.0
+    grad_clip: 20.0
+    horizon: 5
+    latent_dim: 512
+    layer_norm: 1
+    lr: 0.0003
+    mlp_hidden_dim: 512
+    num_layer: 2
+    policy_coef: 10.0
+    reward_coef: 1.0
+    rho: 0.5
+    simnorm_dim: 8
+    tau: 0.01
+    value_coef: 1.0
+source_agent: exps/mimicgen/threading_ibrl_source_seed1/model0.pt
+source_replay_num_data: -1
+source_replay_path: release/data/mimicgen/threading_d0_source_diverse/dataset.hdf5
+state_stack: 1
+stddev_max: 0.0
+stddev_min: 0.0
+stddev_step: 200000
+strict_success:
+  dwell_steps: 3
+  enabled: true
+  max_needle_speed: 0.0
+  max_tripod_disp: 0.04
+target_demo_path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+target_num_data: 20
+task_name: Threading_D0
+train_domain_shift:
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 1.0
+  gripper_kp_scale: 1.0
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  mask_hole_offset_in_obs: true
+  mass_scale: 1.0
+  mode: none
+  ring_friction_scale: 1.0
+  ring_size_scale: 1.0
+  solimp_scale: 1.0
+  solref_scale: 1.0
+train_hand_init_perturb_joint_sigma: null
+update_freq: 2
+use_state: 1
+use_wb: 1

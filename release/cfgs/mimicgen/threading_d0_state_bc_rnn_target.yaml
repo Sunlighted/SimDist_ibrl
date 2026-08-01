@@ -1,0 +1,64 @@
+# Target-only BC-RNN+GMM on Threading_D0: train on ONLY the 20 demos collected
+# under the new dynamics-only target (threading_d0_target_dynamics), eval on the
+# same target. The BC-RNN counterpart of threading_d0_state_flow_bc_target.yaml
+# (same data axis, different head) — for the small-data target-only comparison.
+#
+# Head/hparams identical to threading_d0_state_bc_rnn.yaml (open-loop RNN, K=5
+# GMM, low_noise_eval, lr=1e-3); only the data + in-training eval domain change.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 10        # = Tp (matches MimicGen seq_length=10)
+  build_state_chunk: 0      # open-loop RNN; doesn't need state_chunk
+  num_data: 20              # all 20 target demos
+  eval_episode_len: 400     # MimicGen Threading rollout.horizon
+  val_ratio: 0.0            # 20 episodes — too few to hold out a val split
+  # null → robosuite's σ=0.02 gaussian on joint qpos, matching the
+  # target_dynamics demos' init distribution (env_cfg.json says sigma=0.02).
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 1
+rnn_policy:
+  rnn_hidden_dim: 400       # MimicGen low_dim default
+  rnn_num_layers: 2
+  num_modes: 5
+  min_std: 0.01
+  std_activation: "softplus"
+  low_noise_eval: 1
+  use_tanh: 1
+  pred_horizon: 10          # = dataset.action_horizon
+  action_horizon: 8         # Ta (chunked eval; <= pred_horizon)
+  use_ema: 0
+# Total grad steps = 2000 × 100 = 200K (matches MimicGen low_dim).
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 0
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+eval_hand_init_perturb: null
+# In-training eval runs on TARGET (since target IS the only training domain
+# here). topk saver picks model0/1.pt by target success rate. The post-training
+# dual eval then also reports source for the gap.
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+# Strict-success gate at eval (same as the RL/H2O+ evals) so BC and RL numbers
+# are comparable. Rejects clip-through / ram / shove-the-ring false positives.
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

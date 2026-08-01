@@ -42,6 +42,36 @@ class QAgentConfig:
     # bc loss regularization
     bc_loss_coef: float = 0.1
     bc_loss_dynamic: int = 0  # dynamically scale bc loss weight
+    # SGFT: potential-based reward shaping from a frozen source-domain value
+    # function. When `sgft_shaping`, the critic's TD target reward is replaced
+    # by `r + sgft_coef * (discount * V_src(s') - V_src(s))`, where V_src is the
+    # source agent's value (set via set_sgft_value_source). Potential-based, so
+    # the optimal target policy is unchanged — it only guides exploration.
+    sgft_shaping: int = 0
+    sgft_coef: float = 1.0
+    # sgft_potential=1 (default): true potential-based shaping
+    #   r' = r + coef*(gamma^n V_src(s') - V_src(s)). Policy-invariant (Ng 1999):
+    #   argmax_a Q'(s,a) = argmax_a Q(s,a), so it CANNOT steer exploration in a
+    #   DDPG/IBRL actor — only reshapes the critic target (equiv. to initializing
+    #   Q<-V_src, Wiewiora 2003). Useful only when the bottleneck is value
+    #   PROPAGATION, not exploration.
+    # sgft_potential=0: guidance shaping r' = r + coef*V_src(s'). Deliberately
+    #   NOT potential-based: Q'(s,a) now DEPENDS on V_src, so argmax IS pulled
+    #   toward high-V states -> it can steer exploration. Biased (optimal policy
+    #   changes), but with end_on_success + a well-ranked V_src (Spearman~0.96)
+    #   the bias is likely benign. No q-clamp shift applies (Q' has no fixed
+    #   [q_min,q_max] offset), so clamp_q_target is ignored in this mode.
+    sgft_potential: int = 1
+    # Clamp the critic's Bellman TD target to [q_target_min, q_target_max].
+    # Default OFF (byte-identical to every existing run/config). Unbiased for a
+    # sparse 0/1 reward + end_on_success (true Q in [0,1]): sparse reward +
+    # pessimistic min-ensemble + an OOD bootstrap (e.g. SGFT's per-step V_src
+    # shaping under a wide/OOD hand-init sigma) otherwise drives Q into runaway
+    # divergence with no correcting signal — the exact failure mode fixed the
+    # same way in GatedGapAgent/ResidualAgent/OracleMapAgent (§16/20/21).
+    clamp_q_target: int = 0
+    q_target_min: float = 0.0
+    q_target_max: float = 1.0
 
     def __post_init__(self):
         if self.bootstrap_method == "":
@@ -107,12 +137,36 @@ class QAgent(nn.Module):
         self.aug = common_utils.RandomShiftsAug(pad=4)
 
         self.bc_policies: list[nn.Module] = []
+        # SGFT value source (frozen source-domain QAgent). Held in a list so it
+        # is NOT registered as a submodule (would otherwise bloat/duplicate this
+        # agent's state_dict). Empty unless set_sgft_value_source() is called.
+        self.sgft_value_source: list["QAgent"] = []
+        # IBRL prior-preference margin (subtracted from the RL actor's Q in the
+        # max-Q action selection, so the actor only overrides the BC prior when it
+        # beats it by > margin). 0.0 = standard IBRL (no change). A trainer can set
+        # this to a large value early and anneal it to 0, to keep eval >= the prior
+        # while the critic calibrates (see train_ibrl_simdist prior_margin_*). Plain
+        # attribute (default 0) so all existing runs are byte-for-byte unchanged.
+        self.prior_margin: float = 0.0
         # to log rl vs bc during evaluation
         self.stats: Optional[common_utils.MultiCounter] = None
 
         self.critic_target.train(False)
         self.train(True)
         self.to(self.cfg.device)
+
+    def set_state_fourier_stats(self, mean, std):
+        """Push per-dim z-score stats into every FourierFeatures module in the
+        agent (critic/actor + their target copies), so the PE input transform
+        aligns to unit scale. No-op when Fourier encoding is off (no such
+        modules). Stats persist in the ckpt so standalone eval self-normalizes."""
+        from rl.fourier import FourierFeatures
+        n = 0
+        for m in self.modules():
+            if isinstance(m, FourierFeatures):
+                m.set_stats(mean, std)
+                n += 1
+        return n
 
     def _build_encoders(self, obs_shape):
         if self.cfg.enc_type == "vit":
@@ -129,6 +183,63 @@ class QAgent(nn.Module):
     def add_bc_policy(self, bc_policy):
         bc_policy.train(False)
         self.bc_policies.append(bc_policy)
+
+    def set_sgft_value_source(self, agent: "QAgent"):
+        """Register a frozen source-domain agent whose value function V_src is
+        used for SGFT potential-based reward shaping (see update_critic)."""
+        agent.train(False)
+        for p in agent.parameters():
+            p.requires_grad_(False)
+        self.sgft_value_source = [agent]
+
+    @torch.no_grad()
+    def value(self, obs: dict[str, torch.Tensor], use_ibrl: bool = False) -> torch.Tensor:
+        """V(s) = min-ensemble Q(s, pi(s)).
+
+        `pi` is the deterministic RL actor by default — this is the SGFT potential
+        V_src (§10) and what H2O+ / the gap methods consume, so the default must
+        not change.
+
+        `use_ibrl=True` instead evaluates the agent's IBRL HYBRID policy: the max-Q
+        pick over {RL actor, prior}, i.e. the policy an ibrl agent ACTUALLY executes.
+        For an agent trained with act_method="ibrl", V(s, pi_rl) understates its own
+        value wherever the prior is the better action, and — more importantly for
+        planning — the two Vs are not a monotone rescaling of each other (the prior
+        lifts V only where it wins), so they induce DIFFERENT rankings. Requires the
+        prior to be attached via add_bc_policy().
+
+        Expects a BATCHED obs dict. Builds its own feature (for pixel obs) from the
+        raw camera frames so it never reuses a caller's precomputed `feat` (which
+        may belong to a different encoder).
+        """
+        obs = {k: v for k, v in obs.items() if k != "feat"}
+        if not self.use_state:
+            obs["feat"] = self._encode(obs, augment=False)
+
+        def _min_q(action: torch.Tensor) -> torch.Tensor:
+            if isinstance(self.critic, Critic):
+                return torch.min(*self.critic.forward(obs["feat"], obs["prop"], action))
+            return self.critic.forward_k(obs["state"], action).min(-1)[0]
+
+        rl_action = self._act_default(
+            obs=obs, eval_mode=True, stddev=0.0, clip=None, use_target=False
+        )
+        q = _min_q(rl_action)
+        if use_ibrl:
+            assert len(self.bc_policies) == 1, (
+                "value(use_ibrl=True) needs the IBRL prior attached (add_bc_policy)"
+            )
+            # max-Q over {RL actor, prior}, SELECTED AND EVALUATED WITH THE SAME
+            # (online) critic. We deliberately do NOT reuse `_act_ibrl`: it argmaxes
+            # with `critic_target` (correct there — it builds the bootstrap), while V
+            # reads the online `critic`. Those two are EMA-lagged apart, so the action
+            # _act_ibrl picks can score BELOW the RL action under the online critic —
+            # which would break the defining property V_hybrid >= V_rl (measured: it
+            # held for only ~60% of states). Selecting and scoring with one critic
+            # restores it (and prior_margin is a training-time knob, not part of V).
+            bc_action = self.bc_policies[0].act(obs, cpu=False)
+            q = torch.maximum(q, _min_q(bc_action))
+        return q
 
     def set_stats(self, stats):
         self.stats = stats
@@ -287,6 +398,13 @@ class QAgent(nn.Module):
             qa: torch.Tensor = self.critic_target.forward_k(flat_state, flat_actions)
             qa = qa.min(-1)[0].view(bsize, num_action)
 
+        # Prior-preference margin: penalize the RL actor's Q (column 0 =
+        # rl_action; column 1 = bc_action) so the actor only wins the argmax when it
+        # beats the BC prior by > prior_margin. Default 0.0 => no change.
+        if self.prior_margin != 0.0:
+            qa = qa.clone()
+            qa[:, 0] = qa[:, 0] - self.prior_margin
+
         # best_action_idx: [batch]
         greedy_action_idx: torch.Tensor = qa.argmax(1)
         greedy_action = rl_bc_actions[range(bsize), greedy_action_idx]
@@ -392,6 +510,28 @@ class QAgent(nn.Module):
 
         return action
 
+    def _clamp_q(self, q: torch.Tensor, shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Project a Q estimate onto its known true range; no-op when off.
+
+        Unshifted (`shift=None`): [q_target_min, q_target_max]. Unbiased for a
+        sparse 0/1 reward + end_on_success (true Q in [0,1]).
+
+        SGFT shaping changes the range. The shaped MDP's value is
+            Q'(s,a) = Q(s,a) - coef * Phi(s),
+        so with Phi = V_src measured in [0.45, 1.02] on target states, Q' legally
+        lives in [q_min - coef*Phi(s), q_max - coef*Phi(s)] ~= [-1.0, +0.55] — i.e.
+        MOSTLY NEGATIVE. Clamping that to the unshifted [0,1] clips the whole
+        legitimate negative range and pins the critic at the floor (observed:
+        critic_qt collapsing 0.51 -> 0.04 with score ~0). Pass `coef * Phi` as
+        `shift` so the bound tracks the shaped range PER-STATE.
+        """
+        if not self.cfg.clamp_q_target:
+            return q
+        if shift is None:
+            return q.clamp(self.cfg.q_target_min, self.cfg.q_target_max)
+        return torch.max(torch.min(q, self.cfg.q_target_max - shift),
+                         self.cfg.q_target_min - shift)
+
     def update_critic(
         self,
         obs: dict[str, torch.Tensor],
@@ -441,7 +581,45 @@ class QAgent(nn.Module):
             else:
                 target_q = self.critic_target.forward_k(next_obs["state"], next_action).min(-1)[0]
 
-            target_q = (reward + (discount * target_q)).detach()
+            # SGFT potential-based reward shaping. Telescopes correctly over the
+            # n-step transition because `discount` here is the batch bootstrap
+            # (gamma^n, or 0 at terminal where V_src(s') must drop out):
+            #   r' = r + coef * (gamma^n * V_src(s_{t+n}) - V_src(s_t))
+            sgft_reward = reward
+            sgft_shaping_mean = 0.0
+            sgft_v_mean = 0.0
+            if self.cfg.sgft_shaping and self.sgft_value_source:
+                src = self.sgft_value_source[0]
+                v_s = src.value(obs)
+                v_sp = src.value(next_obs)
+                if self.cfg.sgft_potential:
+                    shaping = self.cfg.sgft_coef * (discount * v_sp - v_s)
+                    # Shaped MDP: learned Q'(x) = Q(x) - coef*Phi(x), so each
+                    # clamp tracks the potential AT ITS OWN STATE — Phi(s') for
+                    # the bootstrap Q'(s'), Phi(s) for the target y ~= Q'(s,a).
+                    shift_sp = self.cfg.sgft_coef * v_sp
+                    shift_s = self.cfg.sgft_coef * v_s
+                    do_clamp = True
+                else:
+                    # Guidance (non-potential): r' = r + coef*V_src(s'). Breaks
+                    # invariance on purpose so V steers the actor. Q' has no fixed
+                    # [q_min,q_max] range (it absorbs an accumulated V term), so
+                    # skip the clamp entirely here.
+                    shaping = self.cfg.sgft_coef * v_sp
+                    shift_sp = shift_s = None
+                    do_clamp = False
+                sgft_reward = reward + shaping
+                sgft_shaping_mean = shaping.mean().item()
+                sgft_v_mean = v_s.mean().item()
+            else:
+                shift_sp = shift_s = None
+                do_clamp = True
+
+            if do_clamp:
+                target_q = self._clamp_q(target_q, shift=shift_sp)
+            target_q = (sgft_reward + (discount * target_q)).detach()
+            if do_clamp:
+                target_q = self._clamp_q(target_q, shift=shift_s)
 
         action = reply["action"]
         loss_fn = nn.functional.mse_loss
@@ -458,6 +636,9 @@ class QAgent(nn.Module):
         metrics = {}
         metrics["train/critic_qt"] = target_q.mean().item()
         metrics["train/critic_loss"] = critic_loss.item()
+        if self.cfg.sgft_shaping and self.sgft_value_source:
+            metrics["sgft/shaping"] = sgft_shaping_mean
+            metrics["sgft/v_source"] = sgft_v_mean
 
         if not self.use_state:
             self.encoder_opt.zero_grad(set_to_none=True)

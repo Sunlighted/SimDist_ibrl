@@ -1,0 +1,54 @@
+# State-based flow-matching BC on MimicGen Threading_Enlarged (custom WIDE reset
+# distribution: tripod no longer fixed, needle z_rot near-full range — see
+# deps/mimicgen/.../threading.py Threading_D1). Trained to serve as the IBRL
+# BC PRIOR for recovery training on the wide-init source env
+# (threading_d0_state_recovery_ibrl.yaml). The previous prior — the narrow-D0
+# source RL agent — was a dead prior on the wide distribution, so IBRL couldn't
+# take off; a D1-trained BC covers the wide state space.
+#
+# Same flow head as threading_d0_state_flow_bc.yaml (UNet1D, Tp16/Ta8, EMA);
+# only the dataset path + (no) target-eval differ. task_name is read from the
+# D1 hdf5 env_args -> "Threading_D1" (registered in env/robosuite_wrapper.py
+# with the same 37-dim state as D0).
+#
+# Run:
+#   python train_bc.py --config_path release/cfgs/mimicgen/threading_d1_state_flow_bc.yaml \
+#       --save_dir exps/mimicgen/threading_d1_flow_bc_seed1
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/generated/threading_enlarged/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 16    # = flow_policy.pred_horizon
+  num_data: -1          # all 1000 D1 demos
+  eval_episode_len: 400
+  val_ratio: 0.1
+  hand_init_perturb: null
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.9999
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+eval_hand_init_perturb: null
+# This BC is a SOURCE-domain prior; no post-training target eval.
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: "none"

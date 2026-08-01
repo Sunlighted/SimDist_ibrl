@@ -1,0 +1,78 @@
+# Target-only Diffusion BC on Threading_D0: train on ONLY the 20 demos
+# collected under the new dynamics-only target (threading_d0_target_dynamics),
+# eval on the same target. The diffusion counterpart of
+# threading_d0_state_mlp_bc_target.yaml / threading_d0_state_flow_bc_lowdata_target.yaml
+# (same data + eval axis, different head) so the heads are directly comparable.
+#
+# Head = StateDiffusionPolicy (DDIM, UNet1D, ε-prediction), faithful to
+# robomimic's DiffusionPolicyUNet on the training objective + obs_encoder="none"
+# (raw state as FiLM cond) + EMAModel(power=0.75). Net is shrunk for the 20-demo
+# regime (down_dims [32,64,128], same sizing as flow_bc_lowdata_target).
+#
+# NOTE: unlike StateFlowPolicy (§15), diffusion has NO state/action
+# normalization yet, so on 20 demos it may trail the plain MLP — see CLAUDE.md
+# §15 (generative heads losing to MLP in the low-data regime).
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 16        # = diffusion_policy.pred_horizon
+  num_data: 20              # 20 (all) target demos
+  eval_episode_len: 400     # MimicGen Threading rollout.horizon
+  val_ratio: 0.0            # 20 episodes — too few to hold out a val split
+  hand_init_perturb: null   # → robosuite σ=0.02 init, matches the demos
+use_flow: 0
+use_rnn: 0
+use_diffusion: 1
+diffusion_policy:
+  backbone: "unet1d"
+  obs_encoder: "none"             # faithful robomimic lowdim (raw state cond)
+  unet_down_dims: [32, 64, 128]   # small net for the 20-demo regime
+  diffusion_step_embed_dim: 128   # smaller than the robomimic-default 256 (low data)
+  kernel_size: 5
+  n_groups: 8
+  pred_horizon: 16
+  action_horizon: 8
+  scheduler: "ddim"
+  num_train_timesteps: 100
+  num_inference_steps: 10
+  beta_schedule: "squaredcos_cap_v2"
+  clip_sample: 1
+  prediction_type: "epsilon"
+  use_ema: 1
+  ema_power: 0.75
+# Total grad steps = 1000 × 100 = 100K (matches flow_bc_lowdata_target).
+num_epoch: 1000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 0
+val_batches: 5
+# Eval-time arm init: wider joint-space gaussian (σ=0.1 rad) than the demos'
+# collection σ=0.02 — same harder test the MLP baseline uses.
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+# In-training eval runs on TARGET (target IS the only training domain here);
+# topk saver ranks model0/1.pt by target success; post-training dual eval also
+# reports source for the gap.
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+# Strict-success gate at eval (same as the MLP/RL/H2O+ evals) so the numbers are
+# comparable. Rejects clip-through / ram / shove-the-ring false positives.
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

@@ -1,0 +1,60 @@
+# ABLATION of threading_d0_state_flow_bc_lowdata_target.yaml:
+# keep EVERY low-data measure (normalization, weight_decay 1e-3, ema 0.999,
+# num_data 20, val_ratio 0, 100K steps, target data + target eval) but restore
+# the DEFAULT (large) UNet architecture. Isolates the contribution of the
+# "shrink the network" knob alone.
+#
+# Only difference vs the lowdata_target config:
+#   unet_down_dims [32,64,128] → [64,128,256]   (default)
+#   obs_feat_dim   64          → 128             (default)
+#   obs_mlp_layers [128]       → [256]           (default)
+# → ~4.9M params (vs ~1.44M in the small-net config).
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 16
+  num_data: 20
+  eval_episode_len: 400
+  val_ratio: 0.0
+  hand_init_perturb: null
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  # DEFAULT (large) UNet — the only thing changed vs lowdata_target.
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.999
+  normalize_obs: 1
+  normalize_action: 1
+num_epoch: 1000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-3
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 0
+val_batches: 5
+eval_hand_init_perturb: null
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

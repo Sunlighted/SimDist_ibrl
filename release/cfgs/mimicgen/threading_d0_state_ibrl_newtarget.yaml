@@ -1,0 +1,111 @@
+# IBRL on Threading_D0, NEW "dynamics-only" TARGET domain, warm-started from a
+# source-domain IBRL checkpoint (scripts/train_rl_ibrl_newtarget_threading.sh).
+#
+# Target = pure dynamics gap (NO hole_offset => no perceptual/registration gap):
+#   friction_scale     0.5   (needle handle mu 1.0 -> 0.5; tip 0.3 -> 0.15)
+#   mass_scale         3.0   (needle 7.6 g -> 22.8 g)
+#   gripper_kp_scale   0.15  (finger servo kp 1000 -> 150; softer grasp)
+#   solref/solimp      1.0   (UNCHANGED — pinned to avoid clip-through false success)
+#   hole_offset        0     (NONE — keeps the gap a true dynamics gap, not a
+#                             latent registration/observation gap)
+#   ring_size_scale    0.85  (hole 16 mm -> 13.6 mm; needle is 10 mm, 1.8 mm/side)
+#   ring_friction_scale 1.5  (ring rim sliding mu 0.3 -> 0.45; grippier insert)
+# Validated 2026-05-27 against the frozen source IBRL policy: 13% strict success
+# (down from 98% on source). Failure split ~25% grasp/transport, ~75% align/
+# insert — and the grasp phase is FEASIBLE (friction-cone margin ~10x, so the
+# residual grasp failures are learnable approach-pose errors, not physically
+# impossible holds). See scripts/diag_failure_modes.py / diag_grasp_feasibility.py.
+#
+# strict_success is ON for BOTH train + eval so the policy is trained against
+# the honest objective (no clip-through / shove-the-ring reward hacks).
+#
+# Architecture MIRRORS exps/mimicgen/threading_ibrl_source_seed1 EXACTLY
+# (state_stack=1, q_agent dims) so the source checkpoint can be loaded as the
+# warm-start base via --load_pretrained_agent (load_state_dict requires the
+# obs space + net shapes to match).
+task_name: "Threading_D0"
+episode_length: 400
+stddev_max: 0.1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+mix_rl_rate: 0.5
+nstep: 3
+discount: 0.99
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+num_train_step: 400000
+replay_buffer_size: 1000
+use_wb: 1
+mp_eval: 1
+log_per_step: 10000
+num_eval_episode: 50
+num_critic_update: 5
+env_reward_scale: 1
+end_on_success: 1
+
+# IBRL BC prior — the same source-domain flow BC the source IBRL used. IBRL
+# competes the RL actor against this prior via max-Q. (The warm-start base is
+# separate: passed via --load_pretrained_agent in the shell script.)
+bc_policy: "/home/Chenyang/ibrl/exps/mimicgen/threading_flow_bc_seed1/model0.pt"
+freeze_bc_replay: 1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  bc_loss_coef: 0.1
+  bc_loss_dynamic: 0
+  lr: 0.0001
+  critic_target_tau: 0.01
+  stddev_clip: 0.3
+  use_prop: 0
+  enc_type: "vit"
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0.0
+    layer_norm: 0
+    orth: 0
+  state_critic:
+    num_q: 5
+    num_k: 2
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 1
+    dropout: 0.0
+    append_action: 0
+    orth: 0
+
+# Train ON the target (both train + eval envs are the shifted/new-target env).
+train_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+
+# Honest objective on both train + eval (dwell + ring-displacement gating).
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0

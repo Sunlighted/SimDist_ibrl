@@ -1,0 +1,82 @@
+# Faithful ResFiT residual RL — IN-DOMAIN validation (rl/residual_rl_agent.py +
+# train_residual_rl.py). The "original" residual off-policy RL with the RLPD
+# ingredients the gap-weighted variant (train_residual.py) dropped:
+#   ① every RL minibatch = 50% online + 50% offline demo (RLPD anchor)
+#   ② LayerNorm critic ensemble (10 heads) + REDQ random-subset-of-2 min
+#   ③ base+noise exploration warmup + critic-only warmup
+#   ⑤ deterministic actor Q-max + TD3 target smoothing + grad clip
+#
+# NO dynamics gap. Trains AND evals in the SAME (source) domain. Sanity check:
+# in-domain residual RL on a frozen BC base should clearly beat the base BC.
+#
+# Run:
+#   python train_residual_rl.py \
+#     --config_path release/cfgs/mimicgen/threading_d0_state_residual_rl.yaml \
+#     --residual.base_policy_path exps/mimicgen/threading_source_mlp_bc_n10_seed1/model0.pt \
+#     --offline_demo_path release/data/mimicgen/threading_d0_source_sigma0.1_sample10/dataset.hdf5 \
+#     --save_dir exps/mimicgen/threading_residual_rl_source_seed1
+task_name: "Threading_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1     # MUST match the base BC ckpt
+obs_stack: 1
+prop_stack: 1
+
+batch_size: 256
+offline_fraction: 0.5     # RLPD: half of each RL batch from demos
+num_critic_update: 1
+update_freq: 2
+learning_starts: 5000     # env steps of base+noise warmup before training
+warmup_noise_scale: 0.2
+critic_warmup_steps: 10000
+num_train_step: 300000
+replay_buffer_size: 500000
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+stddev_max: 0.1           # residual exploration noise (residual space)
+stddev_min: 0.1
+
+# init-noise σ. null = robosuite default σ=0.02 — matches how the n10 source BC
+# baseline was eval'd (its source score 0.30), so this run is apples-to-apples.
+hand_init_perturb_joint_sigma: null
+
+# offline demo buffer (RLPD anchor) — the SAME demos the base BC was trained on.
+offline_demo_path: "release/data/mimicgen/threading_d0_source_sigma0.1_sample10/dataset.hdf5"
+offline_num_data: 10
+
+residual:
+  base_policy_path: "exps/mimicgen/threading_source_mlp_bc_n10_seed1/model0.pt"
+  action_scale: 0.1
+  actor_hidden_dim: 1024
+  actor_num_layer: 3
+  actor_layer_norm: 1
+  critic_hidden_dim: 256
+  critic_num_layer: 3
+  critic_layer_norm: 1
+  num_critics: 10
+  num_min_critics: 2
+  actor_lr: 0.000001        # 1e-6 (ResFiT): residual learns slowly
+  critic_lr: 0.0001         # 1e-4
+  gamma: 0.99
+  tau: 0.005
+  policy_freq: 2
+  policy_noise: 0.05        # TD3 target smoothing (residual space)
+  noise_clip: 0.5
+  residual_l2_coef: 0.0
+  clamp_q_target: 1
+  q_target_min: 0.0
+  q_target_max: 1.0
+  grad_clip: 10.0
+  normalize_states: 1
+
+# IN-DOMAIN: train + eval share this shift. none = source.
+domain_shift:
+  mode: "none"
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

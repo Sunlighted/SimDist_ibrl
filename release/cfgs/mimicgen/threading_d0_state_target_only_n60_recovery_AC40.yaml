@@ -1,0 +1,198 @@
+batch_size: 256
+dataset:
+  action_horizon: 1
+  build_state_chunk: 0
+  cotrain_num_data: -1
+  cotrain_path: ''
+  cotrain_ratio: 0.95
+  eval_episode_len: 400
+  hand_init_perturb: null
+  hand_init_perturb_joint_sigma: null
+  max_len: -1
+  norm_action: 0
+  num_data: 60
+  obs_stack: 1
+  path: release/data/mimicgen/threading_d0_target_plus_recovery_AC40_seed1/dataset.hdf5
+  prop_stack: 1
+  real_data: 0
+  rl_camera: robot0_eye_in_hand
+  state_stack: 1
+  use_state: 1
+  val_ratio: 0.0
+  val_split_seed: 0
+diffusion_policy:
+  action_horizon: 8
+  backbone: unet1d
+  beta_schedule: squaredcos_cap_v2
+  clip_sample: 1
+  diffusion_step_embed_dim: 128
+  ema_decay: 0.9999
+  kernel_size: 5
+  n_groups: 8
+  num_inference_steps: 10
+  num_train_timesteps: 100
+  obs_feat_dim: 128
+  obs_mlp_layers:
+  - 256
+  pred_horizon: 16
+  prediction_type: epsilon
+  scheduler: ddim
+  set_alpha_to_one: 1
+  steps_offset: 0
+  tf_causal_attn: 1
+  tf_n_cond_layers: 0
+  tf_n_emb: 256
+  tf_n_head: 4
+  tf_n_layer: 8
+  tf_p_drop_attn: 0.3
+  tf_p_drop_emb: 0.0
+  unet_down_dims:
+  - 64
+  - 128
+  - 256
+  use_ema: 1
+epoch_len: 100
+eval_domain_shift:
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 0.5
+  gripper_kp_scale: 0.12
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  mask_hole_offset_in_obs: false
+  mass_scale: 3.0
+  mode: fixed
+  ring_friction_scale: 2.0
+  ring_size_scale: 0.85
+  solimp_scale: 1.0
+  solref_scale: 1.0
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_period: 50
+eval_target_during_training: 1
+flow_policy:
+  action_horizon: 8
+  action_proj_dim: 256
+  backbone: unet1d
+  cfg_dropout_p: 0.2
+  cfg_enabled: 0
+  cfg_guidance_lambda: -0.5
+  cfg_inference_domain_id: 1
+  cfg_num_domains: 2
+  diffusion_step_embed_dim: 128
+  dropout: 0.0
+  ema_decay: 0.9999
+  fourier_dim: 64
+  hidden_dim: 1024
+  kernel_size: 5
+  layer_norm: 1
+  n_groups: 8
+  num_inference_steps: 10
+  num_layer: 6
+  obs_feat_dim: 128
+  obs_mlp_layers:
+  - 256
+  pred_horizon: 16
+  state_proj_dim: 128
+  time_embed_dim: 128
+  time_scale: 1000.0
+  unet_down_dims:
+  - 64
+  - 128
+  - 256
+  use_ema: 1
+grad_clip: 5
+image_size: 224
+load_model: none
+lr: 0.0001
+num_epoch: 2000
+num_eval_episode: 200
+policy:
+  dropout: 0
+  encoder:
+    dropout: 0
+    feat_dim: 512
+    fuse_method: cat
+    resnet:
+      downsample: default
+      norm_layer: gnn
+      shallow: 0
+      stem: default
+  hidden_dim: 1024
+  num_layer: 1
+  orth_init: 0
+  prop_noise: 0
+  use_prop: 0
+rl_image_size: 96
+rnn_policy:
+  action_horizon: 8
+  ema_decay: 0.9999
+  low_noise_eval: 1
+  min_std: 0.01
+  num_mlp_layer: 0
+  num_modes: 5
+  obs_mlp_hidden: 0
+  pred_horizon: 10
+  rnn_hidden_dim: 400
+  rnn_num_layers: 2
+  std_activation: softplus
+  use_ema: 0
+  use_tanh: 1
+robots:
+- Panda
+save_dir: exps/mimicgen/threading_target_only_n60_recovery_AC40_seed1
+save_per: -1
+seed: 1
+state_policy:
+  dropout: 0.0
+  hidden_dim: 1024
+  layer_norm: 0
+  num_layer: 3
+strict_success:
+  dwell_steps: 3
+  enabled: true
+  max_needle_speed: 0.0
+  max_tripod_disp: 0.04
+task_name: Threading_D0
+use_diffusion: 0
+use_flow: 0
+use_rnn: 0
+use_wb: 1
+val_batches: 5
+val_period: 10
+weight_decay: 0.0

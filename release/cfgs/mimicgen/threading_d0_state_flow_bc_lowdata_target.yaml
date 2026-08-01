@@ -1,0 +1,59 @@
+# Low-data flow BC trained DIRECTLY on the 20 TARGET-domain demos
+# (release/data/mimicgen/threading_d0_target_dynamics, §12 dynamics-only shift,
+# sidecar env_cfg.json format). Variant of threading_d0_state_flow_bc_lowdata.yaml
+# with the data pointed at the target set and eval done on the target domain
+# (the demos' own domain), so the topk saver ranks by target success.
+#
+# Normalization (state z-score + action min/max→[-1,1]) is ON by default in
+# StateFlowPolicy and fit from these 20 demos automatically.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 16        # = flow_policy.pred_horizon
+  num_data: 20
+  eval_episode_len: 400
+  val_ratio: 0.0            # use all 20 episodes for training
+  hand_init_perturb: null
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  unet_down_dims: [32, 64, 128]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 64
+  obs_mlp_layers: [128]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.999
+  normalize_obs: 1
+  normalize_action: 1
+num_epoch: 1000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-3
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 0
+val_batches: 5
+eval_hand_init_perturb: null
+# Train ON target demos → eval ON the target domain (the demos' own domain),
+# so in-training eval + topk ranking reflect target success. The post-training
+# final eval also reports source (nominal) as a diagnostic.
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

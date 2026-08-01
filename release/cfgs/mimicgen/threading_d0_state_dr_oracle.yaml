@@ -1,0 +1,77 @@
+# DR_oracle baseline on Threading_D0 — like dr.yaml, but the DR ranges
+# *bracket the target shift values*. This is the "we already know what
+# target looks like" baseline; it should provide an upper-bound on what DR
+# can achieve when the gap is in-distribution. Useful as a ceiling against
+# which the blind-DR baseline (dr.yaml) and IBRL are compared.
+#
+# Target shift = dynamics-only target (threading_d0_state_ibrl_newtarget.yaml):
+#   friction_scale: 0.5  mass_scale: 3.0  solref/solimp: 1.0
+#   gripper_kp_scale: 0.12  hole_offset: [0,0,0]  (no registration gap)
+#   ring_size_scale: 0.85  ring_friction_scale: 2.0
+#
+# DR ranges below straddle nominal=1.0 and the target; each per-reset
+# sample is in [low, high] and includes the target as an interior point.
+#
+# Dataset prep: see threading_d0_state_ibrl_shifted.yaml header.
+task_name: "Threading_D0"
+episode_length: 400
+stddev_max: 0.1
+use_state: 1
+state_stack: 3
+mix_rl_rate: 0.5
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 40
+num_train_step: 200000
+replay_buffer_size: 1000
+use_wb: 1
+mp_eval: 1
+log_per_step: 10000
+num_eval_episode: 50
+num_critic_update: 5
+
+q_agent:
+  act_method: "rl"
+  state_critic:
+    num_q: 5
+    layer_norm: 1
+    hidden_dim: 1024
+  state_actor:
+    hidden_dim: 1024
+    dropout: 0
+
+# DR ranges chosen to bracket nominal=1.0 AND the new dynamics-only target:
+#   friction target 0.5 in [0.4, 1.2]   (covers 0.5 and 1.0)
+#   mass target 3.0 in [0.7, 3.5]       (covers 1.0 and 3.0)
+#   solref target 1.0 in [0.7, 1.3]     (target is nominal — keep tight)
+#   solimp target 1.0 in [0.85, 1.15]   (target is nominal — keep tight)
+#   gripper_kp target 0.12 in [0.1, 1.2]   (covers 0.12 and 1.0)
+#   ring_size target 0.85 in [0.8, 1.0]     (covers 0.85 and 1.0)
+#   ring_friction target 2.0 in [1.0, 2.5]  (covers 1.0 and 2.0)
+#   hole_offset: target is 0 → no DR on offset (gap is pure dynamics).
+train_domain_shift:
+  mode: "dr"
+  dr_friction_range:        [0.4, 1.2]
+  dr_mass_range:            [0.7, 3.5]
+  dr_solref_range:          [0.7, 1.3]
+  dr_solimp_range:          [0.85, 1.15]
+  dr_arm_mass_range:        [0.9, 1.1]
+  dr_damping_range:         [0.7, 1.3]
+  dr_gripper_kp_range:      [0.1, 1.2]
+  dr_ring_size_range:       [0.8, 1.0]
+  dr_ring_friction_range:   [1.0, 2.5]
+  # Target has no hole_offset → no DR on offset, no masking needed.
+  mask_hole_offset_in_obs: false
+  dr_seed: 1
+
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

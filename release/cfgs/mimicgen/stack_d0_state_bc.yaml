@@ -1,0 +1,19 @@
+# State-mode BC on MimicGen Stack_D0.
+# Dataset prep:
+#   1. Download MimicGen demos:
+#        python deps/mimicgen/mimicgen/scripts/download_datasets.py \
+#          --dataset_type core --tasks stack_d0 \
+#          --download_dir release/data/mimicgen
+#   2. Re-render with low-dim obs for ibrl (state mode, no cameras):
+#        python tools/dataset_states_to_obs.py \
+#          --dataset release/data/mimicgen/core/stack_d0.hdf5 \
+#          --output_folder release/data/mimicgen/core/stack_d0 \
+#          --done_mode 2
+#      Pixel mode: also pass --camera_names agentview robot0_eye_in_hand
+#      Output filename is auto-named processed_data{obs_size}.hdf5 (obs_size default 96).
+dataset:
+  path: release/data/mimicgen/core/stack_d0/processed_data96.hdf5
+  use_state: 1
+  num_data: 100
+use_wb: 1
+num_epoch: 20

@@ -58,6 +58,16 @@ import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.env_utils as EnvUtils
 from robomimic.envs.env_base import EnvBase
 
+try:
+    import mimicgen  # noqa: F401  # registers MimicGen tasks with robosuite
+except ImportError:
+    pass
+
+try:
+    import env.threading_variants  # noqa: F401  # registers Threading_Enlarged etc.
+except Exception:
+    pass
+
 
 def extract_trajectory(
     env,
@@ -138,14 +148,15 @@ def extract_trajectory(
 
     video = []
     tensors = {camera: [] for camera in cameras}
-    for i in range(len(traj["rewards"])):
-        frame = []
-        for camera in cameras:
-            image = traj["obs"][f"{camera}_image"][i]
-            frame.append(image)
-            tensors[camera].append(torch.from_numpy(image.copy()).permute([2, 0, 1]))
-        frame = np.concatenate(frame, axis=1)
-        video.append(frame)
+    if cameras:
+        for i in range(len(traj["rewards"])):
+            frame = []
+            for camera in cameras:
+                image = traj["obs"][f"{camera}_image"][i]
+                frame.append(image)
+                tensors[camera].append(torch.from_numpy(image.copy()).permute([2, 0, 1]))
+            frame = np.concatenate(frame, axis=1)
+            video.append(frame)
 
     # list to numpy array
     for k in traj:
@@ -237,13 +248,18 @@ def dataset_states_to_obs(args):
                 print(f"saving observations to {tensor_path}")
                 torch.save(v, tensor_path)
 
-        ref_rewards = f["data/{}/rewards".format(ep)][()]
-        assert len(traj["rewards"]) == len(ref_rewards)
-        for reward, ref_reward in zip(traj["rewards"], ref_rewards):
-            if abs(reward - ref_reward) >= 1e-5:
-                print("rew:", traj["rewards"])
-                print("ref:", ref_rewards)
-                assert False
+        # MimicGen-generated demos (generate_dataset.py) store no per-step
+        # rewards; only downloaded "core" datasets do. When present, sanity-check
+        # the env-replayed rewards against them; otherwise trust the replay.
+        has_ref_rewards = "rewards" in f["data/{}".format(ep)]
+        if has_ref_rewards:
+            ref_rewards = f["data/{}/rewards".format(ep)][()]
+            assert len(traj["rewards"]) == len(ref_rewards)
+            for reward, ref_reward in zip(traj["rewards"], ref_rewards):
+                if abs(reward - ref_reward) >= 1e-5:
+                    print("rew:", traj["rewards"])
+                    print("ref:", ref_rewards)
+                    assert False
 
         # maybe copy reward or done signal from source file
         if args.copy_rewards:
@@ -266,8 +282,11 @@ def dataset_states_to_obs(args):
         ep_data_grp.create_dataset("states", data=np.array(traj["states"]))
         ep_data_grp.create_dataset("rewards", data=np.array(traj["rewards"]))
         ep_data_grp.create_dataset("dones", data=np.array(traj["dones"]))
-        ref_reward = f["data/{}/rewards".format(ep)][()]
-        reward_match = (traj["rewards"] == ref_reward).all()
+        if has_ref_rewards:
+            ref_reward = f["data/{}/rewards".format(ep)][()]
+            reward_match = (np.array(traj["rewards"]) == ref_reward).all()
+        else:
+            reward_match = True  # no reference rewards in generated demos
 
         for k in traj["obs"]:
             obs = traj["obs"][k]

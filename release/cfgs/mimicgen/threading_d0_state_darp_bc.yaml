@@ -1,0 +1,63 @@
+# Target-only + DARP: retrieval-conditioned BC on the 20 target demos
+# (retrieval pool = the target transitions). Same eval/schedule as
+# threading_target_mlp_bc_n20_seed1 so it's the DARP-on counterpart of the
+# target-only baseline. For cotrain/weighted + DARP use train_weighted_bc.py
+# with --use_darp 1.
+#
+#   python train_bc.py --config_path release/cfgs/mimicgen/threading_d0_state_darp_bc.yaml \
+#       --save_dir exps/mimicgen/threading_darp_target_only_seed1
+
+use_darp: 1
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  num_data: 20
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1
+  eval_episode_len: 400
+  val_ratio: 0.0
+
+darp_policy:
+  k: 100
+  final_neighbors_ratio: 0.5
+  lookback: 1
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 1
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_domain_shift:
+  mode: fixed
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  mask_hole_offset_in_obs: false
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0
+
+use_wb: 1
+save_dir: exps/mimicgen/threading_darp_target_only_seed1

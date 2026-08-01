@@ -1,0 +1,71 @@
+# Target-only single-step MLP BC on Threading_D0: train on ONLY the 20 demos
+# collected under the new dynamics-only target (threading_d0_target_dynamics),
+# eval on the same target. The plain-MLP counterpart of
+# threading_d0_state_bc_rnn_target.yaml / threading_d0_state_flow_bc_target.yaml
+# (same data axis, different head) — validates the single-step closed-loop MLP
+# in isolation (the same kind of MLP the H2O+ warm-up uses, but PURE BC here,
+# without the IBRL max-Q hybrid / source prior).
+#
+# Head = StateBcPolicy (deterministic MLP, single action per step, MSE). No
+# action chunking → fully closed-loop reactive control (re-predicts every step).
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 1         # single-step (StateBcPolicy is NOT chunked)
+  num_data: 20              # 20 (all) target demos; set 10 for the 10-demo run
+  eval_episode_len: 400     # MimicGen Threading rollout.horizon
+  val_ratio: 0.0            # 20 episodes — too few to hold out a val split
+  # null → robosuite's σ=0.02 gaussian on joint qpos, matching the
+  # target_dynamics demos' init distribution (env_cfg.json says sigma=0.02).
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 0
+use_diffusion: 0
+# StateBcPolicy MLP — matched to the H2O+ warm-up actor (FcActor: 3×1024,
+# dropout 0) so the pure-BC number is comparable to what warm-up trains.
+# Bump dropout to 0.5 (the StateBcPolicy default) for a more regularized variant.
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0
+  layer_norm: 0
+# Total grad steps = 2000 × 100 = 200K (matches the flow/rnn target configs).
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+# lr=1e-4 matches the H2O+ warm-up actor (q_agent.lr) that reached ~20-40% on
+# target. The earlier lr=1e-3 (copied from bc_rnn) was 10x too high for this
+# single-step MLP regression on 20 demos and underperformed (~7% @ σ=0.1).
+lr: 1e-4
+weight_decay: 0
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+# Eval-time arm init: wider joint-space gaussian (σ=0.1 rad) than the demos'
+# collection σ=0.02 — a harder, more realistic test of robustness to start-pose
+# variation. Mutually exclusive with eval_hand_init_perturb (kept null).
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+# In-training eval runs on TARGET (target IS the only training domain here).
+# topk saver picks model0/1.pt by target success; post-training dual eval also
+# reports source for the gap.
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+# Strict-success gate at eval (same as the RL/H2O+ evals) so BC and RL numbers
+# are comparable. Rejects clip-through / ram / shove-the-ring false positives.
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

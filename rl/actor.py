@@ -139,6 +139,11 @@ class FcActorConfig:
     dropout: float = 0.5
     layer_norm: int = 0
     orth: int = 0
+    # NeRF-style Fourier encoding of the state input (see rl/fourier.py). 0 = OFF
+    # (byte-for-byte unchanged; no pe module / no new state_dict keys).
+    fourier_l: int = 0
+    fourier_include_raw: int = 1
+    fourier_normalize: int = 1
 
 
 class FcActor(nn.Module):
@@ -146,15 +151,31 @@ class FcActor(nn.Module):
         super().__init__()
         assert len(obs_shape) == 1
         self.cfg = cfg
+
+        if cfg.fourier_l > 0:
+            from rl.fourier import FourierFeatures
+            self.pe = FourierFeatures(
+                obs_shape[0], cfg.fourier_l,
+                include_raw=bool(cfg.fourier_include_raw),
+                normalize=bool(cfg.fourier_normalize),
+            )
+            in_dim = self.pe.out_dim
+        else:
+            self.pe = None
+            in_dim = obs_shape[0]
+
         self.net = build_fc(
-            obs_shape[0], cfg.hidden_dim, action_dim, cfg.num_layer, cfg.layer_norm, cfg.dropout
+            in_dim, cfg.hidden_dim, action_dim, cfg.num_layer, cfg.layer_norm, cfg.dropout
         )
 
         if cfg.orth:
             self.net.apply(utils.orth_weight_init)
 
     def forward(self, obs: dict[str, torch.Tensor], std):
-        mu = self.net(obs["state"])
+        x = obs["state"]
+        if self.pe is not None:
+            x = self.pe(x)
+        mu = self.net(x)
         return utils.TruncatedNormal(mu, std)
 
 

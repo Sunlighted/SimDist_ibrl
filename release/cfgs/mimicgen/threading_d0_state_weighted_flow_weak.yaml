@@ -1,0 +1,91 @@
+# Flow-head weighted BC — WEAK source data (BC-policy collection).
+# Identical to threading_d0_state_weighted_bc.yaml EXCEPT:
+#   - head = StateFlowPolicy (use_flow=1) instead of single-step StateBcPolicy
+#   - dataset.action_horizon = 16 (= flow_policy.pred_horizon)
+# Source = threading_d0_source_bcpolicy_sigma0.1 (collected by the weak BC policy threading_target_mlp_bc_n20_seed1).
+# The WEAK counterpart (threading_d0_state_weighted_flow_weak.yaml) differs ONLY
+# in the source dataset path + gap_cache. Both keep the gap-weighting + 50/50
+# target mix, so the ONLY variable across the strong/weak pair is the data, and
+# the ONLY variable vs. the MLP weighted-BC experiment is the head.
+#
+#   python train_weighted_bc.py \
+#       --config_path release/cfgs/mimicgen/threading_d0_state_weighted_flow_weak.yaml \
+#       --save_dir exps/mimicgen/threading_weighted_flow_weak_seed1
+
+use_flow: 1
+seed: 1
+
+dataset:
+  # WEAK source demos (BC policy: threading_target_mlp_bc_n20_seed1) — gap-weighted.
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/dataset.hdf5
+  num_data: 2000
+  # TARGET demos (few; dynamics-only shift) — weight 1.
+  cotrain_path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  cotrain_num_data: 20
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 16          # = flow_policy.pred_horizon
+  eval_episode_len: 400
+  val_ratio: 0.0
+
+# --- weighted-BC knobs (same as the MLP weighted_bc experiment) ---
+gap_cache: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/gt_gaps_n2000.npz
+weight_mode: sample            # flow REQUIRES sample mode (gap-weight via draw)
+gap_c_mode: soft
+gap_tau: 0.01
+gap_threshold: 0.013
+weight_floor: 0.0
+target_batch_ratio: 0.5        # 50% target / 50% (weighted) source per batch
+
+# flow head — standard threading_d0_state_flow_bc.yaml backbone
+flow_policy:
+  backbone: "unet1d"
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.9999
+
+# training (matches the weighted-BC schedule: 2000 x 100 = 200K grad steps)
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.000001
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 200
+
+# eval: TARGET = dynamics-only shift (CLAUDE.md §12); same hand-init as the
+# MLP weighted-BC experiment.
+eval_target_during_training: 1
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_domain_shift:
+  mode: fixed
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  mask_hole_offset_in_obs: false
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0
+
+use_wb: 1
+save_dir: exps/mimicgen/threading_weighted_flow_weak_seed1

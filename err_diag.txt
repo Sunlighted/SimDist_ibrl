@@ -1,0 +1,25 @@
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /home/Chenyang/ibrl_deps/robosuite/robosuite/scripts/setup_macros.py (macros.py:55)
+[50/300] running success=0.860
+[100/300] running success=0.870
+[150/300] running success=0.887
+[200/300] running success=0.885
+[250/300] running success=0.884
+[300/300] running success=0.890
+Traceback (most recent call last):
+  File "/tmp/claude-1003/-home-Chenyang-ibrl/1c70675b-0c77-4a48-9fa0-1c2d847cef66/scratchpad/diag_square_gap.py", line 92, in <module>
+    env.close()
+AttributeError: 'PixelRobosuite' object has no attribute 'close'
+Exception ignored in: <function MjRenderContext.__del__ at 0x7fa989065870>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/utils/binding_utils.py", line 199, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>
+Exception ignored in: <function EGLGLContext.__del__ at 0x7fa9890656c0>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 155, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>

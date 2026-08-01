@@ -1,0 +1,70 @@
+# IBRL on Threading_D0 with domain shift on BOTH train and eval envs.
+# Use this when the *target* domain is what you want to train on (you have
+# data from the shifted env via demos collected under the same shift).
+#
+# Target = the new "dynamics-only" target (see threading_d0_state_ibrl_newtarget.yaml).
+# No hole_offset → pure dynamics gap, not a latent registration/observation gap.
+#
+# Dataset prep (state-mode, no cameras):
+#   1. download:  python deps/mimicgen/mimicgen/scripts/download_datasets.py \
+#                   --dataset_type core --tasks threading_d0 \
+#                   --download_dir release/data/mimicgen
+#   2. convert:   python tools/dataset_states_to_obs.py \
+#                   --dataset release/data/mimicgen/core/threading_d0.hdf5 \
+#                   --output_folder release/data/mimicgen/core/threading_d0 \
+#                   --done_mode 2
+task_name: "Threading_D0"
+episode_length: 400
+stddev_max: 0.1
+use_state: 1
+state_stack: 3
+mix_rl_rate: 0.5
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 40
+num_train_step: 200000
+replay_buffer_size: 1000
+use_wb: 1
+mp_eval: 1
+log_per_step: 10000
+num_eval_episode: 50
+num_critic_update: 5
+q_agent:
+  act_method: "ibrl"
+  state_critic:
+    num_q: 5
+    layer_norm: 1
+    hidden_dim: 1024
+  state_actor:
+    hidden_dim: 1024
+    dropout: 0
+# Dynamics-only target (no hole_offset → no latent registration gap; the
+# remaining gap is pure contact/friction/geometry physics):
+#   friction_scale     0.5   (needle handle μ 1.0 → 0.5; tip 0.3 → 0.15)
+#   mass_scale         3.0   (needle 7.6 g → 22.8 g)
+#   gripper_kp_scale   0.12  (finger servo kp 1000 → 120; softer grasp)
+#   solref/solimp      1.0   (pinned — avoid clip-through false success)
+#   ring_size_scale    0.85  (hole 16 mm → 13.6 mm; needle is 10 mm)
+#   ring_friction_scale 2.0  (ring rim μ 0.3 → 0.6; grippier insert)
+train_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

@@ -1,0 +1,68 @@
+# IBRL on Square_D0 — SOURCE domain, ITERATION 2.
+#
+# Bootstrap: use the FROZEN iter-1 IBRL agent (square_ibrl_source_seed1/model0.pt,
+# ~77% source) as the IBRL BC prior instead of the 63% MLP BC. A frozen QAgent
+# is attached as the prior via the `sgft_source_agent` mechanism (§10): its
+# deterministic RL policy becomes the prior the new RL actor competes with in
+# max-Q. sgft_shaping stays 0 (default) => PLAIN IBRL, no value shaping — just a
+# stronger prior. No margin, no add_bc_loss.
+#
+# Rationale: iter-1 plain IBRL lifted the 63% MLP prior to 77% but ran out of
+# the 400k budget mid-climb (cold-start ate the first ~100k). Restarting with
+# the 77% agent as the prior gives a stronger starting point (faster calibration,
+# higher ceiling) — iterative policy improvement, still plain IBRL.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/square_d0_state_ibrl_source_iter2.yaml \
+#       --save_dir exps/mimicgen/square_ibrl_source_iter2_seed1
+task_name: "Square_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# Frozen iter-1 IBRL agent (~77%) as the IBRL prior (sgft_shaping=0 => plain
+# IBRL, the frozen agent is ONLY the prior, no reward shaping). Mutually
+# exclusive with bc_policy. state_stack must match the frozen agent (1).
+sgft_source_agent: "exps/mimicgen/square_ibrl_source_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/square_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 400000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# SOURCE domain (no shift), no strict-success gating (both Threading-only).
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

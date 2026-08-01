@@ -1,0 +1,54 @@
+# Target-only CHUNKED deterministic-MLP BC on Threading_D0. Identical to
+# threading_d0_state_mlp_bc_target.yaml (same MLP 3x1024, lr=1e-4, strict, eval
+# σ=0.1, 20 demos) EXCEPT it predicts a Tp=16 action chunk and executes Ta=8
+# open-loop per re-prediction — isolating the effect of action chunking alone,
+# holding the model class fixed at "simple deterministic MLP".
+#
+#   StateBcPolicy (mlp_bc_target):  single action, closed-loop (Ta=1)
+#   StateChunkMlpPolicy (this):     Tp=16 chunk, open-loop Ta=8
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  use_state: 1
+  action_horizon: 16        # = chunk_mlp_policy.pred_horizon (Tp); builds action_chunk
+  num_data: 20              # 20 (all) target demos; set 10 for the 10-demo run
+  eval_episode_len: 400
+  val_ratio: 0.0
+  hand_init_perturb: null
+use_chunk_mlp: 1
+chunk_mlp_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0
+  layer_norm: 0
+  pred_horizon: 16          # Tp (must = dataset.action_horizon)
+  action_horizon: 8         # Ta (open-loop chunk executed per re-prediction)
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 0
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+# Same eval condition as the single-step MLP run (target + joint-init σ=0.1) so
+# chunk-vs-no-chunk is a clean comparison.
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

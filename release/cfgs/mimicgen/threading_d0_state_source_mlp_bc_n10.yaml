@@ -1,0 +1,51 @@
+# Weak IBRL prior for the clean-GAIL experiment (train_gail.py): a plain
+# single-step MLP BC (StateBcPolicy) trained on ONLY the 10 SOURCE demos that
+# also form the GAIL expert state pool. Deliberately weak / few-demo so the
+# downstream occupancy-matching has to do the real work — the prior just
+# assists exploration as the IBRL max-Q candidate.
+#
+#   python train_bc.py --config_path release/cfgs/mimicgen/threading_d0_state_source_mlp_bc_n10.yaml \
+#       --save_dir exps/mimicgen/threading_source_mlp_bc_n10_seed1
+
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_sigma0.1_sample10/dataset.hdf5
+  num_data: 10
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  eval_episode_len: 400
+  val_ratio: 0.0
+
+# simplest single-step MLP head (same arch as the n2000 source BC, fewer data)
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 500
+epoch_len: 100
+eval_period: 100
+num_eval_episode: 20
+
+eval_target_during_training: 0
+eval_hand_init_perturb_joint_sigma: 0.1   # matches source demo collection (σ=0.1)
+eval_domain_shift:
+  mode: none
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0
+
+use_wb: 0
+save_dir: exps/mimicgen/threading_source_mlp_bc_n10_seed1

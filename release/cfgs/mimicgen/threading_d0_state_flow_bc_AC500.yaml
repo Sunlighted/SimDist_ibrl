@@ -1,0 +1,62 @@
+# Flow-matching BC on the TARGET-domain recovery dataset (A+C, 500 demos).
+# Data = threading_d0_target_recovery_AC500 (online-DAgger recovery, all success,
+# collected under the §12 dynamics-only TARGET shift + hand_init joint σ=0.1).
+# Train domain == eval domain == TARGET: in-training eval tracks TARGET
+# (eval_target_during_training=1), so topk picks the target-best ckpt; the
+# eval_domain_shift below matches the dataset's env_cfg.json exactly, and
+# eval_hand_init_perturb_joint_sigma=0.1 matches the data-collection init.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_recovery_AC500/dataset.hdf5
+  use_state: 1
+  action_horizon: 16   # = flow_policy.pred_horizon
+  num_data: -1          # all 500 A+C demos
+  eval_episode_len: 400
+  val_ratio: 0.1
+  hand_init_perturb: null
+  # Dataset-internal eval env init (eval_hand_init_perturb_joint_sigma overrides
+  # this for the actual eval rollouts; set both to 0.1 for consistency).
+  hand_init_perturb_joint_sigma: 0.1
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.9999
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+# eval is ~half of wall time (each eval re-spawns 10 EGL procs); halve its
+# cost: fewer episodes per eval + eval every 100 epochs (still 20 eval points).
+num_eval_episode: 40
+eval_period: 100
+val_period: 10
+val_batches: 5
+# Eval-time arm init = joint-space gaussian σ=0.1 (matches the recovery data).
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+# Train domain == eval domain == TARGET: track target during training so the
+# saved best ckpt is target-best. (post-training also logs a source diagnostic.)
+eval_target_during_training: 1
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

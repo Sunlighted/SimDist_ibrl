@@ -1,0 +1,103 @@
+# State-based flow-matching BC on MimicGen Threading_D0.
+# Aligned with robomimic diffusion policy on four key features:
+#   - Action chunking with queue execution (eval pops actions from a queue,
+#     re-predicts only every Ta=8 env steps; not every step)
+#   - pred_horizon > action_horizon (network predicts Tp=16 steps of lookahead
+#     but only the first Ta=8 are executed before re-prediction)
+#   - EMA over policy weights, applied at eval time
+#   - ConditionalUnet1D backbone (FiLM-cond 1D U-Net) at matched capacity
+#     so flow-vs-diffusion ablation isolates the training objective only
+#
+# Method specifics:
+#   - Rectified flow / linear OT: x_t = (1-t)z + t·a, target v = a - z
+#   - F.mse_loss(mean reduction) — matches diffusion's loss scale so the
+#     same lr is comparable across the two heads
+#   - 10 Euler steps per chunk prediction
+#
+# Dataset:
+#   1000 demos, 99.6% success, 224 avg steps/demo (MimicGen "core" release).
+#   state shape = 37 (eef_pos[3] + eef_quat[4] + gripper_qpos[2] + object[28]).
+#   IMPORTANT: dataset.action_horizon must match flow_policy.pred_horizon.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 16   # = flow_policy.pred_horizon (chunk length for training)
+  num_data: -1
+  # 400 matches MimicGen's `experiment.rollout.horizon` for Threading. Old
+  # 300 was tight given Threading's ~224 mean steps + long-tail demos.
+  eval_episode_len: 400
+  # 10% of demos held out for val loss (MimicGen-style). Set 0.0 to disable.
+  val_ratio: 0.1
+  # Robot arm init-state perturbation. Omitted/null → robosuite's built-in
+  # σ=0.02 gaussian on joint qpos (≈22 mm EE std, matches MimicGen demo
+  # collection — keeps eval in-distribution with training data).
+  # [0,0,0] = fully deterministic init. [rx,ry,rz]>0 = sgft-style IK in EE.
+  # Affects only the eval env (BC training doesn't touch the env).
+  hand_init_perturb: null
+use_flow: 1
+flow_policy:
+  # Use the same ConditionalUnet1D backbone as bc/diffusion_policy.py so the
+  # flow-vs-diffusion comparison only differs in the training objective and
+  # sampler. Set backbone="mlp" to fall back to the legacy MLP-on-flattened-
+  # chunk variant (defaults are now 1024×6 ≈ 5M params, comparable capacity).
+  backbone: "unet1d"
+  # UNet1D shape — mirrors bc/diffusion_policy.py defaults.
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  # Sinusoidal step-embed inside ConditionalUnet1D was designed for integer
+  # diffusion steps; multiply continuous flow time t∈[0,1] by this so the
+  # frequency band is fully covered. 1000 matches DDPM's num_train_timesteps.
+  time_scale: 1000.0
+  # Horizons (Tp must equal dataset.action_horizon; Ta <= Tp).
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.9999
+# MimicGen-style fine-grained epochs: 2000 epochs × 100 steps = 200K grad steps
+# (was 40 × 10000 = 400K). Halved total steps to match MimicGen baseline; if
+# you want the old budget back, set num_epoch: 4000.
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+num_eval_episode: 50
+# Match MimicGen's eval cadence: rollout every 50 epochs (was every epoch).
+# With epoch_len=100, this is 5K grad steps between evals.
+eval_period: 50
+# Val-loss log cadence (epochs). 10 → log val/loss 200 times across training.
+val_period: 10
+val_batches: 5
+# Eval-time arm init perturbation override.
+#   null (default) → use dataset.hand_init_perturb (→ robosuite σ=0.02).
+#   [0,0,0]        → fully deterministic eval (no init variance at all).
+#   [rx,ry,rz]>0   → IK an EE offset from uniform half-range box (sgft).
+eval_hand_init_perturb: null
+# Protocol = "source-best → target eval":
+#   - In-training eval runs on SOURCE (eval_target_during_training=0 default),
+#     so the topk saver selects model0/1.pt by source success rate.
+#   - At the end of training, the source-best ckpt is auto-evaluated on BOTH
+#     source and target, reporting `best_ckpt_source` / `best_ckpt_target` /
+#     gap. This matches the conventional sim2real eval protocol.
+# To make in-training eval track target instead (legacy behavior), set
+#   eval_target_during_training: 1
+# The shift fields below describe the TARGET domain for the post-training
+# target eval. mode="none" disables the post-training target eval entirely.
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

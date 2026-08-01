@@ -8,6 +8,32 @@ import numpy as np
 from common_utils import ibrl_utils as utils
 import common_utils
 
+# Importing mimicgen registers its environments (Threading_D0, Stack_D0, ...)
+# with robosuite's global env registry on import. Wrapped so the original
+# robosuite tasks still work if mimicgen isn't installed.
+try:
+    import mimicgen  # noqa: F401
+except Exception:  # pragma: no cover - mimicgen optional
+    pass
+
+from env.domain_shift import (
+    DomainShiftConfig,
+    InitDistConfig,
+    DRSampler,
+    resolve_threading_bindings,
+    resolve_bindings,
+    snapshot_nominal,
+    restore_nominal,
+    apply_contact_shift,
+    apply_hole_offset,
+    apply_ring_shift,
+    apply_tripod_trap_shift,
+    apply_square_peg_shift,
+    mask_hole_offset_from_obs,
+    apply_init_distribution,
+)
+from env.strict_success import StrictSuccessConfig, SuccessValidator
+
 
 # all avail views:
 # 'frontview', 'birdview', --> too far for this task
@@ -56,6 +82,35 @@ STATE_SHAPE = {
     "TwoArmTransport": (59,),
     "ToolHang": (53,),
 }
+
+# MimicGen D0 tasks all use the default state keys (eef_pos[3] + eef_quat[4] +
+# gripper_qpos[2] + object-state[N]). Their state dim depends on the task's
+# object-state size; Threading_D0 is precomputed (9 prop + 28 object = 37) and
+# the rest are inferred at construction via _infer_state_dim() so we don't have
+# to hardcode every variant. (robosuite_task_zoo tasks HammerCleanup_D0 /
+# Kitchen_D0 are intentionally not installed -- see CLAUDE.md.)
+MIMICGEN_D0_TASKS = [
+    "Threading_D0",
+    "Stack_D0",
+    "StackThree_D0",
+    "Square_D0",
+    "Coffee_D0",
+    "CoffeePreparation_D0",
+    "ThreePieceAssembly_D0",
+    "PickPlace_D0",
+    "NutAssembly_D0",
+    "MugCleanup_D0",
+]
+for _t in MIMICGEN_D0_TASKS:
+    STATE_KEYS[_t] = DEFAULT_STATE_KEYS
+# Threading-family variants (D1, Enlarged, ...) share Threading_D0's spec.
+for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged"]:
+    STATE_KEYS[_t] = DEFAULT_STATE_KEYS
+STATE_SHAPE["Threading_D0"] = (37,)
+STATE_SHAPE["Threading_D1"] = (37,)
+STATE_SHAPE["Threading_D2"] = (37,)
+STATE_SHAPE["Threading_Enlarged"] = (37,)
+
 PROP_KEYS = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 PROP_DIM = 9
 
@@ -83,24 +138,78 @@ class PixelRobosuite:
         flip_image=True,  # only false if using with eval_with_init_state
         ctrl_delta=True,
         record_sim_state: bool = False,
+        # ---- domain-shift / strict-success / init-perturb extensions ----
+        domain_shift: Optional[DomainShiftConfig] = None,
+        strict_success: Optional[StrictSuccessConfig] = None,
+        hand_init_perturb: Optional[tuple] = None,
+        hand_init_perturb_joint_sigma: Optional[float] = None,
+        init_distribution: Optional[InitDistConfig] = None,
+        state_only_no_render: bool = False,
     ):
         assert isinstance(camera_names, list)
         self.camera_names = camera_names
         self.ctrl_config = load_controller_config(default_controller="OSC_POSE")
         self.ctrl_config["control_delta"] = ctrl_delta
         self.record_sim_state = record_sim_state
+
+        # When True (state-based eval only), skip ALL camera rendering: build the
+        # robosuite env with no offscreen GL context + no camera obs, and skip the
+        # camera loop in _extract_images. The policy only consumes rl_obs["state"]
+        # so the rendered image is pure waste; turning it off removes the per-step
+        # 224x224 render (the dominant single-step cost) AND the EGL context that
+        # makes multi-process eval deadlock. Default False = byte-for-byte the old
+        # rendering path. Incompatible with video recording (no high_res_images).
+        self.state_only_no_render = bool(state_only_no_render)
+        if self.state_only_no_render:
+            assert use_state, "state_only_no_render requires use_state=True"
+
+        # ---- resolve the two mutually-exclusive hand-init regimes ----
+        # hand_init_perturb (3-tuple): EE-space box; we disable robosuite's
+        #   joint noise and IK to a sampled EE offset at each reset.
+        # hand_init_perturb_joint_sigma (float): rescale robosuite's built-in
+        #   joint-space gaussian (sigma=0.02 is the demo-collection default).
+        # both None: robosuite's default (sigma=0.02 gaussian on joint qpos).
+        assert not (
+            hand_init_perturb is not None and hand_init_perturb_joint_sigma is not None
+        ), "hand_init_perturb and hand_init_perturb_joint_sigma are mutually exclusive"
+        self.hand_init_perturb = (
+            tuple(float(x) for x in hand_init_perturb)
+            if hand_init_perturb is not None
+            else None
+        )
+        self.hand_init_perturb_joint_sigma = hand_init_perturb_joint_sigma
+        # Only IK-perturb when an EE box with a non-zero half-extent is given.
+        # An all-zero tuple means "fully deterministic init" (noise off, no IK).
+        self._ik_perturb_active = self.hand_init_perturb is not None and any(
+            abs(x) > 0 for x in self.hand_init_perturb
+        )
+        if self.hand_init_perturb is not None:
+            # disable robosuite's joint noise; we set the pose ourselves (IK or
+            # deterministic baseline).
+            init_noise = {"magnitude": 0.0, "type": "gaussian"}
+        elif self.hand_init_perturb_joint_sigma is not None:
+            init_noise = {
+                "magnitude": float(self.hand_init_perturb_joint_sigma),
+                "type": "gaussian",
+            }
+        else:
+            init_noise = "default"
+
+        _render = not self.state_only_no_render
         self.env = robosuite.make(
             env_name=env_name,
             robots=robots,
             controller_configs=self.ctrl_config,
-            has_offscreen_renderer=True,
-            use_camera_obs=True,
+            has_offscreen_renderer=_render,
+            use_camera_obs=_render,
             reward_shaping=reward_shaping,
             camera_names=self.camera_names,
             camera_heights=image_size,
             camera_widths=image_size,
             horizon=episode_length,
+            initialization_noise=init_noise,
         )
+        self.env_name = env_name
         self.rl_cameras = rl_cameras if isinstance(rl_cameras, list) else [rl_cameras]
         self.image_size = image_size
         self.rl_image_size = rl_image_size or image_size
@@ -117,7 +226,11 @@ class PixelRobosuite:
 
         self.action_dim: int = len(self.env.action_spec[0])
         self._observation_shape: tuple[int, ...] = (3 * obs_stack, rl_image_size, rl_image_size)
-        self._state_shape: tuple[int] = (STATE_SHAPE[env_name][0] * state_stack,)
+        if env_name in STATE_SHAPE:
+            state_base = STATE_SHAPE[env_name][0]
+        else:
+            state_base = self._infer_state_dim()
+        self._state_shape: tuple[int] = (state_base * state_stack,)
         self.prop_shape: tuple[int] = (PROP_DIM * prop_stack,)
         self.device = device
 
@@ -133,6 +246,60 @@ class PixelRobosuite:
         self.past_obses = defaultdict(list)
         self.past_actions = deque(maxlen=self.cond_action)
 
+        # ---- optional init-distribution override (Threading D1/Enlarged) ----
+        # Monkeypatches the placement bounds; no-op when disabled. Persists
+        # across hard resets (the env re-reads the patched bounds each reset).
+        self.init_distribution = init_distribution
+        if self.init_distribution is not None and getattr(
+            self.init_distribution, "enabled", False
+        ):
+            apply_init_distribution(self.env, self.init_distribution)
+
+        # ---- domain shift + strict success ----
+        self.domain_shift = domain_shift if domain_shift is not None else DomainShiftConfig()
+        self.strict_success = (
+            strict_success if strict_success is not None else StrictSuccessConfig()
+        )
+        self._shift_active = self.domain_shift.mode != "none"
+        self._strict_active = bool(self.strict_success.enabled)
+        # Bindings/nominal are needed by the shift functions AND the strict
+        # validator. Resolved (Threading-only) only when one of them is active,
+        # so non-Threading tasks with no shift behave exactly like upstream.
+        self._needs_bindings = self._shift_active or self._strict_active
+        self._bindings: Optional[dict] = None
+        self._nominal: Optional[dict] = None
+        self._dr_sampler: Optional[DRSampler] = None
+        self._success_validator: Optional[SuccessValidator] = None
+        if self._needs_bindings:
+            self._bindings = resolve_bindings(self.env)
+            self._nominal = snapshot_nominal(self.env)
+            if self.domain_shift.mode == "dr":
+                self._dr_sampler = DRSampler(self.domain_shift)
+        if self._strict_active:
+            self._success_validator = SuccessValidator(self.strict_success)
+
+        # ---- IK-perturb bindings (only when the EE-box regime is active) ----
+        self._ik_baseline_eef: Optional[np.ndarray] = None
+        if self._ik_perturb_active:
+            gp = self.env.robots[0].gripper.naming_prefix
+            self._grip_site = gp + "grip_site"
+            self._arm_qpos_idx = np.asarray(self.env.robots[0]._ref_joint_pos_indexes)
+            self._arm_dof_idx = np.asarray(self.env.robots[0]._ref_joint_vel_indexes)
+            self._ik_max_iter = 150
+            self._ik_damping = 0.05
+
+    def _infer_state_dim(self) -> int:
+        """Sum the per-key sizes of self.state_keys from a fresh observation.
+
+        Used for MimicGen tasks not in the precomputed STATE_SHAPE table.
+        """
+        obs = self.env.observation_spec()
+        total = 0
+        for key in self.state_keys:
+            env_key = "object-state" if key == "object" else key
+            total += int(np.asarray(obs[env_key]).size)
+        return total
+
     @property
     def observation_shape(self):
         if self.use_state:
@@ -140,8 +307,119 @@ class PixelRobosuite:
         else:
             return self._observation_shape
 
+    def _apply_domain_shift(self) -> None:
+        """Re-apply the domain shift after an env.reset().
+
+        robosuite uses hard_reset=True, so the sim is rebuilt from MJCF on every
+        reset and any prior mutation is wiped. We re-resolve bindings against the
+        fresh sim, restore nominal (so scales compose from nominal, not the last
+        shifted values), apply the fixed/DR shift, and forward() so data catches
+        up. No-op when mode == "none".
+        """
+        if self.domain_shift.mode == "none":
+            return
+        # hard_reset rebuilt the sim -> re-resolve ids.
+        self._bindings = resolve_bindings(self.env)
+        restore_nominal(self.env, self._nominal)
+        cfg = self.domain_shift
+        if self.domain_shift.mode == "dr":
+            self._dr_sampler.sample_and_apply(self.env, self._bindings)
+        else:  # "fixed"
+            # Common contact shift (nut/needle mass+friction, gripper kp) —
+            # consumes object_body_ids/object_geom_ids/gripper_act_ids, present
+            # in both task families.
+            apply_contact_shift(
+                self.env,
+                self._bindings,
+                friction_scale=cfg.friction_scale,
+                mass_scale=cfg.mass_scale,
+                solref_scale=cfg.solref_scale,
+                solimp_scale=cfg.solimp_scale,
+                com_offset=cfg.com_offset,
+                gripper_kp_scale=cfg.gripper_kp_scale,
+            )
+            # Task-specific geometry shift, branched on binding contents.
+            if "ring_geom_ids" in self._bindings:  # Threading
+                apply_hole_offset(self.env, self._bindings, cfg.hole_offset)
+                apply_ring_shift(
+                    self.env,
+                    self._bindings,
+                    ring_size_scale=cfg.ring_size_scale,
+                    ring_friction_scale=cfg.ring_friction_scale,
+                )
+                apply_tripod_trap_shift(
+                    self.env,
+                    self._bindings,
+                    tripod_mass_scale=cfg.tripod_mass_scale,
+                    tripod_com_height_scale=cfg.tripod_com_height_scale,
+                )
+            elif "peg_geom_ids" in self._bindings:  # Square
+                apply_square_peg_shift(
+                    self.env,
+                    self._bindings,
+                    peg_size_scale=cfg.peg_size_scale,
+                    peg_friction_scale=cfg.peg_friction_scale,
+                )
+        self.env.sim.forward()
+
+    def _ik_to_perturbed_pos(self) -> None:
+        """Damped-least-squares 3-DOF positional IK to a sampled EE offset.
+
+        Snapshots the nominal EE position lazily on the first reset, then at
+        every reset samples an offset from uniform([-rx,rx]x[-ry,ry]x[-rz,rz])
+        and drives the 7 arm joints there. Orientation drifts as a null-space
+        side effect (small for <= ~2 cm offsets). Gripper/object placements are
+        untouched.
+        """
+        env = self.env
+        sim = env.sim
+        site = self._grip_site
+        sim.forward()
+        if self._ik_baseline_eef is None:
+            self._ik_baseline_eef = sim.data.get_site_xpos(site).copy()
+        rx, ry, rz = self.hand_init_perturb
+        offset = np.array(
+            [
+                np.random.uniform(-rx, rx),
+                np.random.uniform(-ry, ry),
+                np.random.uniform(-rz, rz),
+            ]
+        )
+        target = self._ik_baseline_eef + offset
+        qpos_idx = self._arm_qpos_idx
+        dof_idx = self._arm_dof_idx
+        for _ in range(self._ik_max_iter):
+            sim.forward()
+            cur = sim.data.get_site_xpos(site)
+            err = target - cur
+            if np.linalg.norm(err) < 1e-4:
+                break
+            Jp = sim.data.get_site_jacp(site)[:, dof_idx]  # (3, 7)
+            JJt = Jp @ Jp.T + (self._ik_damping ** 2) * np.eye(3)
+            dq = Jp.T @ np.linalg.solve(JJt, err)
+            sim.data.qpos[qpos_idx] += dq
+        sim.forward()
+        # Re-sync the controller so it holds the new pose instead of driving the
+        # arm back toward the reset goal on the first action.
+        try:
+            controller = env.robots[0].controller
+            controller.update_initial_joints(sim.data.qpos[qpos_idx].copy())
+            controller.reset_goal()
+        except Exception:
+            pass
+
     def _extract_images(self, obs):
         # assert self.frame_stack == 1, "frame stack not supported"
+
+        # Blind the policy to the hole offset (sgft "obs-blind" design). No-op
+        # unless mode == "fixed", masking is enabled, and the offset is non-zero.
+        if (
+            self.domain_shift.mode == "fixed"
+            and self.domain_shift.mask_hole_offset_in_obs
+            and self._bindings is not None
+            and "obj_state_slices" in self._bindings  # Threading-only; Square has none
+        ):
+            mask_hole_offset_from_obs(obs, self._bindings, self.domain_shift.hole_offset)
 
         high_res_images = {}
         rl_obs = {}
@@ -169,7 +447,8 @@ class PixelRobosuite:
             len(self.past_obses["prop"]) - 1, self.past_obses["prop"], self.prop_stack
         ).to(self.device)
 
-        for camera_name in self.camera_names:
+        camera_names = [] if self.state_only_no_render else self.camera_names
+        for camera_name in camera_names:
             image_key = f"{camera_name}_image"
             image_obs = obs[image_key]
             if self.flip_image:
@@ -213,6 +492,28 @@ class PixelRobosuite:
             self.past_actions.append(torch.zeros(self.action_dim))
 
         obs = self.env.reset()
+
+        # Re-resolve bindings against the freshly-rebuilt sim (hard_reset).
+        if self._needs_bindings:
+            self._bindings = resolve_bindings(self.env)
+
+        mutated = False
+        if self._shift_active:
+            self._apply_domain_shift()  # restores nominal + applies + forward()
+            mutated = True
+        if self._ik_perturb_active:
+            self._ik_to_perturbed_pos()  # forward()
+            mutated = True
+        # The obs returned by env.reset() is stale after we mutate the sim; pull
+        # a fresh observation so the policy sees the shifted/perturbed start.
+        if mutated:
+            obs = self.env._get_observations(force_update=True)
+
+        # Snapshot the ring center AFTER the shift forward so the displacement
+        # gate measures drift from the true (possibly shifted) start pose.
+        if self._success_validator is not None:
+            self._success_validator.reset(self.env, self._bindings)
+
         rl_obs, high_res_images = self._extract_images(obs)
 
         if self.cond_action > 0:
@@ -254,10 +555,23 @@ class PixelRobosuite:
                 rl_obs.update(curr_rl_obs)
                 high_res_images.update(curr_high_res_images)
 
+            # Strict-success gating: replace the raw, hackable sparse reward with
+            # the validated signal (dwell + ring-displacement + optional speed),
+            # so reward AND success agree on the honest objective. When disabled,
+            # this is byte-for-byte the upstream behavior.
+            if self._success_validator is not None:
+                raw_success = step_reward == 1
+                frame_success = self._success_validator.step(
+                    self.env, self._bindings, raw_success
+                )
+                step_reward = 1.0 if frame_success else 0.0
+            else:
+                frame_success = step_reward == 1
+
             reward += step_reward
             self.episode_reward += step_reward
 
-            if step_reward == 1:
+            if frame_success:
                 success = True
                 if self.end_on_success:
                     terminal = True

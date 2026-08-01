@@ -1,0 +1,78 @@
+# IBRL on Threading_D0 — SOURCE domain, trained against STRICT success.
+#
+# Mirrors the config that produced exps/mimicgen/threading_ibrl_source_seed1
+# (state_stack=1, joint-space init sigma 0.1, flow-BC prior, 400k steps), with
+# ONE change: strict_success is ENABLED. The original source agent was trained
+# on the RAW instantaneous position success and reward-hacks it (raw 100% but
+# strict-success only 68% on source: ram / clip-through / shove-the-ring). With
+# strict gating (dwell K=3 + ring-displacement<0.04) the +1 reward only fires
+# when the needle genuinely threads and HOLDS, so RL must learn honest insertion.
+#
+# strict_success is applied to BOTH train and eval (env/strict_success.py), so
+# the reward and the topk-saved metric agree. eval is on SOURCE (mode=none) so
+# the saver keeps the best strict-success-on-source agent.
+#
+# Run:
+#   python train_rl.py --config_path release/cfgs/mimicgen/threading_d0_state_ibrl_source_strict.yaml \
+#       --save_dir exps/mimicgen/threading_ibrl_source_strict_seed1
+task_name: "Threading_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# BC prior (same flow-BC prior the original source agent used) + seed demos.
+bc_policy: "exps/mimicgen/threading_flow_bc_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/threading_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 400000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# Demo-collection-style init (matches the original source agent).
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+# SOURCE domain on both train and eval (no contact-phase shift).
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+
+# THE change vs the original source agent: honest success objective.
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0

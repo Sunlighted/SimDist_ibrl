@@ -12,3 +12,25 @@ data/
 .env
 release/model
 *.zip
+
+# ---- 大文件：日志 / 权重 / 数据集（本地保留，不入库）----
+*.log
+logs/
+MUJOCO_LOG.TXT
+nohup.out
+
+# 模型权重与检查点
+*.pt
+*.pth
+*.ckpt
+
+# 数据集 / 缓存数组
+*.npz
+*.npy
+*.hdf5
+*.h5
+*.pkl
+*.pickle
+
+# 已弃用的实验分支（本地归档，不入库；确认不需要后可 rm -rf _archive）
+_archive/

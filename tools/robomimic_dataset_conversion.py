@@ -17,6 +17,11 @@ import robomimic.utils.env_utils as EnvUtils
 from scipy.spatial.transform import Rotation
 from robomimic.config import config_factory
 
+try:
+    import mimicgen  # noqa: F401  # registers MimicGen tasks with robosuite
+except ImportError:
+    pass
+
 
 class RobomimicAbsoluteActionConverter:
     def __init__(self, dataset_path, algo_name="bc"):

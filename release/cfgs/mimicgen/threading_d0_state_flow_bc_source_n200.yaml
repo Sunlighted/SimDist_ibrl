@@ -1,0 +1,55 @@
+# Flow-matching BC on the SOURCE-domain dataset (first 200 demos).
+# Data = threading_d0_source_sigma0.1 (nominal/source env, mode=none, collected
+# with hand_init joint σ=0.1). Train domain == eval domain == SOURCE.
+# In-training eval runs on SOURCE (eval_target_during_training=0 +
+# eval_domain_shift.mode=none disables any target eval), and
+# eval_hand_init_perturb_joint_sigma=0.1 matches the data-collection init —
+# so the test domain is identical to the training domain.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_sigma0.1/dataset.hdf5
+  use_state: 1
+  action_horizon: 16   # = flow_policy.pred_horizon
+  num_data: 200         # train on the first 200 source demos
+  eval_episode_len: 400
+  # Independent val set: validate on the NEXT 200 demos (episodes 200..399) of
+  # the same source file — same distribution, disjoint from train, 10× larger
+  # than the old 10% in-set split (so val/loss is far less noisy). Overrides
+  # val_ratio.
+  val_ratio: 0.0
+  val_num_data: 200
+  hand_init_perturb: null
+  hand_init_perturb_joint_sigma: 0.1
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  unet_down_dims: [64, 128, 256]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 128
+  obs_mlp_layers: [256]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.9999
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+# eval is ~half of wall time (each eval re-spawns 10 EGL procs); halve its
+# cost: fewer episodes per eval + eval every 100 epochs (still 20 eval points).
+num_eval_episode: 40
+eval_period: 100
+val_period: 10
+val_batches: 5
+# Eval-time arm init = joint-space gaussian σ=0.1 (matches the source data).
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+# Train domain == eval domain == SOURCE: eval on source only, no target eval.
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: "none"

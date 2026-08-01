@@ -229,6 +229,12 @@ class MultiFcQConfig:
     layer_norm: int = 0
     orth: int = 0
     append_action: int = 0
+    # NeRF-style Fourier encoding of the state input. 0 = OFF (byte-for-byte
+    # unchanged: no pe module, no new state_dict keys). >0 = expand the state to
+    # in_dim*(1+2*L) via [x, sin(2^k*pi*x), cos] before the first layer.
+    fourier_l: int = 0
+    fourier_include_raw: int = 1
+    fourier_normalize: int = 1
 
 
 class MultiFcQ(nn.Module):
@@ -239,8 +245,20 @@ class MultiFcQ(nn.Module):
         self.action_dim = action_dim
         self.cfg = cfg
 
+        if cfg.fourier_l > 0:
+            from rl.fourier import FourierFeatures
+            self.pe = FourierFeatures(
+                obs_shape[0], cfg.fourier_l,
+                include_raw=bool(cfg.fourier_include_raw),
+                normalize=bool(cfg.fourier_normalize),
+            )
+            in_dim = self.pe.out_dim
+        else:
+            self.pe = None
+            in_dim = obs_shape[0]
+
         self.net = _build_multi_fc(
-            in_dim=obs_shape[0],
+            in_dim=in_dim,
             action_dim=action_dim,
             hidden_dim=cfg.hidden_dim,
             num_q=cfg.num_q,
@@ -252,6 +270,8 @@ class MultiFcQ(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        if self.pe is not None:
+            obs = self.pe(obs)
         if self.cfg.append_action:
             x = obs
             for layer in self.net:

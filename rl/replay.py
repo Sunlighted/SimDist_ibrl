@@ -240,7 +240,19 @@ def add_demos_to_replay(
 
         rewards = np.array(f[f"data/{episode_tag}/rewards"])  # type: ignore
         if is_demo:
-            assert rewards[-1] == 1
+            # MimicGen "core" demos converted with --done_mode 2 can have
+            # success-then-fail trajectories (rewards has a 1 mid-episode but
+            # last reward is 0 — e.g. needle slips out after threading). The
+            # main loop below already breaks on the first `terminal=True`
+            # (= first reward==1), so the demo naturally truncates to the
+            # first success. A small fraction of demos (~0.4% on Threading)
+            # never succeed at all — those get skipped.
+            if not (rewards == 1).any():
+                print(f"  skipping {episode_tag}: no success step in trajectory")
+                # Pop the actions we already appended for stats so they
+                # don't bias the action-norm summary at the end.
+                all_actions.pop()
+                continue
             terminals = rewards
         else:
             terminals = rewards[:]

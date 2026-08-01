@@ -1,0 +1,60 @@
+# Diffusion Policy on Threading_D0 (state, low-dim).
+# Faithful port of robomimic's DiffusionPolicyUNet (algo/diffusion_policy.py)
+# adapted to the state-based setting. ConditionalUnet1D is imported verbatim
+# from robomimic.models.diffusion_policy_nets; DDIM scheduler from diffusers.
+#
+# vs the Flow BC config (threading_d0_state_flow_bc.yaml):
+#   - Same chunk shape (Tp=16, Ta=8) and EMA decay.
+#   - Different head: 100-step DDIM noise prediction with FiLM-cond UNet1D
+#     vs Flow's 10-step Euler rectified-flow with MLP backbone.
+#   - 10 DDIM inference steps per chunk pred (same eval call cost as Flow).
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 16          # = diffusion_policy.pred_horizon
+  num_data: -1
+  eval_episode_len: 400
+  val_ratio: 0.1
+  # null → robosuite default (σ=0.02 gaussian on joint qpos, ≈22mm EE std,
+  # matches MimicGen demo distribution). [0,0,0] for deterministic eval.
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 0
+use_diffusion: 1
+diffusion_policy:
+  obs_feat_dim: 128
+  unet_down_dims: [64, 128, 256]   # ~4M params (vs robomimic image default 65M)
+  diffusion_step_embed_dim: 256    # robomimic default
+  pred_horizon: 16
+  action_horizon: 8
+  scheduler: "ddim"
+  num_train_timesteps: 100
+  num_inference_steps: 10
+  beta_schedule: "squaredcos_cap_v2"
+  clip_sample: 1
+  prediction_type: "epsilon"
+  use_ema: 1
+  ema_power: 0.75                  # robomimic default (warmup-decay EMA)
+# Same training budget as the flow config (2000 × 100 = 200K grad steps).
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-6
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+eval_hand_init_perturb: null
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

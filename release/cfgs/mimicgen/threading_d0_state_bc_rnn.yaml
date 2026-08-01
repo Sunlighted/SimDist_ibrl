@@ -1,0 +1,59 @@
+# MimicGen-style BC-RNN+GMM baseline on Threading_D0 (low-dim).
+# This is the algorithm that MimicGen's published numbers use.
+# Configured to match robomimic's `set_learning_settings_for_bc_rnn` for
+# low_dim observations, with the following deliberate adaptations to ibrl:
+#   - Open-loop RNN unroll (predicts a Tp-step chunk from one obs).
+#   - Chunked execution (Ta=8 actions per re-pred) for fast eval — robomimic
+#     by default re-runs the policy every env step; chunking is ibrl-side.
+#   - No EMA (BC-RNN-GMM doesn't use it in the paper).
+#
+# Reference (robomimic v0.5): low_dim BC-RNN-GMM uses lr=1e-3, batch=100,
+# rnn_hidden_dim=400, seq_length=10. We keep those values.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 10        # = Tp (matches MimicGen seq_length=10)
+  build_state_chunk: 0      # open-loop RNN; doesn't need state_chunk
+  num_data: -1
+  eval_episode_len: 400     # MimicGen Threading rollout.horizon
+  val_ratio: 0.1
+  # null → robosuite default (σ=0.02, matches MimicGen demo distribution).
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 1
+rnn_policy:
+  rnn_hidden_dim: 400       # MimicGen low_dim default
+  rnn_num_layers: 2
+  num_modes: 5
+  min_std: 0.01
+  std_activation: "softplus"
+  low_noise_eval: 1
+  use_tanh: 1
+  pred_horizon: 10          # = dataset.action_horizon
+  action_horizon: 8         # Ta (chunked eval; <= pred_horizon)
+  use_ema: 0
+# Total grad steps = 2000 × 100 = 200K (matches MimicGen low_dim).
+num_epoch: 2000
+epoch_len: 100
+# MimicGen low_dim BC-RNN-GMM uses lr=1e-3, batch=100. We keep batch=256
+# (modern GPU) but match the lr.
+batch_size: 256
+lr: 1e-3
+weight_decay: 0
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 10
+val_batches: 5
+eval_hand_init_perturb: null
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

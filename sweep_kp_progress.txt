@@ -1,0 +1,59 @@
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /home/Chenyang/ibrl_deps/robosuite/robosuite/scripts/setup_macros.py (macros.py:55)
+kp 0.40                    succ=0.780 (n=50)
+kp 0.30                    succ=0.480 (n=50)
+kp 0.20                    succ=0.140 (n=50)
+kp 0.15                    succ=0.060 (n=50)
+kp0.25+peg1.25+pf2         succ=0.120 (n=50)
+kp0.2+peg1.3+pf3           succ=0.000 (n=50)
+Exception ignored in: <function MjRenderContext.__del__ at 0x7f6310545240>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/utils/binding_utils.py", line 199, in __del__
+    self.gl_ctx.free()
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+    EGL.eglMakeCurrent(EGL_DISPLAY, EGL.EGL_NO_SURFACE, EGL.EGL_NO_SURFACE, EGL.EGL_NO_CONTEXT)
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+    raise self._errorClass(
+OpenGL.raw.EGL._errors.EGLError: EGLError(
+	err = EGL_NOT_INITIALIZED,
+	baseOperation = eglMakeCurrent,
+	cArguments = (
+		<OpenGL._opaque.EGLDisplay_pointer object at 0x7f631ca685c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f63106ab4c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f63106ab4c0>,
+		<OpenGL._opaque.EGLContext_pointer object at 0x7f63106ab440>,
+	),
+	result = 0
+)
+Exception ignored in: <function EGLGLContext.__del__ at 0x7f6310545090>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 155, in __del__
+    self.free()
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 149, in free
+    EGL.eglMakeCurrent(EGL_DISPLAY, EGL.EGL_NO_SURFACE, EGL.EGL_NO_SURFACE, EGL.EGL_NO_CONTEXT)
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+    raise self._errorClass(
+OpenGL.raw.EGL._errors.EGLError: EGLError(
+	err = EGL_NOT_INITIALIZED,
+	baseOperation = eglMakeCurrent,
+	cArguments = (
+		<OpenGL._opaque.EGLDisplay_pointer object at 0x7f631ca685c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f63106ab4c0>,
+		<OpenGL._opaque.EGLSurface_pointer object at 0x7f63106ab4c0>,
+		<OpenGL._opaque.EGLContext_pointer object at 0x7f63106ab440>,
+	),
+	result = 0
+)
+Exception ignored in: <function MjRenderContext.__del__ at 0x7f6310545240>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/utils/binding_utils.py", line 199, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 150, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>
+Exception ignored in: <function EGLGLContext.__del__ at 0x7f6310545090>
+Traceback (most recent call last):
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 155, in __del__
+  File "/home/Chenyang/ibrl_deps/robosuite/robosuite/renderers/context/egl_context.py", line 150, in free
+  File "/home/Chenyang/.conda/envs/ibrl/lib/python3.10/site-packages/OpenGL/error.py", line 230, in glCheckError
+OpenGL.raw.EGL._errors.EGLError: <exception str() failed>

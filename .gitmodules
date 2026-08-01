@@ -1,3 +1,15 @@
 [submodule "common_utils/pybind11"]
 	path = common_utils/pybind11
 	url = https://github.com/pybind/pybind11.git
+[submodule "deps/robosuite"]
+	path = deps/robosuite
+	url = https://github.com/ARISE-Initiative/robosuite.git
+	branch = master
+[submodule "deps/robomimic"]
+	path = deps/robomimic
+	url = https://github.com/ARISE-Initiative/robomimic.git
+	branch = master
+[submodule "deps/mimicgen"]
+	path = deps/mimicgen
+	url = https://github.com/NVlabs/mimicgen.git
+	branch = main

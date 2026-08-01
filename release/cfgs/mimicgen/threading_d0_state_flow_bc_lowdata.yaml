@@ -1,0 +1,68 @@
+# State-based flow-matching BC on MimicGen Threading_D0 — LOW-DATA regime.
+#
+# Tuned for the ~20-trajectory setting where the default flow_bc.yaml (5M-param
+# UNet, weight_decay 1e-6, ema 0.9999, 200K steps) overfits and loses to a
+# plain MLP. Differences vs threading_d0_state_flow_bc.yaml:
+#   - num_data: 20                  (the small-data setting we're targeting)
+#   - val_ratio: 0.0                (don't burn 2 of 20 precious episodes on val)
+#   - smaller UNet [32,64,128] + obs_feat 64  (~1/3 the params → less overfit)
+#   - weight_decay: 1e-3 (AdamW)    (real L2; default cfg's 1e-6 is ~none)
+#   - ema_decay: 0.999              (0.9999 lags badly on a short run)
+#   - num_epoch: 1000 (100K steps)  (shorter; topk saver + EMA pick the best)
+# Normalization (state z-score + action min/max→[-1,1]) is now ON BY DEFAULT in
+# StateFlowPolicy (flow_policy.normalize_obs/normalize_action=1) and fit from
+# the dataset automatically — this is the single biggest low-data fix.
+# Backbone stays UNet1D per request.
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 16   # = flow_policy.pred_horizon
+  num_data: 20         # LOW-DATA: only 20 demos
+  eval_episode_len: 400
+  val_ratio: 0.0       # use all 20 episodes for training
+  hand_init_perturb: null
+use_flow: 1
+flow_policy:
+  backbone: "unet1d"
+  # Smaller UNet than the default [64,128,256] to curb overfit on 20 demos.
+  unet_down_dims: [32, 64, 128]
+  diffusion_step_embed_dim: 128
+  kernel_size: 5
+  n_groups: 8
+  obs_feat_dim: 64
+  obs_mlp_layers: [128]
+  time_scale: 1000.0
+  pred_horizon: 16
+  action_horizon: 8
+  num_inference_steps: 10
+  use_ema: 1
+  ema_decay: 0.999     # faster-tracking EMA for the shorter low-data run
+  # Normalization (default ON; listed here for visibility).
+  normalize_obs: 1
+  normalize_action: 1
+# 1000 epochs × 100 steps = 100K grad steps (half the default budget); with the
+# smaller net + weight_decay + EMA, the topk saver keeps the best-by-source ckpt.
+num_epoch: 1000
+epoch_len: 100
+batch_size: 256
+lr: 1e-4
+weight_decay: 1e-3   # >0 ⇒ train_bc uses AdamW (default cfg's 1e-6 was ~no reg)
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+val_period: 0        # val_ratio=0 ⇒ no val loss
+val_batches: 5
+eval_hand_init_perturb: null
+eval_target_during_training: 0
+# Post-training target eval = the dynamics-only target (§12).
+eval_domain_shift:
+  mode: "fixed"
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

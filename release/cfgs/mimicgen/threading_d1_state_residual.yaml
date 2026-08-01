@@ -1,0 +1,95 @@
+# IN-DOMAIN residual off-policy RL (ResFiT-style) on the D1 broad initial
+# distribution + hand_init sigma=0.1. NOT sim2sim: train AND eval are the SAME
+# domain (Threading_D0 env + D1-style init_dist, mode=none, sigma=0.1), so there
+# is NO dynamics gap and NO GT-gap weighting (force_c=1.0). This matches the
+# distribution of threading_recovery_d1_sigma0.1_seed1 (D0 + D1 init_dist + sigma
+# 0.1, source dynamics) so it is apples-to-apples with that IBRL run.
+#
+#   a = clip(a_base(s) + delta(s), -1, 1);  a_base = frozen D1 flow-BC prior,
+#   delta = small bounded residual learned online by off-policy RL in this domain.
+#
+# Run:
+#   python train_residual.py --config_path release/cfgs/mimicgen/threading_d1_state_residual.yaml \
+#       --residual.base_policy_path exps/mimicgen/threading_d1_flow_bc_seed1/model0.pt \
+#       --save_dir exps/mimicgen/threading_d1_residual_sigma0.1_seed1
+task_name: "Threading_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1     # MUST match the base BC ckpt + required for dyn_c alignment
+obs_stack: 1
+prop_stack: 1
+nstep: 1
+
+batch_size: 256
+num_critic_update: 5
+update_freq: 2
+num_warm_up_episode: 20
+num_train_step: 1000000
+replay_buffer_size: 1000
+log_per_step: 10000
+num_eval_episode: 50
+eval_source: 0     # in-domain: source eval == eval, no need to double it
+mp_eval: 1
+use_wb: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+# joint-space init noise (σ). Matches recovery_d1_sigma0.1 (D1 init + σ=0.1).
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+# D1 broad initial-state distribution (needle/tripod ranges). The InitDistConfig
+# defaults ARE the D1 bounds == the ranges recovery_d1_sigma0.1_seed1 used, so
+# just enabling it reproduces that init distribution on train + eval.
+train_init_dist:
+  enabled: true
+eval_init_dist:
+  enabled: true
+
+# Plain RL critic; the residual actor's input is [state, base_action] (handled in
+# ResidualAgent). The critic is trained from scratch (no source init).
+q_agent:
+  act_method: "rl"
+  bootstrap_method: "rl"
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 1
+
+residual:
+  # frozen base BC policy. Use a DETERMINISTIC head (StateBcPolicy) — flow BC is
+  # stochastic + slow to query, which breaks the residual structure. Train it via
+  # release/cfgs/mimicgen/threading_d1_state_mlp_bc.yaml. Override on the CLI.
+  base_policy_path: "exps/mimicgen/threading_d1_mlp_bc_seed1/model0.pt"
+  action_scale: 0.1          # delta bounded to [-0.1, 0.1]
+  actor_lr: 0.000001         # 1e-6 (ResFiT): residual learns slowly
+  critic_lr: 0.0001          # 1e-4
+  residual_l2_coef: 0.0      # optional L2 on |delta| in the actor loss
+  critic_warmup_steps: 5000  # critic-only updates before the residual actor starts
+  gate_critic_weight: 1      # no-op when force_c >= 0
+  gap_tau: 0.024
+  force_c: 1.0               # IN-DOMAIN: no GT gap; constant c=1.0, skips the
+                             # counterfactual gap_env entirely (2x faster rollout)
+  # clamp Bellman targets to [0,1] (true Q range for sparse 0/1 + end_on_success).
+  clamp_q_target: 1
+  q_target_min: 0.0
+  q_target_max: 1.0
+
+# No domain shift anywhere — train and eval are the same (source) dynamics.
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04

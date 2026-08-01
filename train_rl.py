@@ -7,14 +7,162 @@ from typing import Optional
 import pyrallis
 import torch
 import numpy as np
+from tqdm import tqdm
 
 import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
 from env.robosuite_wrapper import PixelRobosuite
+from env.domain_shift import DomainShiftConfig, InitDistConfig
+from env.strict_success import StrictSuccessConfig
 from rl.q_agent import QAgent, QAgentConfig
 from rl import replay
 import train_bc
+
+
+class FrozenAgentBCPolicy(torch.nn.Module):
+    """Adapt a frozen source-domain QAgent to the BC-policy interface IBRL's
+    `_act_ibrl` expects (`.act(obs, eval_mode=, cpu=) -> [B, action_dim]`).
+
+    The wrapped agent is held in a list so it is NOT registered as a submodule
+    (it must not land in the target agent's state_dict). `act` always runs the
+    source's deterministic RL policy and strips any caller-supplied `feat` so
+    the source encodes pixel obs with its own encoder.
+    """
+
+    def __init__(self, agent: QAgent):
+        super().__init__()
+        self._agent = [agent]
+        self.training = False
+
+    @property
+    def agent(self) -> QAgent:
+        return self._agent[0]
+
+    def train(self, mode: bool = True):
+        # Frozen regardless of `mode` (mirrors how add_bc_policy treats priors).
+        self.training = False
+        return self
+
+    @torch.no_grad()
+    def act(self, obs, *, eval_mode: bool = True, stddev: float = 0.0, cpu: bool = True):
+        src_obs = {k: v for k, v in obs.items() if k != "feat"}
+        return self.agent.act(src_obs, eval_mode=True, stddev=0.0, cpu=cpu)
+
+
+def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig", device: str) -> QAgent:
+    """Rebuild a source-domain QAgent from its own cfg.yaml + weights, frozen.
+
+    Reuses `env`'s shapes (source and target are the same task) but the source's
+    OWN q_agent architecture config. SGFT needs the source agent to consume the
+    TARGET run's observations (both the V_src shaping and the BC prior run on
+    the target obs), so the observation space — `use_state` and the stacking —
+    MUST match between source and target, else the source net's input dim won't
+    line up with the target obs (and load_state_dict would fail cryptically).
+    """
+    src_cfg_path = os.path.join(os.path.dirname(weight_file), "cfg.yaml")
+    src_cfg = pyrallis.load(MainConfig, open(src_cfg_path, "r"))  # type: ignore
+
+    mismatches = [
+        (a, getattr(src_cfg, a), getattr(cfg, a))
+        for a in ("use_state", "state_stack", "obs_stack", "prop_stack")
+        if getattr(src_cfg, a) != getattr(cfg, a)
+    ]
+    if mismatches:
+        detail = ", ".join(f"{a}: source={s} vs run={t}" for a, s, t in mismatches)
+        raise ValueError(
+            f"SGFT source/target observation-space mismatch ({detail}). The "
+            f"frozen source agent must consume THIS run's observations (V_src "
+            f"shaping + IBRL BC prior), so the stacking must match. Fix: set "
+            f"this run to the source's values (e.g. --state_stack "
+            f"{src_cfg.state_stack} --obs_stack {src_cfg.obs_stack} "
+            f"--prop_stack {src_cfg.prop_stack}), or retrain the source with "
+            f"this run's config. (source ckpt: {weight_file})"
+        )
+
+    agent = QAgent(
+        cfg.use_state,
+        env.observation_shape,
+        env.prop_shape,
+        env.action_dim,
+        cfg.rl_camera,
+        src_cfg.q_agent,
+    )
+    agent.load_state_dict(torch.load(weight_file))
+    # Use the source's own RL policy (not its ibrl hybrid) as the prior/value.
+    agent.cfg.act_method = "rl"
+    agent.train(False)
+    for p in agent.parameters():
+        p.requires_grad_(False)
+    return agent.to(device)
+
+
+@torch.no_grad()
+def _pe_warmstart_first_layer(agent, pretrained: dict, obs_dim: int, action_dim: int):
+    """Copy a NON-PE pretrained agent's first layer into a PE-enabled agent so the
+    PE agent starts byte-identical to the warm-started baseline. Requires the PE
+    module to use include_raw + normalize=0 (so PE(s)[:, :obs_dim] == raw state).
+    Layout of the PE'd first-layer input: [raw(obs_dim), sin(obs_dim*L), cos(...)]
+    then the critic appends [action(action_dim)]. We copy raw+action blocks from
+    the pretrained weights and zero the sin/cos blocks."""
+    pe_dim = agent.critic.pe.out_dim  # obs_dim*(1+2L)
+    assert agent.critic.pe.include_raw and not agent.critic.pe.normalize, (
+        "PE warm-start copy needs include_raw=1 and normalize=0")
+
+    # --- critic (_MultiLinear: weights [num_q, in, out], biases [1,num_q,1]) ---
+    for name, mod in (("critic", agent.critic), ("critic_target", agent.critic_target)):
+        w_new = mod.net[0].weights          # [num_q, pe_dim+action_dim, out]
+        w_old = pretrained[f"{name}.net.0.weights"]  # [num_q, obs_dim+action_dim, out]
+        w_new.zero_()
+        w_new[:, :obs_dim, :].copy_(w_old[:, :obs_dim, :])            # raw block
+        w_new[:, pe_dim:pe_dim + action_dim, :].copy_(w_old[:, obs_dim:, :])  # action
+        mod.net[0].biases.copy_(pretrained[f"{name}.net.0.biases"])
+
+    # --- actor (Linear: weight [out, in], bias [out]) ---
+    for name, mod in (("actor", agent.actor), ("actor_target", agent.actor_target)):
+        w_new = mod.net[0].weight           # [out, pe_dim]
+        w_old = pretrained[f"{name}.net.0.weight"]  # [out, obs_dim]
+        w_new.zero_()
+        w_new[:, :obs_dim].copy_(w_old)
+        mod.net[0].bias.copy_(pretrained[f"{name}.net.0.bias"])
+    print(f"[warm-start] PE first-layer copy: raw+action blocks from pretrained, "
+          f"sin/cos zeroed (agent starts == non-PE baseline)")
+
+
+def attach_ibrl_prior(agent: QAgent, weight_file: str, env: PixelRobosuite, device: str) -> str:
+    """Re-attach the IBRL prior that `weight_file`'s agent was TRAINED with.
+
+    `load_frozen_agent` deliberately drops the prior and pins act_method="rl",
+    because SGFT only ever wanted V_src under the bare RL actor. But an agent
+    trained with act_method="ibrl" EXECUTES the max-Q pick over {RL actor, prior},
+    so `V(s) = min_k Q_k(s, pi_rl(s))` describes a policy it never runs — and the
+    two Vs are not a monotone rescaling of each other (the prior lifts V only where
+    it wins), so they induce DIFFERENT rankings. Anything that consumes the value as
+    a ranking signal (value distillation, MPPI terminal value) must therefore attach
+    the prior and call `agent.value(obs, use_ibrl=True)`.
+
+    Two prior flavours exist in this repo:
+      bc_policy         -> a trained BC head            (e.g. threading_ibrl_source_seed1)
+      sgft_source_agent -> a frozen RL agent as prior   (e.g. ..._rlprior_seed1)
+
+    Does NOT touch act_method, so the agent's own `act()` (used for data collection)
+    keeps its previous behavior. Returns a description, or "" if the ckpt declares
+    no prior (caller should then fall back to the bare-actor value).
+    """
+    import train_bc
+
+    src_cfg = pyrallis.load(  # type: ignore
+        MainConfig, open(os.path.join(os.path.dirname(weight_file), "cfg.yaml"), "r")
+    )
+    if src_cfg.bc_policy:
+        bc_policy, _, _ = train_bc.load_model(src_cfg.bc_policy, device)
+        agent.add_bc_policy(copy.deepcopy(bc_policy))
+        return f"BC head <- {src_cfg.bc_policy}"
+    if src_cfg.sgft_source_agent:
+        prior_agent = load_frozen_agent(src_cfg.sgft_source_agent, env, src_cfg, device)
+        agent.add_bc_policy(FrozenAgentBCPolicy(prior_agent))
+        return f"frozen RL agent <- {src_cfg.sgft_source_agent}"
+    return ""
 
 
 @dataclass
@@ -56,6 +204,25 @@ class MainConfig(common_utils.RunConfig):
     load_pretrained_agent: str = ""
     load_policy_only: int = 1
     add_bc_loss: int = 0
+    # IBRL prior-preference margin (safe policy improvement; see §26 CLAUDE.md +
+    # train_ibrl_simdist). The RL actor's Q is penalized by `margin` in the max-Q
+    # selection, so max-Q keeps deferring to the BC prior until the RL actor
+    # genuinely beats the prior by > margin. margin(t) anneals linearly from
+    # prior_margin_init to a PERMANENT floor prior_margin_final over
+    # prior_margin_steps env steps:
+    #   margin(t) = max(prior_margin_final, prior_margin_init*(1 - t/prior_margin_steps))
+    # prior_margin_init = 0.0 (default) => plain IBRL, byte-for-byte unchanged.
+    # Fixes the cold-start stall when the prior isn't strong enough for the
+    # critic to self-calibrate (max-Q locks onto a still-bad RL actor).
+    prior_margin_init: float = 0.0
+    prior_margin_steps: int = 100000
+    prior_margin_final: float = 0.0
+    # While the margin is above freeze_actor_margin_thresh, FREEZE the RL actor
+    # (critic-only updates). §26 identified this as the necessary half of the
+    # permanent-margin recipe: without it the free RL actor drifts on OOD-Q
+    # during the prior-deferral phase and can collapse. 0 = off (default).
+    freeze_actor_during_margin: int = 0
+    freeze_actor_margin_thresh: float = 0.15
     # others
     env_reward_scale: float = 1
     num_warm_up_episode: int = 50
@@ -67,6 +234,59 @@ class MainConfig(common_utils.RunConfig):
     # log
     save_dir: str = "exps/rl/run1"
     use_wb: int = 0
+    # >0: also dump the agent state_dict every N train steps to
+    # save_dir/snapshot_{step}.pt (alongside cfg.yaml, so load_model works on
+    # each snapshot). Used to harvest a quality-spectrum of policy checkpoints
+    # {random -> expert} for SimDist diverse data generation (方案A / §17).
+    snapshot_period: int = 0
+    # If set, dump the ENTIRE RL replay buffer (every collected transition,
+    # grouped per-episode) to this hdf5 path at the end of training. Empty
+    # = off (default; back-compat). Used to harvest a full source-domain
+    # replay dataset. NOTE: to avoid FIFO eviction of early episodes, make
+    # `replay_buffer_size` (in EPISODES) larger than the number of episodes
+    # the run will produce.
+    save_replay_buffer: str = ""
+    # domain shift (Threading_D0 only for now)
+    train_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
+    eval_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
+    # Reset placement distribution override (Threading-only). Enlarges the
+    # needle/tripod reset ranges (e.g. D1 + wider needle) for recovery training.
+    # Disabled by default → upstream Threading_D0 bounds. Train/eval split so you
+    # can train on a wide dist but eval on the nominal one if desired.
+    train_init_dist: InitDistConfig = field(default_factory=InitDistConfig)
+    eval_init_dist: InitDistConfig = field(default_factory=InitDistConfig)
+    # Strict-success gate (Threading-only). Applied to BOTH train and eval so
+    # the reward signal and the eval metric agree on the honest objective.
+    # Disabled by default; enable in YAML with `strict_success.enabled: true`.
+    strict_success: StrictSuccessConfig = field(default_factory=StrictSuccessConfig)
+    # SGFT (Simulation-Guided Fine-Tuning, Yin et al. ICLR 2025) on top of IBRL.
+    # Path to a frozen source-domain QAgent checkpoint. When set, that agent is
+    # reused for BOTH roles:
+    #   (1) IBRL BC base — its (deterministic RL) policy becomes the prior the
+    #       target actor competes with in max-Q (so set q_agent.act_method=ibrl
+    #       and bootstrap_method=ibrl). Replaces a separately-trained bc_policy
+    #       (the two are mutually exclusive).
+    #   (2) SGFT value source — V_src(s)=Q_src(s,pi_src(s)) drives the critic's
+    #       potential-based reward shaping when q_agent.sgft_shaping=1.
+    # Only the target-domain training is implemented here; the source agent is
+    # assumed already trained (normal train_rl on the source / no-shift env).
+    sgft_source_agent: str = ""
+    # Robot arm init-state perturbation. Same three regimes as BC
+    # (see env/robosuite_wrapper.py):
+    #   None (default)   → robosuite's σ=0.02 gaussian on joint qpos
+    #                      (≈22 mm EE std, matches MimicGen demo distribution)
+    #   (0.0, 0.0, 0.0)  → fully deterministic init
+    #   (rx, ry, rz) >0  → IK an EE offset from uniform half-range box
+    # train_hand_init_perturb drives the RL exploration env (used to roll out
+    # transitions into the replay buffer); eval_hand_init_perturb drives the
+    # eval env used for in-training score logging.
+    train_hand_init_perturb: Optional[tuple] = None
+    eval_hand_init_perturb: Optional[tuple] = None
+    # Joint-space gaussian σ (rad), mutually exclusive with the EE-IK
+    # variants above. Use this to scale up the demo-style init noise
+    # (robosuite default = 0.02). Perturbs both pos AND ori consistently.
+    train_hand_init_perturb_joint_sigma: Optional[float] = None
+    eval_hand_init_perturb_joint_sigma: Optional[float] = None
 
     def __post_init__(self):
         self.rl_cameras = self.rl_camera.split("+")
@@ -77,6 +297,18 @@ class MainConfig(common_utils.RunConfig):
         if self.bc_policy:
             print(f"Using BC policy {self.bc_policy}")
             os.path.exists(self.bc_policy)
+
+        if self.sgft_source_agent in ["none", "None"]:
+            self.sgft_source_agent = ""
+
+        if self.save_replay_buffer in ["none", "None"]:
+            self.save_replay_buffer = ""
+
+        assert not (self.bc_policy and self.sgft_source_agent), (
+            "bc_policy and sgft_source_agent are mutually exclusive — IBRL uses "
+            "exactly one BC prior. Use sgft_source_agent to make the source RL "
+            "agent the prior."
+        )
 
         if self.pretrain_num_epoch > 0:
             assert self.preload_num_data > 0
@@ -144,7 +376,31 @@ class Workspace:
         if cfg.load_pretrained_agent and cfg.load_pretrained_agent != "None":
             print(f"loading loading pretrained agent from {cfg.load_pretrained_agent}")
             critic_states = copy.deepcopy(self.agent.critic.state_dict())
-            self.agent.load_state_dict(torch.load(cfg.load_pretrained_agent))
+            pretrained = torch.load(cfg.load_pretrained_agent)
+            # Shape-tolerant warm-start: load every param whose shape matches the
+            # current agent, skip the rest. Identical to the old strict load when
+            # architectures match; when Fourier (PE) encoding widens the state
+            # input, the first layer (+ pe buffers) can't be transferred from a
+            # non-PE ckpt, so they re-init while the rest of the nets warm-start.
+            cur = self.agent.state_dict()
+            compatible = {k: v for k, v in pretrained.items()
+                          if k in cur and cur[k].shape == v.shape}
+            skipped = [k for k in pretrained if k not in compatible]
+            self.agent.load_state_dict(compatible, strict=False)
+            if skipped:
+                print(f"[warm-start] skipped {len(skipped)} shape-mismatched keys "
+                      f"(PE input widening): e.g. {skipped[:4]}")
+                # Fourier (PE) widens the state input, so the first layer couldn't
+                # transfer above (random -> broken critic feeding warm deep layers
+                # -> cold-start deadlock). With include_raw + normalize=0 the PE
+                # output's first obs_dim columns ARE the raw state, so copy the
+                # pretrained first layer into the raw+action blocks and zero the
+                # sin/cos blocks => the PE agent starts BYTE-IDENTICAL to the
+                # warm-started baseline; PE features grow from zero contribution.
+                _pe_warmstart_first_layer(
+                    self.agent, pretrained,
+                    self.train_env.observation_shape[0], self.train_env.action_dim,
+                )
             if cfg.load_policy_only:
                 # avoid overwriting critic
                 self.agent.critic.load_state_dict(critic_states)
@@ -162,6 +418,25 @@ class Workspace:
 
             self.agent.add_bc_policy(copy.deepcopy(bc_policy))
             self.bc_policy = bc_policy
+
+        # SGFT: the source-domain agent serves as BOTH the IBRL BC prior and the
+        # value source for potential-based reward shaping.
+        self.sgft_source_agent: Optional[QAgent] = None
+        if cfg.sgft_source_agent:
+            print(f"loading SGFT source agent from {cfg.sgft_source_agent}")
+            source_agent = load_frozen_agent(
+                cfg.sgft_source_agent, self.train_env, cfg, "cuda"
+            )
+            # (1) BC prior for IBRL max-Q.
+            self.agent.add_bc_policy(FrozenAgentBCPolicy(source_agent))
+            self.bc_policy = self.agent.bc_policies[-1]
+            # (2) value source for shaping (only acts when q_agent.sgft_shaping).
+            self.agent.set_sgft_value_source(source_agent)
+            self.sgft_source_agent = source_agent
+            if self.agent.cfg.act_method == "rl":
+                print("[SGFT] warning: q_agent.act_method='rl' — the source BC "
+                      "prior won't be used in action selection; set 'ibrl' to "
+                      "enable the IBRL max-Q hybrid.")
 
         self._setup_replay()
 
@@ -196,6 +471,11 @@ class Workspace:
             state_stack=self.cfg.state_stack,
             prop_stack=self.prop_stack,
             record_sim_state=bool(self.cfg.save_per_success > 0),
+            domain_shift=self.cfg.train_domain_shift,
+            strict_success=self.cfg.strict_success,
+            hand_init_perturb=self.cfg.train_hand_init_perturb,
+            hand_init_perturb_joint_sigma=self.cfg.train_hand_init_perturb_joint_sigma,
+            init_distribution=self.cfg.train_init_dist,
         )
         self.eval_env_params = dict(
             env_name=self.cfg.task_name,
@@ -210,6 +490,11 @@ class Workspace:
             obs_stack=self.obs_stack,
             state_stack=self.cfg.state_stack,
             prop_stack=self.prop_stack,
+            domain_shift=self.cfg.eval_domain_shift,
+            strict_success=self.cfg.strict_success,
+            hand_init_perturb=self.cfg.eval_hand_init_perturb,
+            hand_init_perturb_joint_sigma=self.cfg.eval_hand_init_perturb_joint_sigma,
+            init_distribution=self.cfg.eval_init_dist,
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 
@@ -283,6 +568,9 @@ class Workspace:
         self.replay.new_episode(obs)
         total_reward = 0
         num_episode = 0
+        target = self.cfg.num_warm_up_episode
+        pbar = tqdm(total=target, initial=self.replay.size(),
+                    desc="warm-up", dynamic_ncols=True)
         while True:
             if self.bc_policy is not None:
                 # we have a BC policy
@@ -303,14 +591,35 @@ class Workspace:
             if terminal:
                 num_episode += 1
                 total_reward += self.train_env.episode_reward
+                pbar.n = min(self.replay.size(), target)
+                pbar.set_postfix(succ=self.replay.num_success, ep=num_episode)
+                pbar.refresh()
                 if self.replay.size() < self.cfg.num_warm_up_episode:
                     self.replay.new_episode(obs)
                     obs, _ = self.train_env.reset()
                 else:
                     break
 
+        pbar.close()
         print(f"Warm up done. #episode: {self.replay.size()}")
         print(f"#episode from warmup: {num_episode}, #reward: {total_reward}")
+
+    def _maybe_fit_fourier_stats(self):
+        """If the state critic/actor use Fourier (PE) encoding, fit per-dim
+        z-score stats over a large sample of replay states and push them into
+        the agent's PE modules. No-op otherwise."""
+        qa = self.cfg.q_agent
+        if not (getattr(qa.state_critic, "fourier_l", 0) > 0
+                or getattr(qa.state_actor, "fourier_l", 0) > 0):
+            return
+        n = min(8192, max(1, self.replay.size()))
+        batch = self.replay.sample(n, "cuda:0")
+        states = batch.obs["state"].float()
+        mean = states.mean(0)
+        std = states.std(0)
+        num = self.agent.set_state_fourier_stats(mean, std)
+        print(f"[fourier-PE] fit z-score on {n} replay states -> {num} PE modules "
+              f"(|mean| avg={mean.abs().mean():.3f}, std avg={std.mean():.3f})")
 
     def train(self):
         stat = common_utils.MultiCounter(
@@ -327,10 +636,24 @@ class Workspace:
         if self.replay.num_episode < self.cfg.num_warm_up_episode:
             self.warm_up()
 
+        # Fit z-score stats for the optional Fourier (PE) state input, on the
+        # warm-up + demo transitions now in the replay. No-op when PE is off.
+        self._maybe_fit_fourier_stats()
+
         stopwatch = common_utils.Stopwatch()
         obs, _ = self.train_env.reset()
         self.replay.new_episode(obs)
+        pbar = tqdm(total=self.cfg.num_train_step, initial=self.global_step,
+                    desc="RL train", dynamic_ncols=True, mininterval=1.0)
+        recent_train_scores: list[float] = []
         while self.global_step < self.cfg.num_train_step:
+            ### prior-preference margin schedule (safe policy improvement) ###
+            if self.cfg.prior_margin_init > 0:
+                frac = max(0.0, 1.0 - self.global_step / max(self.cfg.prior_margin_steps, 1))
+                self.agent.prior_margin = max(
+                    self.cfg.prior_margin_final, self.cfg.prior_margin_init * frac
+                )
+
             ### act ###
             with stopwatch.time("act"), torch.no_grad(), utils.eval_mode(self.agent):
                 stddev = utils.schedule(self.cfg.stddev_schedule, self.global_step)
@@ -346,12 +669,23 @@ class Workspace:
                 reply = {"action": action}
                 self.replay.add(obs, reply, reward, terminal, success, image_obs)
                 self.global_step += 1
+                pbar.update(1)
 
             if terminal:
                 with stopwatch.time("reset"):
                     self.global_episode += 1
                     stat["score/train_score"].append(float(success))
                     stat["data/episode_len"].append(self.train_env.time_step)
+
+                    # Rolling train-score window for pbar postfix (last 20 eps).
+                    recent_train_scores.append(float(success))
+                    if len(recent_train_scores) > 20:
+                        recent_train_scores.pop(0)
+                    pbar.set_postfix(
+                        ep=self.global_episode,
+                        succ=f"{np.mean(recent_train_scores):.2f}",
+                        replay=self.replay.size(),
+                    )
 
                     # reset env
                     obs, _ = self.train_env.reset()
@@ -361,11 +695,41 @@ class Workspace:
             if self.global_step % self.cfg.log_per_step == 0:
                 self.log_and_save(stopwatch, stat, saver)
 
+            ### periodic quality-spectrum snapshot (for SimDist diverse data-gen) ###
+            if self.cfg.snapshot_period > 0 and self.global_step % self.cfg.snapshot_period == 0:
+                snap = os.path.join(self.work_dir, f"snapshot_{self.global_step}.pt")
+                torch.save(self.agent.state_dict(), snap)
+                print(f"[snapshot] saved {snap}")
+
             ### train ###
             if self.global_step % self.cfg.update_freq == 0:
                 with stopwatch.time("train"):
                     self.rl_train(stat)
                     self.train_step += 1
+        pbar.close()
+
+        # Dump the ENTIRE replay buffer (all collected transitions, grouped
+        # per-episode) once training finishes. `replay_buffer_size` must be
+        # large enough that no early episode was evicted (FIFO) — see the
+        # field doc on MainConfig.save_replay_buffer.
+        if self.cfg.save_replay_buffer:
+            num_ep = self.replay.size()
+            print(
+                f"[replay-dump] saving full replay buffer: {num_ep} episodes "
+                f"(capacity={self.cfg.replay_buffer_size}, "
+                f"global_step={self.global_step}) -> {self.cfg.save_replay_buffer}"
+            )
+            if num_ep >= self.cfg.replay_buffer_size:
+                print(
+                    "[replay-dump] WARNING: #episodes >= replay_buffer_size — the "
+                    "buffer was full, so the EARLIEST episodes were evicted (FIFO) "
+                    "and are NOT in this dump. Re-run with a larger "
+                    "--replay_buffer_size to capture all transitions."
+                )
+            out_dir = os.path.dirname(os.path.abspath(self.cfg.save_replay_buffer))
+            os.makedirs(out_dir, exist_ok=True)
+            self.replay.save_replay(self.cfg.save_replay_buffer)
+            print("[replay-dump] done")
 
     def log_and_save(
         self,
@@ -425,6 +789,11 @@ class Workspace:
             # in RED-Q, only update actor once
             update_actor = i == self.cfg.num_critic_update - 1
 
+            # freeze the RL actor while the prior-preference margin is high (§26)
+            if (update_actor and self.cfg.freeze_actor_during_margin
+                    and self.agent.prior_margin > self.cfg.freeze_actor_margin_thresh):
+                update_actor = False
+
             bc_batch = None
             if update_actor and self.cfg.add_bc_loss:
                 bc_batch = self.replay.sample_bc(self.cfg.batch_size, "cuda:0")
@@ -445,7 +814,8 @@ class Workspace:
         )
         saver = common_utils.TopkSaver(save_dir=self.work_dir, topk=1)
 
-        for epoch in range(self.cfg.pretrain_num_epoch):
+        for epoch in tqdm(range(self.cfg.pretrain_num_epoch),
+                          desc="pretrain", dynamic_ncols=True):
             for _ in range(self.cfg.pretrain_epoch_len):
                 batch = self.replay.sample_bc(self.cfg.batch_size, "cuda")
                 metrics = self.agent.pretrain_actor_with_bc(batch)
@@ -484,6 +854,12 @@ def load_model(weight_file, device):
         bc_policy = train_bc._load_model(cfg.bc_policy, eval_env, device)
         agent.add_bc_policy(bc_policy)
 
+    if cfg.sgft_source_agent:
+        # Re-add the source agent as the IBRL BC prior (needed for act_method=
+        # ibrl at eval). The value source is training-only, so not needed here.
+        source_agent = load_frozen_agent(cfg.sgft_source_agent, eval_env, cfg, device)
+        agent.add_bc_policy(FrozenAgentBCPolicy(source_agent))
+
     agent = agent.to(device)
     return agent, eval_env, eval_env_params
 
@@ -503,7 +879,14 @@ def main():
     if cfg.use_wb:
         wandb.finish()
 
-    assert False
+    # The EGL/GPU MuJoCo render contexts + rela's non-daemon replay prefetch
+    # threads block a normal interpreter shutdown, so the process hangs after
+    # training finishes. All real work + the wandb flush are done -> flush stdio
+    # and hard-exit, skipping the stuck teardown. (Replaces the old `assert False`
+    # that crashed out for the same reason.)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

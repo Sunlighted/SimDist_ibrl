@@ -1,0 +1,233 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{bm}
+\usepackage{xcolor}
+
+% ---- light-weight notation macros ----
+\newcommand{\Msrc}{\mathcal{M}_{\mathrm{src}}}
+\newcommand{\Mtgt}{\mathcal{M}_{\mathrm{tgt}}}
+\newcommand{\Dsim}{\mathcal{D}_{\mathrm{sim}}}
+\newcommand{\Dreal}{\mathcal{D}_{\mathrm{real}}}
+\newcommand{\pphi}{\pi_{\phi}}
+\newcommand{\pdemo}{\pi_{\mathrm{demo}}}
+\newcommand{\Qth}{Q_{\theta}}
+\newcommand{\Qtt}{Q_{\bar{\theta}}}
+\newcommand{\pbar}{\pi_{\bar{\phi}}}
+\newcommand{\clip}[1]{\mathrm{clip}_{[0,1]}\!\left(#1\right)}
+
+\title{Gap-Gated Sim Fine-Tuning with a Frozen Target-Demo Policy\\
+\large (Ground-Truth Dynamics Gap)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup and Notation}
+
+We are given two MDPs that share a state space $\mathcal{S}$, action space
+$\mathcal{A}$, sparse reward $r\in\{0,1\}$ with episode termination on success
+(\texttt{end\_on\_success}), and discount $\gamma$, but differ \emph{only} in
+their transition dynamics:
+\begin{itemize}
+  \item the \textbf{source} MDP $\Msrc$ (a nominal simulator we may query and
+        roll out online --- the ``sim''), and
+  \item the \textbf{target} MDP $\Mtgt$ (the deployment domain --- the
+        ``real''), available only through (i)~a few fixed demonstrations and
+        (ii)~a queryable counterfactual simulator used to \emph{measure} the
+        dynamics gap. We never roll a policy out online in $\Mtgt$.
+\end{itemize}
+Because $r$ and termination are identical, the true action-value of any policy
+is provably bounded, $Q^{\pi}(s,a)\in[0,1]$, in both MDPs.
+
+\paragraph{Learnable and frozen modules.}
+\begin{itemize}
+  \item $\pphi$: trainable deterministic policy (a fixed-variance Gaussian at
+        train time), with target copy $\pbar$.
+  \item $\Qth$: trainable critic, a clipped-ensemble of $N$ heads from which a
+        random subset of $K$ is min-pooled, $\Qth^{\min}(s,a)=\min_{k\in
+        \mathcal{K}}Q_{\theta_k}(s,a)$; target copy $\Qtt$.
+  \item $\pdemo$: a \emph{frozen} policy fit on the $N_{\mathrm{demo}}$ target
+        demonstrations (pure behavior cloning, or an IQL in-sample policy). It
+        plays no role at collection time and is never updated.
+\end{itemize}
+$\pphi$ and $\Qth$ are \textbf{initialized} from a source RL checkpoint (the
+source agent is used only for this warm start; it is \emph{not} an IBRL prior).
+
+\paragraph{Replay buffers.}
+$\Dsim$ holds \textbf{source} online transitions, each augmented with the
+ground-truth confidence $c$ (Sec.~\ref{sec:gap}); $\Dreal$ holds the
+\textbf{target} demonstration transitions (ground-truth target dynamics and
+reward), and is frozen after loading.
+
+\section{Per-Transition Confidence from the Ground-Truth Gap}
+\label{sec:gap}
+
+For every online source transition $(s_t,a_t,s'_{\mathrm{src}})$ we capture the
+full simulator state $x_t$ \emph{before} stepping. We then replay the
+\emph{same} $(x_t,a_t)$ in the target simulator from a deterministic cold start
+(restore $x_t$, zero the solver warm-start $\texttt{qacc\_warmstart}{=}0$, then
+step) to obtain the counterfactual target next state $s'_{\mathrm{tgt}}$. The
+per-transition \emph{dynamics gap} is the quaternion-aware distance
+\begin{equation}
+  g(s_t,a_t)\;=\;\big\lVert\, \mathrm{align}\big(s'_{\mathrm{src}},
+  s'_{\mathrm{tgt}}\big)-s'_{\mathrm{tgt}} \,\big\rVert_2 ,
+\end{equation}
+mapped to a trust/confidence $c\in[0,1]$ by one of
+\begin{equation}
+  c \;=\;
+  \begin{cases}
+    \exp\!\big(-\,g/\tau\big), & \text{(soft, default)}\\[2pt]
+    \mathbf{1}\!\left[\,g < g_{\mathrm{thr}}\,\right], & \text{(binary)}
+  \end{cases}
+  \label{eq:c}
+\end{equation}
+where $\tau$ and $g_{\mathrm{thr}}$ are calibrated on the demonstration
+gap distribution. Intuitively $c\!\to\!1$ where the source dynamics faithfully
+predict the target (the gap is small, e.g.\ free space), and $c\!\to\!0$ in the
+high-gap contact/insertion phase where the source is an unreliable proxy. The
+scalar $c$ is stored on the transition's action record so it survives $n$-step
+accumulation and terminal steps ($n{=}1$ is required so $c$ aligns with the
+single-step bootstrap).
+
+\section{Gap-Gated Hybrid Update}
+
+The dynamics gap modulates three places in an otherwise standard TD3/DDPG
+actor--critic update. Let $\bar{Q}(s,a)\triangleq\clip{\Qtt^{\min}(s,a)}$ be the
+target bootstrap clipped to the true value range $[0,1]$ (sparse $0/1$ reward
+with termination on success $\Rightarrow$ clipping is unbiased and severs the
+negative-divergence feedback loop).
+
+\paragraph{(1) Gated Bellman backup (source).}
+For a source transition $(s,a,r,s')$ with confidence $c$, blend the bootstrap
+between trusting the sim (act with $\pphi$) and deferring to the demo policy:
+\begin{equation}
+  y_{\mathrm{sim}} \;=\; r + \gamma\Big[\, c\,\bar{Q}\big(s',\pbar(s')\big)
+  \;+\;(1-c)\,\bar{Q}\big(s',\pdemo(s')\big)\,\Big].
+  \label{eq:simbackup}
+\end{equation}
+
+\paragraph{(2) Confidence-weighted critic loss (source) + full-weight critic
+loss (real).}
+Source TD errors are down-weighted by $c$ (untrustworthy transitions
+contribute little); target-demo transitions are ground truth and enter at full
+weight with an ordinary backup $y_{\mathrm{real}}=r+\gamma\,\bar{Q}\big(s',
+\pbar(s')\big)$:
+\begin{equation}
+  \mathcal{L}_{Q} \;=\;
+  \underbrace{\mathbb{E}_{\Dsim}\!\Big[\, c\!\sum_{k}\big(Q_{\theta_k}(s,a)-
+  y_{\mathrm{sim}}\big)^{2}\Big]}_{\text{source, gated}}
+  \;+\;
+  \underbrace{\mathbb{E}_{\Dreal}\!\Big[\,\sum_{k}\big(Q_{\theta_k}(s,a)-
+  y_{\mathrm{real}}\big)^{2}\Big]}_{\text{target demos, full weight}} .
+  \label{eq:critic}
+\end{equation}
+
+\paragraph{(3) Gated policy update.}
+Over the mixed mini-batch of source and real states (real states carry $c{=}1$,
+so they receive the full RL pull and no demo imitation), maximize the
+confidence-weighted value while pulling $\pphi$ toward $\pdemo$ exactly where
+the gap is high:
+\begin{equation}
+  \mathcal{L}_{\pi} \;=\;
+  -\,\mathbb{E}\big[\,c\,\Qth^{\min}\!\big(s,\pphi(s)\big)\big]
+  \;+\;\lambda\,\mathbb{E}\big[\,(1-c)\,\big\lVert \pphi(s)-\pdemo(s)
+  \big\rVert_2^{2}\,\big].
+  \label{eq:actor}
+\end{equation}
+The first term is the $c$-weighted deterministic-policy-gradient pull (it
+vanishes in high-gap states where $\Qth$ is ungrounded and the source-initialized
+critic would otherwise pull $\pphi$ out of the demo support); the second is a
+Gaussian-KL surrogate (MSE on the means) anchoring $\pphi$ to $\pdemo$ on
+high-gap states. Setting $c\equiv1$ (\texttt{force\_c}$=1$) recovers pure sim RL
+(the no-gating control arm); $c\equiv0$ recovers pure demo imitation.
+
+\section{Algorithms}
+
+\begin{algorithm}[h]
+\caption{GT-Gap-Gated Sim Fine-Tuning (main loop)}
+\label{alg:main}
+\begin{algorithmic}[1]
+\Require source ckpt; $N_{\mathrm{demo}}$ target demos; source sim $\Msrc$;
+         target counterfactual sim $\Mtgt$; confidence params $(\tau$ or
+         $g_{\mathrm{thr}})$; demo ratio $\rho$; weights $\lambda$; horizons.
+\State Initialize $\pphi,\Qth$ from the source ckpt; set targets
+       $\pbar\!\gets\!\pphi$, $\Qtt\!\gets\!\Qth$.
+\State Build/load the frozen $\pdemo$ from the target demos (BC or IQL).
+\State Load $\Dreal\!\gets$ target demo transitions (frozen). Init empty
+       $\Dsim$.
+\State \emph{(Optional)} BC-distill $\pphi$ on $\Dreal$ for a few steps; hard-sync
+       $\pbar\!\gets\!\pphi$. \Comment{start $\pphi$ inside demo support}
+\For{each environment step in $\Msrc$}
+  \State $a \gets \pphi(s)$ with exploration noise
+  \State $x \gets$ \Call{GetSimState}{$\Msrc$}
+         \Comment{full state \emph{before} stepping}
+  \State $s', r, \mathrm{done} \gets \Msrc.\textsc{step}(a)$
+  \State $s'_{\mathrm{tgt}} \gets$ \Call{CounterfactualStep}{$\Mtgt, x, a$}
+         \Comment{cold-start replay in target}
+  \State $g \gets \lVert \mathrm{align}(s',s'_{\mathrm{tgt}})-s'_{\mathrm{tgt}}
+         \rVert_2$;\quad map to $c$ via Eq.~\eqref{eq:c}
+  \State push $(s,a,r,s',\mathrm{done},\,c)$ into $\Dsim$
+  \If{update step}
+    \For{$i = 1 \dots G$} \Comment{$G$ critic updates per step}
+      \State $B_{\mathrm{sim}} \sim \Dsim$ of size $(1-\rho)\,B$;\quad
+             $B_{\mathrm{real}} \sim \Dreal$ of size $\rho B$
+      \State $\textsc{GatedUpdate}(B_{\mathrm{sim}}, B_{\mathrm{real}},\,
+             \text{update\_actor}{=}[i{=}G])$
+             \Comment{Alg.~\ref{alg:update}}
+    \EndFor
+  \EndIf
+  \If{$\mathrm{done}$} reset $\Msrc$ \EndIf
+\EndFor
+\State \textbf{Evaluation} is performed on the \emph{target} env $\Mtgt$
+       (the deployment metric); keep the best-by-target checkpoint.
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[h]
+\caption{\textsc{GatedUpdate}($B_{\mathrm{sim}}, B_{\mathrm{real}},
+\text{update\_actor}$)}
+\label{alg:update}
+\begin{algorithmic}[1]
+\State \textbf{// ---- Critic ----}
+\State Read $c$ from $B_{\mathrm{sim}}$;\; if \texttt{force\_c}$\ge0$ set
+       $c\!\gets\!\texttt{force\_c}$.
+\State $y_{\mathrm{sim}} \gets r + \gamma\big[\,c\,\bar{Q}(s',\pbar(s'))
+       + (1-c)\,\bar{Q}(s',\pdemo(s'))\,\big]$
+       \Comment{Eq.~\eqref{eq:simbackup}; clip each $\bar Q$ to $[0,1]$}
+\State $y_{\mathrm{real}} \gets \clip{\, r + \gamma\,\Qtt^{\min}(s',\pbar(s'))\,}$
+       \Comment{target demos: ungated}
+\State $\mathcal{L}_Q \gets
+       \mathbb{E}_{B_{\mathrm{sim}}}\!\big[c\textstyle\sum_k(Q_{\theta_k}(s,a)-
+       y_{\mathrm{sim}})^2\big]
+       + \mathbb{E}_{B_{\mathrm{real}}}\!\big[\textstyle\sum_k(Q_{\theta_k}(s,a)-
+       y_{\mathrm{real}})^2\big]$
+\State update $\theta$ by $\nabla_\theta\mathcal{L}_Q$;\; soft-update $\Qtt$
+\If{update\_actor}
+  \State \textbf{// ---- Actor (mixed obs) ----}
+  \State $\mathcal{S}\gets \{s : B_{\mathrm{sim}}\}\cup\{s : B_{\mathrm{real}}\}$;\;
+         $c \gets [\,c_{\mathrm{sim}}\,;\, \bm{1}_{\mathrm{real}}\,]$
+         \Comment{real states get $c{=}1$}
+  \State $a_\phi \gets \pphi(s)$ for $s\in\mathcal{S}$
+  \State $\mathcal{L}_\pi \gets
+         -\,\mathbb{E}\big[c\,\Qth^{\min}(s,a_\phi)\big]
+         + \lambda\,\mathbb{E}\big[(1-c)\,\lVert a_\phi-\pdemo(s)\rVert_2^2\big]$
+         \Comment{Eq.~\eqref{eq:actor}}
+  \State update $\phi$ by $\nabla_\phi\mathcal{L}_\pi$;\; soft-update $\pbar$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Cost and design notes.}
+Each online step costs one extra target-sim step (the counterfactual replay),
+i.e.\ $\approx\!2\times$ rollout cost. The frozen $\pdemo$ is kept out of the
+agent's \texttt{state\_dict} (re-attached by path at eval), so checkpoints stay
+small. With the ground-truth gap as a ``perfect classifier'', this design lets
+us test the mechanism's ceiling before substituting a learned per-transition
+dynamics-gap classifier for $c$.
+
+\end{document}
