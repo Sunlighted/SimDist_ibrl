@@ -1,0 +1,58 @@
+# Coffee_D0 — single-step MLP BC (StateBcPolicy) on the 1000 official MimicGen
+# core demos, trained + evaluated on the SOURCE domain (no shift). Serves as the
+# BC prior for the source IBRL run (coffee_d0_state_ibrl_source.yaml).
+#
+# Coffee_D0 state = 66 (eef_pos[3] + eef_quat[4] + gripper_qpos[2] + object[57]);
+# object-state = 4 bodies (pod / machine / pod_holder / lid) x (pos3+quat4+
+# to_eef_pos3+to_eef_quat4) = 56, + hinge_angle 1. action_dim = 7 (OSC_POSE +
+# gripper). Official MimicGen rollout horizon = 400.
+#
+# Task is TWO-stage: (1) grasp the coffee pod, (2) insert it into the pod holder
+# (5.2 mm radial clearance) AND close the lid (hinge 120 deg -> < 15 deg).
+#
+# NOTE: strict_success + domain_shift are Threading/Square-only (resolve_bindings
+# raises NotImplementedError for Coffee) — both left OFF here. Eval uses the raw
+# MimicGen success (pod in holder + lid closed) and robosuite's default sigma=0.02
+# joint init (in-distribution with the official demos). Reward-hack risk is much
+# lower than Threading: the coffee machine is a 6.3 kg body (vs the 18 g tripod),
+# so it cannot be shoved, and the pod must land inside a solid cup wall.
+#
+#   python train_bc.py --config_path release/cfgs/mimicgen/coffee_d0_state_source_mlp_bc.yaml \
+#       --save_dir exps/mimicgen/coffee_source_mlp_bc_n1000_seed1
+
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/coffee_d0/processed_data96.hdf5
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  eval_episode_len: 400       # official MimicGen coffee_d0 rollout horizon
+  val_ratio: 0.0
+
+# single-step MLP head — same arch as the Threading / Square source MLP BC
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+# eval on SOURCE (no shift), default init distribution.
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+use_wb: 1
+save_dir: exps/mimicgen/coffee_source_mlp_bc_n1000_seed1

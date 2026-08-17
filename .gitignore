@@ -34,3 +34,9 @@ nohup.out
 
 # 已弃用的实验分支（本地归档，不入库；确认不需要后可 rm -rf _archive）
 _archive/
+
+# rendered demo replays (mp4, ~21 MB) — regenerate with viz/replay_demos.py
+viz/demo_replays/
+*.mp4
+# stray stderr captures from ad-hoc diagnostic runs
+err_*.txt

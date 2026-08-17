@@ -67,10 +67,48 @@ def parse_args():
                    help="[Square] grow the square peg (>1 = tighter clearance)")
     p.add_argument("--peg_friction_scale", type=float, default=None,
                    help="[Square] scale the square peg friction (>1 = grippier)")
+    p.add_argument("--ring_size_scale", type=float, default=None,
+                   help="[Threading] shrink the ring opening (<1 = tighter; "
+                        "the SS12 target uses 0.85 -> 13.6 mm)")
+    p.add_argument("--ring_friction_scale", type=float, default=None,
+                   help="[Threading] scale the ring rim friction (>1 = grippier)")
+    p.add_argument("--needle_size_scale", type=float, default=None,
+                   help="[Threading] THICKEN the needle shaft (>1 = tighter); the "
+                        "mirror of --ring_size_scale, closing the same clearance "
+                        "from the needle side. 1.2 -> 12 mm (nominal 10 mm).")
+    p.add_argument("--lid_damping_scale", type=float, default=None,
+                   help="[Coffee] scale the lid hinge viscous damping (nominal "
+                        "0.005). The stage-2 knob; the SS40 targets use 100 "
+                        "(sharp) / 75 (moderate).")
+    p.add_argument("--lid_frictionloss", type=float, default=None,
+                   help="[Coffee] ABSOLUTE dry friction on the lid hinge (N*m; "
+                        "nominal 0, so a scale would be a no-op). Weak/non-"
+                        "monotonic in practice -- prefer --lid_damping_scale.")
+    p.add_argument("--pod_holder_size_scale", type=float, default=None,
+                   help="[Coffee] shrink the pod holder bore. MEASURED NO-OP "
+                        "(100%% at every level to 0.94) -- the pod's widest ring "
+                        "never passes the wall. Kept for completeness; do not "
+                        "use it to build a target.")
+    p.add_argument("--pod_holder_friction_scale", type=float, default=None,
+                   help="[Coffee] scale the pod holder cup-wall friction "
+                        "(nominal 1.0). Measured inert.")
     p.add_argument("--friction_scale", type=float, default=None)
     p.add_argument("--mass_scale", type=float, default=None)
     p.add_argument("--out_dir", type=str, default=None)
     p.add_argument("--seed", type=int, default=1)
+    # --- optional CONTIGUOUS action noise during collection (default OFF) ---
+    # Mirrors generate_simdist_data.py's scheme. sigma_max<=0 => byte-identical
+    # to the old deterministic path (no RNG draws, no branch taken).
+    p.add_argument("--noise_sigma_min", type=float, default=0.0,
+                   help="per-dim action-noise std lower bound; noise is OFF unless "
+                        "--noise_sigma_max > 0")
+    p.add_argument("--noise_sigma_max", type=float, default=0.0)
+    p.add_argument("--noise_min", type=int, default=1,
+                   help="noisy interval length ~ U[noise_min, noise_max] steps")
+    p.add_argument("--noise_max", type=int, default=5)
+    p.add_argument("--nonoise_min", type=int, default=5,
+                   help="noise-free interval length ~ U[nonoise_min, nonoise_max]")
+    p.add_argument("--nonoise_max", type=int, default=10)
     p.add_argument("--max_episodes", type=int, default=2000,
                    help="safety cap on total rollouts before giving up")
     p.add_argument("--cameras", type=str, default="agentview,robot0_eye_in_hand",
@@ -146,6 +184,9 @@ def build_env(args):
     # which needs peg_size/peg_friction/gripper_kp the ckpt shift doesn't carry).
     _ov = {}
     for _f in ("gripper_kp_scale", "peg_size_scale", "peg_friction_scale",
+               "ring_size_scale", "ring_friction_scale", "needle_size_scale",
+               "lid_damping_scale", "lid_frictionloss",
+               "pod_holder_size_scale", "pod_holder_friction_scale",
                "friction_scale", "mass_scale"):
         _v = getattr(args, _f)
         if _v is not None:
@@ -178,9 +219,44 @@ def build_env(args):
     return agent, env, env_params
 
 
-def rollout_once(agent, env, seed, max_len, drop_images=False):
-    """Run one episode (capped at max_len). Returns (ok, ep_obs, actions, rewards, frames)."""
+def _noise_cfg(args):
+    """None when disabled, so the no-noise path stays byte-identical."""
+    if args.noise_sigma_max <= 0:
+        return None
+    return dict(sigma_min=args.noise_sigma_min, sigma_max=args.noise_sigma_max,
+                noise_min=args.noise_min, noise_max=args.noise_max,
+                nonoise_min=args.nonoise_min, nonoise_max=args.nonoise_max)
+
+
+def rollout_once(agent, env, seed, max_len, drop_images=False, noise=None):
+    """Run one episode (capped at max_len). Returns (ok, ep_obs, actions, rewards, frames).
+
+    `noise` (optional dict, see `_noise_cfg`) injects CONTIGUOUS action-noise
+    intervals, the scheme `generate_simdist_data.py` uses for the stage-1
+    distillation set: per-episode Sigma=diag(sigma) with sigma_i ~ U[min,max],
+    noisy intervals of ~U[noise_min,noise_max] steps alternating with clean ones
+    of ~U[nonoise_min,nonoise_max]. Contiguous (not per-step iid) on purpose:
+    iid perturbations are largely cancelled by the OSC controller and the next
+    action, so they only corrupt the BC target without buying state coverage,
+    whereas a sustained interval produces a real detour (the same
+    persistent-vs-iid distinction CLAUDE.md 27 measured for oracle-dynamics noise).
+    The STORED action is the executed (noisy, clamped) one -- that is what
+    produced the transition, and what BC must reproduce.
+    """
     np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+    sigma = None
+    if noise is not None:
+        sigma = rng.uniform(noise["sigma_min"], noise["sigma_max"],
+                            size=env.action_dim).astype(np.float32)
+
+        def _interval(on):
+            lo, hi = ((noise["noise_min"], noise["noise_max"]) if on
+                      else (noise["nonoise_min"], noise["nonoise_max"]))
+            return int(rng.integers(lo, hi + 1))
+
+        noise_on = bool(rng.integers(0, 2))
+        steps_left = _interval(noise_on)
     obs, image_obs = env.reset()
 
     ep_obs: dict = defaultdict(list)
@@ -205,6 +281,14 @@ def rollout_once(agent, env, seed, max_len, drop_images=False):
                 ep_obs[k].append(v.cpu().numpy())
 
             action = agent.act(obs, eval_mode=True)
+            if sigma is not None:
+                if steps_left <= 0:
+                    noise_on = not noise_on
+                    steps_left = _interval(noise_on)
+                if noise_on:
+                    eps = torch.from_numpy(rng.normal(0.0, sigma).astype(np.float32))
+                    action = (action + eps.to(action.device)).clamp(-1.0, 1.0)
+                steps_left -= 1
             actions.append(action.cpu().numpy())
 
             obs, reward, terminal, succ, image_obs = env.step(action)
@@ -278,15 +362,36 @@ def write_dataset(accepted, out_dir, env_params, args):
             g.create_dataset("actions", data=np.asarray(ep["actions"], dtype=np.float32))
             g.create_dataset("rewards", data=np.asarray(ep["rewards"], dtype=np.float32))
             g.attrs["num_samples"] = len(ep["actions"])
+            # The rollout seed IS the episode's initial state (`rollout_once`
+            # does np.random.seed(seed) before env.reset()), so storing it lets
+            # an A/B pair be aligned by SEED INTERSECTION afterwards. Necessary
+            # because `seed = args.seed + attempt`: one differing accept/reject
+            # shifts every later seed, so two arms of the "same" collection can
+            # silently end up on disjoint initial states -- and the resulting
+            # 20-demo draw noise (adapt std +-0.109) dwarfs the effect under test.
+            if "seed" in ep:
+                g.attrs["seed"] = int(ep["seed"])
 
     # env_cfg.json — add_demos_to_replay reads env_name from here.
     env_cfg = {
         "env_name": env_params["env_name"],
         "domain_shift": dataclasses.asdict(env_params["domain_shift"]),
         "hand_init_perturb_joint_sigma": args.hand_init_perturb_joint_sigma,
+        # Inherited SILENTLY from the collecting ckpt's cfg (eval_init_dist) and
+        # not settable from the CLI, so record it or a set collected under a
+        # narrowed reset window (Square's rotw1 120-180 deg nut yaw) is
+        # indistinguishable afterwards from a full-circle one.
+        "init_distribution": (
+            dataclasses.asdict(env_params["init_distribution"])
+            if env_params.get("init_distribution") is not None else None),
         "rl_image_size": env_params.get("rl_image_size"),
         "use_state": env_params.get("use_state"),
         "source_weight": args.weight,
+        "collect_action_noise": (None if args.noise_sigma_max <= 0 else {
+            "sigma": [args.noise_sigma_min, args.noise_sigma_max],
+            "noise_interval": [args.noise_min, args.noise_max],
+            "nonoise_interval": [args.nonoise_min, args.nonoise_max],
+            "note": "contiguous intervals; STORED action is the executed (noisy) one"}),
     }
     with open(os.path.join(out_dir, "env_cfg.json"), "w") as f:
         json.dump(env_cfg, f, indent=2)
@@ -331,7 +436,8 @@ def collect_interactive(args, agent, env, env_params, out_dir, video_dir):
     while len(accepted) < args.num_demo and attempt < args.max_episodes:
         seed = args.seed + attempt
         ok, ep_obs, actions, rewards, frames, steps = rollout_once(
-            agent, env, seed, args.max_demo_len, drop_images=bool(args.drop_images))
+            agent, env, seed, args.max_demo_len, drop_images=bool(args.drop_images),
+            noise=_noise_cfg(args))
         attempt += 1
 
         if not ok:
@@ -384,7 +490,8 @@ def collect_auto(args, agent, env, env_params, out_dir, video_dir):
     while len(accepted) < args.num_demo and attempt < args.max_episodes:
         seed = args.seed + attempt
         ok, ep_obs, actions, rewards, frames, steps = rollout_once(
-            agent, env, seed, args.max_demo_len, drop_images=bool(args.drop_images))
+            agent, env, seed, args.max_demo_len, drop_images=bool(args.drop_images),
+            noise=_noise_cfg(args))
         attempt += 1
         if not ok:
             print(f"[reject] attempt {attempt} (seed {seed}): "

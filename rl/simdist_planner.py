@@ -229,7 +229,10 @@ class MppiPlanner:
         # base proposal: flow base-seq hook if set, else the policy head
         num_base = self._num_base()
         if num_base > 0 and self.base_seq_fn is not None:
-            base_actions = self.base_seq_fn(state.view(1, -1), num_base)  # [H, num_base, act]
+            # hook contract is BATCHED ([B,H,num,act]); squeeze the B=1 we passed.
+            # (Dispatching on B inside the hook is wrong: plan_batch can also be
+            # called with B=1 when only one eval env is still running.)
+            base_actions = self.base_seq_fn(state.view(1, -1), num_base)[0]  # [H, num_base, act]
         else:
             base_actions = (self._policy_rollout(z0, num_base)
                             if num_base > 0 else None)  # [H, num_base, act]

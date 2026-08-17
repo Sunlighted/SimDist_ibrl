@@ -38,7 +38,7 @@ import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
 from env.robosuite_wrapper import PixelRobosuite
-from env.domain_shift import DomainShiftConfig
+from env.domain_shift import DomainShiftConfig, InitDistConfig
 from env.strict_success import StrictSuccessConfig
 from rl.simdist_agent import SimDistAgent, SimDistConfig
 from rl.sequence_replay import (
@@ -139,6 +139,13 @@ class MainConfig(common_utils.RunConfig):
     train_domain_shift: DomainShiftConfig = field(default_factory=lambda: DomainShiftConfig(mode="none"))
     eval_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
     strict_success: StrictSuccessConfig = field(default_factory=StrictSuccessConfig)
+    # Reset-distribution override (Square nut z_rot window / Threading needle box).
+    # Default InitDistConfig() is disabled, so every existing run is unchanged.
+    # Stage-1 distillation itself is offline on source_replay_path, but the env
+    # drives the in-training eval -- leaving this out would score a rotw1-trained
+    # model on the full 360-degree distribution.
+    train_init_dist: InitDistConfig = field(default_factory=InitDistConfig)
+    eval_init_dist: InitDistConfig = field(default_factory=InitDistConfig)
     train_hand_init_perturb_joint_sigma: Optional[float] = None
     eval_hand_init_perturb_joint_sigma: Optional[float] = None
 
@@ -239,12 +246,14 @@ class Workspace:
             end_on_success=bool(self.cfg.end_on_success),
             domain_shift=self.cfg.train_domain_shift,
             hand_init_perturb_joint_sigma=self.cfg.train_hand_init_perturb_joint_sigma,
+            init_distribution=self.cfg.train_init_dist,
         )
         # TARGET (eval)
         self.eval_env_params = dict(
             **common_env,
             domain_shift=self.cfg.eval_domain_shift,
             hand_init_perturb_joint_sigma=self.cfg.eval_hand_init_perturb_joint_sigma,
+            init_distribution=self.cfg.eval_init_dist,
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 

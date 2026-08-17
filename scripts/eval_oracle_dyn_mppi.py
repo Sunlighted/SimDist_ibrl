@@ -38,6 +38,9 @@ from env.domain_shift import DomainShiftConfig  # noqa: E402
 
 ERR = sys.stderr
 
+# Set from --base_open_loop. List so plan_oracle reads it without a global stmt.
+OPEN_LOOP_BASE = [False]
+
 
 def log(*a):
     print(*a, file=ERR, flush=True)
@@ -176,10 +179,29 @@ def oracle_returns(model, planner, states, actions=None, s0=None):
         H, N, _ = states.shape
         s_prev = states[-2] if H >= 2 else s0.view(1, -1).expand(N, -1)
         return q_fn(s_prev, actions[-1]) * (planner.cfg.discount ** (H - 1))
+    # --- DIAGNOSTIC dump: on the REAL candidate terminals s_H, record BOTH the
+    # distilled value head and the external source critic, so we can compare
+    # their RANKING on the exact on-policy distribution MPPI scores (§27#5). ---
+    import os as _os
+    if _os.environ.get("DUMP_VAL") and planner.value_fn is not None:
+        sH = states[-1]
+        zH = model.encode(sH)
+        vdist = (model.predict_value(zH, target=False)
+                 * planner.final_discount).view(-1).cpu().numpy()
+        vsrc = (planner.value_fn(sH) * planner.final_discount).view(-1).cpu().numpy()
+        # also stash latent z_H (for OOD-distance bucketing) + raw sH (small: keep
+        # only if DUMP_Z set, latent is 512-d so this grows memory).
+        if _os.environ.get("DUMP_Z"):
+            _DUMP_VAL.append((vdist, vsrc, zH.cpu().numpy()))
+        else:
+            _DUMP_VAL.append((vdist, vsrc))
     if planner.value_fn is not None:
         return planner.value_fn(states[-1]) * planner.final_discount
     z_H = model.encode(states[-1])
     return model.predict_value(z_H, target=False) * planner.final_discount
+
+
+_DUMP_VAL = []  # diagnostic: list of (vdist[N], vsrc[N]) per planning call
 
 
 @torch.no_grad()
@@ -232,6 +254,14 @@ def plan_oracle(planner, model, state, probe_env, sim_state, agent, pool=None,
 
     num_base = planner._num_base()
     base_actions = planner._policy_rollout(z0, num_base) if num_base > 0 else None
+    if base_actions is not None and OPEN_LOOP_BASE[0]:
+        # DOWNGRADE the base seeds to open loop: hold the policy's FIRST action
+        # for all H steps instead of re-querying it along the imagined rollout.
+        # Step 0 is bit-identical to the closed-loop version (it comes from the
+        # same single policy query at z0), so this isolates exactly ONE variable
+        # -- "re-query vs hold" -- and matches the seed form used by
+        # scripts/eval_square_oracle_mppi.py, making the two tasks comparable.
+        base_actions = base_actions[0:1].expand(H, -1, -1).clone()
     if base_actions is not None and cfg.base_policy_std > 0:
         base_actions = base_actions + torch.randn_like(base_actions) * cfg.base_policy_std
 
@@ -264,9 +294,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run_dir", default="exps/mimicgen/threading_simdist_adapt_long_h5_seed1")
     ap.add_argument("--ckpt", default="latest.pt")
+    ap.add_argument("--value_ckpt", default="",
+                    help="Swap ONLY the value head(s) in from this agent state_dict "
+                         "(e.g. a scripts/value_head_recipe_ablate.py arm). Asserts "
+                         "every non-value tensor is bit-identical to --ckpt first, so "
+                         "the value head is the single variable.")
     ap.add_argument("--episodes", type=int, default=15)
     ap.add_argument("--num_samples", type=int, default=32)
     ap.add_argument("--num_base", type=int, default=10)
+    ap.add_argument("--policy_from", default="",
+                    help="Restore the policy head from this ckpt (normally the "
+                         "run's own stage-1), undoing stage-2 target-demo BC while "
+                         "keeping the adapted dynamics. Gives a PURE-SOURCE proposal.")
+    ap.add_argument("--base_open_loop", type=int, default=0,
+                    help="Hold the policy's FIRST action for all H steps instead "
+                         "of re-querying it along the imagined rollout (oracle arm "
+                         "only). Downgrades the base seeds to the open-loop form "
+                         "used by eval_square_oracle_mppi.py, so Threading and "
+                         "Square can be compared on equal proposal footing. "
+                         "0 = default closed-loop SimDist behaviour.")
     ap.add_argument("--horizon", type=int, default=3)
     ap.add_argument("--iterations", type=int, default=2)
     ap.add_argument("--num_elites", type=int, default=8)
@@ -298,6 +344,17 @@ def main():
                          "solvable at 33%; 8.0 drove the source expert to 0%)")
     ap.add_argument("--jam_ring", type=float, default=0.85,
                     help="--shift jam: ring hole scale")
+    ap.add_argument("--needle_size_scale", type=float, default=-1.0,
+                    help="THICKEN the needle shaft on top of --shift (<0 = leave alone). "
+                         "1.2 -> 12 mm square cross-section (nominal 10 mm). Mirror of "
+                         "--ring_size_scale: both set the insertion clearance "
+                         "(ring_opening - needle). NOT --needle_scale, which widens the "
+                         "needle PLACEMENT box instead.")
+    ap.add_argument("--ring_size_scale", type=float, default=-1.0,
+                    help="Override the ring opening on top of --shift (<0 = leave alone). "
+                         "1.0 -> nominal 16 mm; the SS12 target uses 0.85 -> 13.6 mm. Pass "
+                         "1.0 together with --needle_size_scale to move the SAME clearance "
+                         "from the needle side instead of the ring side.")
     ap.add_argument("--shift", default="keep", choices=["keep", "source", "target", "jam"],
                     help="physics for BOTH main_env + probe rollouts. keep = the run's "
                          "eval shift (TARGET for an adapt run); source = mode=none "
@@ -352,6 +409,7 @@ def main():
                          "InitDistConfig on both envs. e.g. '0.03,0' slides the needle "
                          "spawn box +3cm in x.")
     args = ap.parse_args()
+    OPEN_LOOP_BASE[0] = bool(args.base_open_loop)
 
     cfg: AdaptConfig = pyrallis.load(AdaptConfig, open(os.path.join(args.run_dir, "cfg.yaml")))  # type: ignore
     cfg.eval_hand_init_perturb_joint_sigma = 0.1
@@ -359,7 +417,48 @@ def main():
     cfg.mp_eval = 0
     cfg.save_dir = "/tmp/claude-1003/-home-Chenyang-ibrl/08677077-8099-4d03-9973-403b524caa19/scratchpad/oracle_ws"
     ws = AdaptWorkspace(cfg)
-    ws.agent.load_state_dict(torch.load(os.path.join(args.run_dir, args.ckpt)))
+    base_sd = torch.load(os.path.join(args.run_dir, args.ckpt))
+    if args.policy_from:
+        # ROLL BACK stage-2: restore ONLY the policy-head tensors from the given
+        # ckpt (normally this run's own stage-1), leaving the adapted dynamics and
+        # the frozen encoder/value/reward/decoder untouched. An adapt ckpt differs
+        # from its stage-1 in exactly 20 tensors -- 10 model.policy.* (stage-2 BC)
+        # and 10 model.dynamics.* (stage-3) -- so this isolates one variable: a
+        # proposal that has NEVER seen a target demo, matching the pure-source
+        # proposal used by scripts/eval_square_oracle_mppi.py.
+        src_sd = torch.load(args.policy_from)
+        pol_keys = [k for k in base_sd if "polic" in k or "enc_pi" in k]
+        missing = [k for k in pol_keys if k not in src_sd]
+        if missing:
+            raise KeyError(f"--policy_from ckpt lacks policy tensors: {missing[:4]}")
+        moved = sum(1 for k in pol_keys
+                    if not torch.equal(base_sd[k].float().cpu(), src_sd[k].float().cpu()))
+        for k in pol_keys:
+            base_sd[k] = src_sd[k]
+        log(f"[setup] POLICY ROLLED BACK to {args.policy_from} "
+            f"({len(pol_keys)} tensors, {moved} of them differed => stage-2 BC undone)")
+    ws.agent.load_state_dict(base_sd)
+    if args.value_ckpt:
+        new_sd = torch.load(args.value_ckpt)
+        assert set(new_sd) == set(base_sd), "value_ckpt is a different architecture"
+        vkeys = [k for k in base_sd if k.startswith("model.value")]
+        assert vkeys, "no model.value* tensors found"
+
+        def _maxdiff(keys):
+            d = 0.0
+            for k in keys:
+                if base_sd[k].dtype.is_floating_point:
+                    d = max(d, (base_sd[k].float() - new_sd[k].float()).abs().max().item())
+            return d
+
+        # everything that is NOT the value head must be bit-identical, else the
+        # comparison is not single-variable (cf. the frozen_drift check in
+        # value_head_recipe_ablate.py).
+        drift = _maxdiff([k for k in base_sd if k not in set(vkeys)])
+        assert drift == 0.0, f"non-value tensors differ (max|d|={drift:.3e})"
+        ws.agent.load_state_dict(new_sd)
+        log(f"[setup] VALUE SWAP <- {args.value_ckpt} | {len(vkeys)} value tensors "
+            f"replaced, max|dW|={_maxdiff(vkeys):.4f}, non-value drift={drift:.2e}")
     agent = ws.agent.to("cuda")
     model, planner = agent.model, agent.planner
 
@@ -391,6 +490,33 @@ def main():
         log(f"[setup] SHIFT=target -> {ep_nr['domain_shift'].mode} (the run's eval shift)")
     else:
         log(f"[setup] SHIFT=keep -> {ep_nr['domain_shift'].mode}")
+
+    # --- tolerance-window overrides on top of whatever shift was selected ---
+    # The insertion clearance is (ring_opening - needle_cross_section); these
+    # two flags move it from either side, so e.g. "--shift target
+    # --ring_size_scale 1.0 --needle_size_scale 1.2" swaps the SS12 target's
+    # narrow-ring window for an equally narrow thick-needle one, holding all
+    # the contact physics (friction/mass/gripper_kp/ring_friction) fixed.
+    if args.ring_size_scale >= 0 or args.needle_size_scale >= 0:
+        import dataclasses
+        ds = ep_nr["domain_shift"]
+        if ds.mode == "none":  # promote source to a no-op fixed shift we can edit
+            ds = DomainShiftConfig(mode="fixed", mask_hole_offset_in_obs=False)
+        repl = {}
+        if args.ring_size_scale >= 0:
+            repl["ring_size_scale"] = args.ring_size_scale
+        if args.needle_size_scale >= 0:
+            repl["needle_size_scale"] = args.needle_size_scale
+        ds = dataclasses.replace(ds, **repl)
+        ep_nr["domain_shift"] = ds
+        ring_mm = 16.0 * ds.ring_size_scale
+        needle_mm = 10.0 * ds.needle_size_scale
+        log(f"[setup] WINDOW OVERRIDE -> ring {ring_mm:.1f} mm, needle "
+            f"{needle_mm:.1f} mm => clearance {(ring_mm - needle_mm) / 2:.2f} mm/side "
+            f"(ring_size x{ds.ring_size_scale}, needle_size x{ds.needle_size_scale})")
+        if needle_mm >= ring_mm:
+            log("[setup] !! WARNING: needle >= ring opening -> insertion is "
+                "PHYSICALLY IMPOSSIBLE; expect 0.000 for every arm.")
 
     # --- object-initialization bias (orthogonal to the physics shift) -------
     ho = tuple(float(x) for x in args.hole_offset.split(","))
@@ -627,6 +753,28 @@ def main():
 
     if pool is not None:
         pool.close()
+
+    if os.environ.get("DUMP_VAL") and _DUMP_VAL:
+        # per-planning-call ranking agreement on the REAL candidate terminals
+        from scipy.stats import spearmanr as _spr
+        srs, topk_overlap = [], []
+        K = max(1, args.num_elites)
+        for vdist, vsrc in _DUMP_VAL:
+            if len(vdist) < 3:
+                continue
+            srs.append(_spr(vdist, vsrc).correlation)
+            td = set(np.argsort(vdist)[-K:]); ts = set(np.argsort(vsrc)[-K:])
+            topk_overlap.append(len(td & ts) / K)
+        srs = np.array([s for s in srs if s == s])
+        log(f"\n===== VALUE-RANKING DIAG on {len(_DUMP_VAL)} planning calls "
+            f"(candidate terminals s_H, N={len(_DUMP_VAL[0][0])}) =====")
+        log(f"  Spearman(V_distilled, V_src) per-call: mean={srs.mean():+.3f} "
+            f"median={np.median(srs):+.3f}  frac<0.5={np.mean(srs<0.5):.2f}")
+        log(f"  top-{K} elite overlap: mean={np.mean(topk_overlap):.3f}")
+        alld = np.concatenate([d for d,_ in _DUMP_VAL]); alls = np.concatenate([s for _,s in _DUMP_VAL])
+        log(f"  V_distilled: mean={alld.mean():.3f} std={alld.std():.3f}")
+        log(f"  V_src      : mean={alls.mean():.3f} std={alls.std():.3f}")
+
     log(f"\n===== ORACLE + NOISE dose-response  (shift={args.shift}, "
         f"mode={args.oracle_noise_mode}, n={args.episodes}) =====")
     for k, v in results.items():

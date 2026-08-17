@@ -89,6 +89,7 @@ if __name__ == "__main__":
     import argparse
     import os
     import time
+    import math
     import common_utils
     import train_bc
     import train_rl
@@ -143,6 +144,14 @@ if __name__ == "__main__":
     parser.add_argument("--shift_ring_friction_scale", type=float, default=None,
                         help="Scale the ring rim friction (nominal 0.3 sliding). "
                              ">1 = grippier/harder; e.g. 3.0 -> 0.9.")
+    parser.add_argument("--shift_needle_size_scale", type=float, default=None,
+                        help="THICKEN the needle shaft (nominal 10mm square "
+                             "cross-section) -- the mirror of --shift_ring_size_scale, "
+                             "closing the same clearance from the needle side. "
+                             "1.2 -> 12mm (2.0mm/side vs a 16mm ring). The success "
+                             "check reads the shaft geom's CENTER, which does not "
+                             "move, so the 12mm criterion is unchanged. Feasible "
+                             "ceiling <1.6 at ring_size 1.0.")
     parser.add_argument("--shift_peg_size_scale", type=float, default=None,
                         help="[Square_D0] Grow the square peg x/y half-size "
                              "(nominal 32mm peg / 6.75mm clearance). >1 = bigger "
@@ -151,6 +160,27 @@ if __name__ == "__main__":
     parser.add_argument("--shift_peg_friction_scale", type=float, default=None,
                         help="[Square_D0] Scale the square peg friction "
                              "(nominal 1.0 sliding). >1 = grippier/harder.")
+    parser.add_argument("--shift_nut_size_scale", type=float, default=None,
+                        help="[Square_D0] Shrink the HELD nut hole (nominal "
+                             "45.5mm). <1 = smaller/harder; 0.85 -> 38.7mm "
+                             "(3.35mm/side). Floor ~0.70 (peg is 32mm).")
+    parser.add_argument("--shift_pod_holder_size_scale", type=float, default=None,
+                        help="[Coffee_D0] Shrink the pod holder's INNER opening "
+                             "(nominal 24.97mm radius vs 24.30mm pod = only "
+                             "0.67mm/side clearance). <1 = tighter; 0.985 -> "
+                             "0.30mm/side. Floor >0.973 (pod must still fit). "
+                             "Success threshold (r_diff 5.2mm) is unaffected.")
+    parser.add_argument("--shift_pod_holder_friction_scale", type=float, default=None,
+                        help="[Coffee_D0] Scale the pod holder cup-wall friction "
+                             "(nominal 1.0). >1 = grippier insertion.")
+    parser.add_argument("--shift_lid_damping_scale", type=float, default=None,
+                        help="[Coffee_D0] Scale the lid hinge viscous damping "
+                             "(nominal 0.005). >1 resists fast closing.")
+    parser.add_argument("--shift_lid_frictionloss", type=float, default=None,
+                        help="[Coffee_D0] ABSOLUTE dry friction on the lid hinge "
+                             "(N*m; nominal 0 so a scale would be a no-op). The "
+                             "lid stops unless pushed hard enough -- the sharpest "
+                             "second-stage knob.")
     parser.add_argument("--shift_mask_hole_in_obs", type=int, default=None,
                         help="1 = mask hole offset from obs, 0 = leave raw")
     parser.add_argument("--hand_init_perturb", type=str, default=None,
@@ -161,6 +191,13 @@ if __name__ == "__main__":
                              "factor around the D0 center (1.0 = D0, off). Same formula "
                              "as train_simdist_adapt.py --needle_scale, so eval numbers "
                              "are comparable to those runs. Tripod stays fixed (D0).")
+    parser.add_argument("--nut_z_rot", type=str, default=None,
+                        help="Square only: SquareNut yaw window in DEGREES, "
+                             "e.g. '0,60'. Pass 'full' to force the whole "
+                             "(0,360) circle, overriding a window baked into "
+                             "the ckpt's cfg.yaml (that is how a window-trained "
+                             "ckpt gets scored on the original Square_D0 task). "
+                             "Default None = use whatever cfg.yaml says.")
     parser.add_argument("--hand_init_perturb_joint_sigma", type=float, default=None,
                         help='Joint-space gaussian σ (rad). Mutually exclusive '
                              'with --hand_init_perturb. e.g. 0.02 = robosuite '
@@ -202,6 +239,11 @@ if __name__ == "__main__":
                              "1 = MPPI planning, 0 = run the policy head directly "
                              "(no planning). Default None = use the ckpt cfg's "
                              "value.")
+    parser.add_argument("--planner_set", type=str, default="",
+                        help="(--mode simdist) comma-separated planner overrides, "
+                             "e.g. 'init_std=0.3,num_samples=256'. Applied AFTER "
+                             "--original_mppi and BEFORE the planner is rebuilt, so "
+                             "one knob can be swept without cloning the run dir.")
     parser.add_argument("--original_mppi", type=int, default=0,
                         help="(--mode simdist, implies --use_planner 1) rebuild the "
                              "MPPI planner with the ORIGINAL SimDist recipe "
@@ -267,6 +309,24 @@ if __name__ == "__main__":
             print(f"[eval override] init_distribution: needle box {s}x -> "
                   f"x=({ncx-nhx:.3f},{ncx+nhx:.3f}) y=({ncy-nhy:.3f},{ncy+nhy:.3f})")
 
+        # Square: override the SquareNut yaw window. Like --needle_scale this
+        # must precede the `active` early-return, since Square runs carry no
+        # domain shift. 'full' disables the config entirely, which is how a
+        # window-trained ckpt is scored on the original 360-deg Square_D0.
+        if args.nut_z_rot is not None:
+            import math
+            from env.domain_shift import InitDistConfig
+            if args.nut_z_rot.strip().lower() in ("full", "off", "none"):
+                overrides["init_distribution"] = InitDistConfig(enabled=False)
+                print("[eval override] nut_z_rot: DISABLED -> full (0,360) deg")
+            else:
+                lo_d, hi_d = (float(x) for x in args.nut_z_rot.split(","))
+                overrides["init_distribution"] = InitDistConfig(
+                    enabled=True,
+                    nut_z_rot=(math.radians(lo_d), math.radians(hi_d)))
+                print(f"[eval override] nut_z_rot window = "
+                      f"({lo_d:.1f},{hi_d:.1f}) deg")
+
         # Domain shift: assemble shift_kwargs from (optional) cfg.yaml baseline
         # then layer CLI overrides on top.
         active = args.shift_mode is not None or args.shift_from_cfg
@@ -298,8 +358,10 @@ if __name__ == "__main__":
                 float(x) for x in args.shift_hole_offset.split(","))
         for k in ("friction_scale", "mass_scale", "solref_scale",
                   "solimp_scale", "gripper_kp_scale",
-                  "ring_size_scale", "ring_friction_scale",
-                  "peg_size_scale", "peg_friction_scale"):
+                  "ring_size_scale", "ring_friction_scale", "needle_size_scale",
+                  "peg_size_scale", "peg_friction_scale", "nut_size_scale",
+                  "pod_holder_size_scale", "pod_holder_friction_scale",
+                  "lid_damping_scale", "lid_frictionloss"):
             v = getattr(args, f"shift_{k}")
             if v is not None:
                 shift_kwargs[k] = v
@@ -368,6 +430,18 @@ if __name__ == "__main__":
                       f"min_std={p.min_std}, iters={p.iterations}, temp={p.temperature}, "
                       f"elites={p.num_elites}, base_policy_std={p.base_policy_std}, "
                       f"horizon={p.horizon} [kept])")
+            if args.planner_set:
+                from rl.simdist_planner import MppiPlanner
+                for kv in args.planner_set.split(","):
+                    k, v = kv.split("=")
+                    k = k.strip()
+                    old = getattr(agent.cfg.planner, k)
+                    setattr(agent.cfg.planner, k, type(old)(v))
+                    print(f"[eval override] planner.{k}: {old} -> "
+                          f"{getattr(agent.cfg.planner, k)}")
+                agent.cfg.use_planner = 1
+                agent.planner = MppiPlanner(
+                    agent.model, agent.cfg.planner, agent.action_dim, device="cuda")
             if args.use_planner is not None:
                 print(f"[eval override] use_planner {agent.cfg.use_planner} "
                       f"-> {args.use_planner}")
@@ -402,6 +476,22 @@ if __name__ == "__main__":
     weight_scores = []
     all_scores = []
     for weight, agent, env_params in eval_items:
+        # Print the FULL evaluation env identity every time. Two numbers are only
+        # comparable if these lines match, and the reset distribution in
+        # particular is inherited silently from the ckpt's cfg (Square's rotw1
+        # nut-yaw window lives in eval_init_dist, invisible on the CLI), so a
+        # mismatch is otherwise undetectable after the fact.
+        _idc = env_params.get("init_distribution")
+        _nz = getattr(_idc, "nut_z_rot", None)
+        _nzd = (f"{math.degrees(_nz[0]):.0f}-{math.degrees(_nz[1]):.0f}deg"
+                if (_nz is not None and getattr(_idc, "enabled", False)) else "FULL(0-360)")
+        _ds = env_params.get("domain_shift")
+        print(f"[EVAL ENV] task={env_params['env_name']} "
+              f"shift={getattr(_ds, 'mode', None)} "
+              f"nut_z_rot={_nzd} "
+              f"sigma={env_params.get('hand_init_perturb_joint_sigma')} "
+              f"strict={getattr(env_params.get('strict_success'), 'enabled', None)} "
+              f"ep_len={env_params.get('episode_length')}", flush=True)
         t = time.time()
         if args.mp >= 1:
             scores = mp_run_eval(

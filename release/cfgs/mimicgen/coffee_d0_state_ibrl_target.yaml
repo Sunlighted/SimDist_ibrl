@@ -1,0 +1,121 @@
+# Coffee_D0 TARGET IBRL -- trained AND evaluated in the target domain (C50),
+# sigma=0.1 init. The target-domain expert, mirroring what CLAUDE.md 32 did for
+# Square (square_d0_state_ibrl_target_B.yaml).
+#
+# TARGET C50 (chosen 2026-08-08 by measuring the DYNAMICS GAP directly --
+# same (s,a) replayed one cold-start step in source vs target -- not by reading
+# the expert's success rate, which conflates "physics moved" with "expert was
+# robust"; see scripts/diag_coffee_dynamics_gap.py):
+#     gripper_kp_scale            0.30   (finger servo kp 1000 -> 300)
+#     lid_damping_scale           50     (hinge dof_damping 0.005 -> 0.25)
+#     mass_scale                  3.0    (pod 6.58 g -> 19.7 g, inertia too)
+#     friction_scale              0.5    (pod sliding mu 1.0 -> 0.5)
+#     pod_holder_friction_scale   2.0    (cup wall mu 1.0 -> 2.0)
+#   pod gap 0.188 mean / 0.336 p90 mm per step (harness control = 0.001 mm);
+#   lid gap 0.349 mean / 18.54 max deg; per phase 0.208 / 0.172 / 0.110.
+#   sigma-0.1 source expert (93.8% on source) zero-shot here: 40% (n=50).
+#   ORACLE PROBE (real-sim rollouts + this same source value, init_std 0.40):
+#   98.0% -- i.e. the source value and proposal are BOTH adequate here and the
+#   binding constraint is the dynamics model, which is the property we want.
+#
+# solref_scale is deliberately NOT used: Coffee's pod sits at timeconst 0.001 s,
+# already BELOW MuJoCo's 2*timestep = 0.004 s floor, so scaling it lands in a
+# clamped, ill-defined regime.
+# pod_holder_size_scale is deliberately NOT used: measured NO-OP (100% success
+# at every setting down to 0.94) -- the pod's widest ring never has to pass the
+# narrowed wall. See DomainShiftConfig for the full measurement.
+#
+# Prior = the SOURCE IBRL hybrid (93.8% on source at sigma 0.1) via
+# sgft_source_agent with
+# sgft_shaping=0, i.e. plain IBRL with a strong prior -- the same bootstrapping
+# pattern that took Square target-B from 30% to 94% over three iterations.
+# `bc_policy` and `sgft_source_agent` are mutually exclusive (asserted in
+# train_rl.py), so this replaces the MLP BC prior.
+#
+# !! source_agent_use_hybrid: 1 IS REQUIRED and is NOT the default (0).
+# load_frozen_agent() pins act_method="rl" on the loaded source, which strips
+# its own BC prior -- the target would then compete against the source's BARE
+# RL head, a policy the source never actually executes, instead of the 99.8%
+# hybrid. CLAUDE.md 35 records this exact trap biting three separate times.
+#
+# PLANNER NOTE (not used by this file, but by every oracle/MPPI probe on
+# this target): init_std 0.15 -- the Threading default -- is far too narrow
+# for Coffee. On C75 it capped the oracle arm at 50%; init_std 0.40 at the
+# SAME 32x2 budget gives 90%, and on C50 gives 98%.
+#
+# The prior is the sigma-0.1-TRAINED source expert, so prior and run share one
+# init distribution. NOTE the sigma-0.02-trained expert is NOT interchangeable:
+# it is weaker in-domain (88.6% vs 93.8% at sigma 0.1) yet transfers BETTER
+# zero-shot to the target (24.0% vs 13.6%, both n=500) -- an unexplained
+# inverse trade-off, so never mix the two across arms of one comparison.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/coffee_d0_state_ibrl_target.yaml \
+#       --save_dir exps/mimicgen/coffee_ibrl_target_seed1
+task_name: "Coffee_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# Source IBRL hybrid as the prior (sgft_shaping=0 => plain IBRL, no shaping).
+sgft_source_agent: "exps/mimicgen/coffee_ibrl_source_sig01_seed1/model0.pt"
+source_agent_use_hybrid: 1   # see header -- default 0 gives the BARE RL head
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/coffee_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1000000
+snapshot_period: 50000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  sgft_shaping: 0          # 0 => the source agent is ONLY the IBRL prior
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# TARGET domain on BOTH the rollout env and the eval env.
+train_domain_shift:
+  mode: "fixed"
+  gripper_kp_scale: 0.30
+  lid_damping_scale: 50.0
+  mass_scale: 3.0
+  friction_scale: 0.5
+  pod_holder_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+eval_domain_shift:
+  mode: "fixed"
+  gripper_kp_scale: 0.30
+  lid_damping_scale: 50.0
+  mass_scale: 3.0
+  friction_scale: 0.5
+  pod_holder_friction_scale: 2.0
+  mask_hole_offset_in_obs: false

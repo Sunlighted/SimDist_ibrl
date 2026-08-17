@@ -271,6 +271,11 @@ class MainConfig(common_utils.RunConfig):
     # Only the target-domain training is implemented here; the source agent is
     # assumed already trained (normal train_rl on the source / no-shift env).
     sgft_source_agent: str = ""
+    # Use the source agent's IBRL HYBRID (max-Q over its RL actor + its own
+    # prior) as this run's prior, instead of its bare RL head. load_frozen_agent
+    # pins act_method="rl" for SGFT's V_src semantics, which silently weakens the
+    # prior for bootstrapping runs. Default 0 keeps every existing run bit-identical.
+    source_agent_use_hybrid: int = 0
     # Robot arm init-state perturbation. Same three regimes as BC
     # (see env/robosuite_wrapper.py):
     #   None (default)   → robosuite's σ=0.02 gaussian on joint qpos
@@ -427,6 +432,22 @@ class Workspace:
             source_agent = load_frozen_agent(
                 cfg.sgft_source_agent, self.train_env, cfg, "cuda"
             )
+            if cfg.source_agent_use_hybrid:
+                # load_frozen_agent pins act_method="rl", so the prior would be the
+                # source's BARE RL head. An agent trained with act_method="ibrl"
+                # EXECUTES the max-Q pick over {RL actor, its own prior} -- that
+                # hybrid is what scores 99.2% here, the bare head is a policy it
+                # never runs. Re-attach the source's own prior and let it act as
+                # the hybrid, so the target run competes against the real expert.
+                desc = attach_ibrl_prior(
+                    source_agent, cfg.sgft_source_agent, self.train_env, "cuda")
+                if not desc:
+                    raise ValueError(
+                        f"source_agent_use_hybrid=1 but {cfg.sgft_source_agent} "
+                        f"declares no prior in its cfg.yaml (nothing to hybridise)")
+                source_agent.cfg.act_method = "ibrl"
+                source_agent.prior_margin = 0.0
+                print(f"[SGFT] prior = source HYBRID (max-Q over RL actor + {desc})")
             # (1) BC prior for IBRL max-Q.
             self.agent.add_bc_policy(FrozenAgentBCPolicy(source_agent))
             self.bc_policy = self.agent.bc_policies[-1]
@@ -858,6 +879,16 @@ def load_model(weight_file, device):
         # Re-add the source agent as the IBRL BC prior (needed for act_method=
         # ibrl at eval). The value source is training-only, so not needed here.
         source_agent = load_frozen_agent(cfg.sgft_source_agent, eval_env, cfg, device)
+        if cfg.source_agent_use_hybrid:
+            # Mirror training: the prior this run competed against was the source's
+            # ibrl HYBRID, so eval must rebuild the same thing or the loaded agent
+            # silently faces a weaker prior than it trained with.
+            desc = attach_ibrl_prior(source_agent, cfg.sgft_source_agent, eval_env, device)
+            assert desc, (
+                f"source_agent_use_hybrid=1 but {cfg.sgft_source_agent} declares "
+                f"no prior in its cfg.yaml")
+            source_agent.cfg.act_method = "ibrl"
+            source_agent.prior_margin = 0.0
         agent.add_bc_policy(FrozenAgentBCPolicy(source_agent))
 
     agent = agent.to(device)

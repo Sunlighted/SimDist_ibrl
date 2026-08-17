@@ -1,0 +1,394 @@
+"""Square: SOURCE-trained value + ORACLE dynamics, evaluated on a target domain.
+
+The Square analogue of the `oracle` arm in scripts/eval_oracle_dyn_mppi.py
+(CLAUDE.md §27/§31), with NO SimDist world model anywhere in the loop:
+
+  value    = the SOURCE-domain IBRL expert's min-ensemble Q(s, pi_ibrl(s)),
+             applied DIRECTLY to the real terminal state (no encoder, no
+             distilled V head).
+  proposal = the same expert, rolled closed-loop in the real sim for H steps,
+             replicated with gaussian jitter into `num_base` seeds.
+  dynamics = the REAL target simulator (candidates are replayed from the
+             current sim_state), i.e. zero model error.
+
+So everything learned is source-domain and the ONLY oracle ingredient is the
+dynamics -- exactly the decomposition that gave Threading 99.3% (§31), which
+established that a stale source value is not what caps a planner.
+
+Arms:
+  policy  -- the expert executed directly (IBRL hybrid max-Q). The bar.
+  oracle  -- MPPI/CEM over real rollouts scored by the source value.
+
+The nut z-rotation window comes from the ckpt's own cfg.yaml (eval_init_dist),
+so source and target share an identical init distribution by construction.
+
+  python scripts/eval_square_oracle_mppi.py \
+      --weight exps/mimicgen/square_ibrl_rotw1_seed1/model0.pt \
+      --shift target --episodes 100 --probe_workers 8
+"""
+import os
+import sys
+import argparse
+
+import numpy as np
+import torch
+import torch.multiprocessing as mp
+
+sys.path.insert(0, "/home/Chenyang/ibrl")
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+ERR = sys.stderr
+
+
+def log(*a):
+    print(*a, file=ERR, flush=True)
+
+
+# Target-B (CLAUDE.md §32): the moderate Square target. Everything else stays
+# nominal -- DomainShiftConfig defaults every unset scale to 1.0.
+TARGET_B = dict(gripper_kp_scale=0.30, peg_size_scale=1.20, peg_friction_scale=2.0)
+
+# (std_i, mean_i, range_i) of gamma^H*V per CEM call -- see the note at the
+# append site. This is the tolerance budget for any edit to the value function.
+SIGNAL = []
+
+
+def restore(env, sim_state):
+    """Rewind a probe env to an exact sim_state. qacc_warmstart=0 makes the
+    replay deterministic (same cold-start convention as the Threading script)."""
+    raw = env.env
+    raw.done = False
+    raw.timestep = 0
+    raw.sim.set_state_from_flattened(np.asarray(sim_state, dtype=np.float64))
+    raw.sim.data.qacc_warmstart[:] = 0.0
+    raw.sim.forward()
+    env.time_step = 0
+    if getattr(env, "_success_validator", None) is not None:
+        env._success_validator.reset(raw, env._bindings)
+
+
+def _probe_worker(conn, env_params):
+    """Sim-only worker (device="cpu" => no model/obs GPU buffer). Replays
+    candidate action sequences from a sim_state, returns the real states."""
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    import numpy as _np
+    import torch as _torch
+    from env.robosuite_wrapper import PixelRobosuite as _PR
+
+    env = _PR(**{**env_params, "device": "cpu"})
+    env.reset()
+    try:
+        while True:
+            msg = conn.recv()
+            if msg is None:
+                break
+            sim_state, acts = msg                      # acts: [H, n, act]
+            H, n, _ = acts.shape
+            out = _np.zeros((H, n, env.observation_shape[0]), dtype=_np.float32)
+            for i in range(n):
+                restore(env, sim_state)
+                for t in range(H):
+                    obs, _, _, _, _ = env.step(_torch.from_numpy(acts[t, i]))
+                    out[t, i] = obs["state"].numpy()
+            conn.send(out)
+    finally:
+        conn.close()
+
+
+class ProbePool:
+    """Fan candidate rollouts across sim-only workers. They all start from the
+    same sim_state and never interact, so results re-concatenate in candidate
+    order and the CEM math is identical to the serial path."""
+
+    def __init__(self, env_params, num_workers):
+        ctx = mp.get_context("spawn")
+        self.conns, self.procs = [], []
+        for _ in range(num_workers):
+            a, b = ctx.Pipe()
+            p = ctx.Process(target=_probe_worker, args=(b, env_params), daemon=True)
+            p.start()
+            self.conns.append(a)
+            self.procs.append(p)
+
+    def rollout(self, sim_state, actions):
+        acts = actions.detach().cpu().numpy()
+        n = acts.shape[1]
+        chunks = np.array_split(np.arange(n), len(self.conns))
+        live = [(c, idx) for c, idx in zip(self.conns, chunks) if len(idx)]
+        for c, idx in live:
+            c.send((sim_state, acts[:, idx]))
+        parts = [c.recv() for c, _ in live]
+        out = np.concatenate(parts, axis=1)
+        return torch.from_numpy(out).to("cuda")
+
+    def close(self):
+        for c in self.conns:
+            try:
+                c.send(None)
+            except Exception:
+                pass
+        for p in self.procs:
+            p.join(timeout=5)
+
+
+def serial_rollout(env, sim_state, actions):
+    H, n, _ = actions.shape
+    acts = actions.detach().cpu().numpy()
+    out = np.zeros((H, n, env.observation_shape[0]), dtype=np.float32)
+    for i in range(n):
+        restore(env, sim_state)
+        for t in range(H):
+            obs, _, _, _, _ = env.step(torch.from_numpy(acts[t, i]))
+            out[t, i] = obs["state"].numpy()
+    return torch.from_numpy(out).to("cuda")
+
+
+def agent_action(agent, state):
+    """One deterministic IBRL-hybrid action for a [1, obs] state."""
+    return agent.act({"state": state}, eval_mode=True, stddev=0.0, cpu=False)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--weight", default="exps/mimicgen/square_ibrl_rotw1_seed1/model0.pt")
+    ap.add_argument("--shift", default="target", choices=["source", "target"])
+    ap.add_argument("--arms", default="policy,oracle")
+    ap.add_argument("--episodes", type=int, default=100)
+    ap.add_argument("--num_samples", type=int, default=32)
+    ap.add_argument("--num_base", type=int, default=10)
+    ap.add_argument("--horizon", type=int, default=3)
+    ap.add_argument("--iterations", type=int, default=2)
+    ap.add_argument("--num_elites", type=int, default=8)
+    ap.add_argument("--temperature", type=float, default=2.0)
+    ap.add_argument("--init_std", type=float, default=0.15)
+    ap.add_argument("--min_std", type=float, default=0.02)
+    ap.add_argument("--momentum", type=float, default=0.1)
+    ap.add_argument("--base_policy_std", type=float, default=0.1)
+    ap.add_argument("--discount", type=float, default=0.99)
+    ap.add_argument("--probe_workers", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--simdist_ckpt", default="",
+                    help="Score terminals with a SimDist world model's DISTILLED "
+                         "value head V_hat(encode(s)) instead of the expert critic, "
+                         "leaving the proposal and everything else alone. This is a "
+                         "fidelity test: V_hat regresses onto the very V_src this arm "
+                         "otherwise uses, so a drop means distillation lost the LOCAL "
+                         "candidate-ranking structure (which no offline MSE reports).")
+    ap.add_argument("--value_weight", default="",
+                    help="Take the terminal value from THIS agent instead of the "
+                         "source expert (proposal still comes from --weight). "
+                         "Pointing it at a target-trained expert is the go/no-go "
+                         "probe for 'is the source value what caps the oracle arm'.")
+    args = ap.parse_args()
+
+    import train_rl
+    from env.domain_shift import DomainShiftConfig
+    from env.robosuite_wrapper import PixelRobosuite
+
+    agent, _eval_env, env_params = train_rl.load_model(args.weight, "cuda")
+    agent.train(False)
+    for p in agent.parameters():
+        p.requires_grad_(False)
+
+    env_params = dict(env_params)
+    if args.shift == "target":
+        env_params["domain_shift"] = DomainShiftConfig(
+            mode="fixed", mask_hole_offset_in_obs=False, **TARGET_B)
+    else:
+        env_params["domain_shift"] = DomainShiftConfig(mode="none")
+
+    idc = env_params.get("init_distribution", None)
+    log(f"[setup] weight={args.weight}")
+    log(f"[setup] shift={args.shift} "
+        f"{TARGET_B if args.shift == 'target' else '(nominal)'}")
+    log(f"[setup] init_dist enabled={getattr(idc, 'enabled', False)} "
+        f"nut_z_rot={tuple(round(float(v), 4) for v in getattr(idc, 'nut_z_rot', ()))} "
+        f"= {tuple(round(np.degrees(float(v)), 1) for v in getattr(idc, 'nut_z_rot', ()))} deg")
+    log(f"[setup] prior attached: {len(getattr(agent, 'bc_policies', []))} "
+        f"| act_method={agent.cfg.act_method}")
+
+    main_env = PixelRobosuite(**env_params)
+    ep_len = int(env_params.get("episode_length", 400))
+    arms = [a for a in args.arms.split(",") if a]
+
+    pool = None
+    probe = None
+    if "oracle" in arms:
+        if args.probe_workers > 0:
+            pool = ProbePool(env_params, args.probe_workers)
+            log(f"[setup] ProbePool: {args.probe_workers} sim-only cpu workers")
+        else:
+            probe = PixelRobosuite(**{**env_params, "device": "cpu"})
+            probe.reset()
+
+    A = main_env.action_dim
+    H = args.horizon
+    dev = "cuda"
+    gamma_H = args.discount ** H
+
+    # Terminal value. Defaults to the SOURCE expert (the whole point of the arm);
+    # --value_weight swaps in another agent's critic while leaving the proposal
+    # alone, which isolates "is the value the binding constraint".
+    value_agent = agent
+    wm = None
+    if args.simdist_ckpt:
+        import pyrallis as _pyr
+        import train_simdist
+        from rl.simdist_agent import SimDistAgent
+        sdir = os.path.dirname(args.simdist_ckpt)
+        scfg = _pyr.load(train_simdist.MainConfig,  # type: ignore
+                         open(os.path.join(sdir, "cfg.yaml")))
+        sd_agent = SimDistAgent(True, main_env.observation_shape, main_env.prop_shape,
+                                main_env.action_dim, scfg.rl_camera, scfg.simdist)
+        sd_agent.load_state_dict(torch.load(args.simdist_ckpt))
+        sd_agent.train(False)
+        for p in sd_agent.parameters():
+            p.requires_grad_(False)
+        wm = sd_agent.to("cuda").model
+        log(f"[setup] VALUE = distilled V_hat from {args.simdist_ckpt} "
+            f"(proposal still the expert)")
+    if args.value_weight:
+        value_agent, _ve, _vp = train_rl.load_model(args.value_weight, "cuda")
+        value_agent.train(False)
+        for p in value_agent.parameters():
+            p.requires_grad_(False)
+        log(f"[setup] VALUE from {args.value_weight} "
+            f"(proposal still from {args.weight})")
+
+    def value_fn(states):                       # [N, obs] -> [N]
+        if wm is not None:
+            return wm.predict_value(wm.encode(states), target=False).view(-1)
+        return value_agent.value({"state": states}, use_ibrl=True).view(-1)
+
+    def rollout_real(sim_state, actions):
+        return (pool.rollout(sim_state, actions) if pool is not None
+                else serial_rollout(probe, sim_state, actions))
+
+    def plan(state, sim_state):
+        """CEM over REAL rollouts, scored by the source-domain terminal value."""
+        # base seeds: expert action at s0, held for H steps, then jittered. (A
+        # closed-loop expert rollout would need a probe env stepped outside the
+        # pool; the held action is the same open-loop seed SimDist's policy
+        # rollout provides, and CEM refines it over `iterations`.)
+        a0 = agent_action(agent, state.view(1, -1)).view(1, 1, A)
+        base = a0.expand(H, args.num_base, A).clone()
+        if args.base_policy_std > 0:
+            base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
+
+        mean = torch.zeros(H, A, device=dev)
+        std = torch.full((H, A), args.init_std, device=dev)
+        num_rand = args.num_samples - args.num_base
+        for _ in range(args.iterations):
+            noise = torch.randn(H, num_rand, A, device=dev)
+            rand = (mean.unsqueeze(1) + std.unsqueeze(1) * noise).clamp(-1, 1)
+            actions = torch.cat([rand, base], dim=1)
+            states = rollout_real(sim_state, actions)          # [H, N, obs]
+            returns = value_fn(states[-1]) * gamma_H
+            # §33's ruler: what CEM actually ranks candidates by is the WITHIN-call
+            # spread of gamma^H * V. On Threading that was 0.0068 = 1.4% of V's
+            # range, which is why any refit whose residual was of the same order
+            # rewrote the elite set and collapsed. Record it so the tolerance for
+            # a value edit on THIS system is measured, not assumed.
+            SIGNAL.append((float(returns.std()), float(returns.mean()),
+                           float(returns.max() - returns.min())))
+            elite_val, elite_idx = torch.topk(returns, args.num_elites)
+            elite = actions[:, elite_idx]
+            score = torch.exp(args.temperature * (elite_val - elite_val.max()))
+            score = score / (score.sum() + 1e-9)
+            new_mean = (score.view(1, -1, 1) * elite).sum(1)
+            new_std = torch.sqrt(
+                (score.view(1, -1, 1) * (elite - new_mean.unsqueeze(1)) ** 2).sum(1))
+            mean = args.momentum * mean + (1 - args.momentum) * new_mean
+            std = new_std.clamp(min=args.min_std)
+        return mean[0]
+
+    def yaw_deg(q):
+        w, x, y, z = q
+        return np.degrees(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))) % 360
+
+    def phase(rec):
+        """§32's failure taxonomy, same thresholds so the numbers are comparable:
+        grasp   = never lifted the nut 3 cm;
+        transport = lifted but never got within 5 cm of the peg;
+        insertion = reached the peg but never seated."""
+        if rec["max_lift"] < 0.03:
+            return "grasp"
+        if rec["min_pegdist"] > 0.05:
+            return "transport"
+        return "insertion"
+
+    results, records = {}, {}
+    for arm in arms:
+        succ = 0
+        rows = []
+        for ep in range(args.episodes):
+            np.random.seed(args.seed + ep)
+            torch.manual_seed(args.seed + ep)
+            obs, _ = main_env.reset()
+            # hard_reset rebuilds the sim each reset -> re-fetch model/data + ids
+            sim, mdl = main_env.env.sim, main_env.env.sim.model
+            nut_bid = mdl.body_name2id("SquareNut_main")
+            peg_bid = mdl.body_name2id("peg1")
+            peg_xy = sim.data.body_xpos[peg_bid][:2].copy()
+            nut0 = sim.data.body_xpos[nut_bid].copy()
+            yaw0 = yaw_deg(sim.data.body_xquat[nut_bid].copy())
+            z0 = nut0[2]
+            max_lift, min_pegdist = 0.0, 1e9
+            done = False
+            for _t in range(ep_len):
+                state = obs["state"].to(dev)
+                if arm == "policy":
+                    act = agent_action(agent, state.view(1, -1)).view(-1)
+                else:
+                    sim_state = sim.get_state().flatten()
+                    act = plan(state, sim_state)
+                obs, _r, terminal, success, _ = main_env.step(act.cpu())
+                nut = sim.data.body_xpos[nut_bid]
+                max_lift = max(max_lift, float(nut[2] - z0))
+                min_pegdist = min(min_pegdist, float(np.linalg.norm(nut[:2] - peg_xy)))
+                if success:
+                    done = True
+                    break
+                if terminal:
+                    break
+            succ += int(done)
+            rows.append(dict(ep=ep, succ=int(done), yaw=float(yaw0),
+                             x=float(nut0[0]), y=float(nut0[1]),
+                             max_lift=max_lift, min_pegdist=min_pegdist))
+            if (ep + 1) % 10 == 0:
+                log(f"  [{arm}] {ep+1}/{args.episodes}  running={succ/(ep+1):.3f}")
+        records[arm] = rows
+        fails = [r for r in rows if not r["succ"]]
+        from collections import Counter
+        fc = Counter(phase(r) for r in fails)
+        log(f"  [{arm}] failure phases: {dict(fc)}  "
+            f"(grasp=never lifted 3cm / transport=lifted but >5cm from peg / "
+            f"insertion=reached peg, never seated)")
+        for r in fails:
+            log(f"      ep{r['ep']:<3d} yaw={r['yaw']:6.1f} y={r['y']:+.3f} "
+                f"lift={r['max_lift']:.3f} pegdist={r['min_pegdist']:.3f} "
+                f"-> {phase(r)}")
+        rate = succ / args.episodes
+        se = (rate * (1 - rate) / args.episodes) ** 0.5
+        results[arm] = (rate, se, succ)
+        log(f"[RESULT] {arm:7s} {args.shift:6s}  {succ}/{args.episodes} = "
+            f"{rate:.3f} +- {se:.3f}")
+
+    if SIGNAL:
+        import numpy as _np
+        a = _np.array(SIGNAL)
+        log(f"\n[signal] CEM ranking signal over {len(a)} plan calls: "
+            f"std_i(g^H V) mean={a[:,0].mean():.5f}  median={_np.median(a[:,0]):.5f}")
+        log(f"[signal] V level mean={a[:,1].mean():.4f}  within-call range mean={a[:,2].mean():.5f}")
+        log(f"[signal] std/level = {a[:,0].mean()/max(abs(a[:,1].mean()),1e-9):.4f}  "
+            f"(Threading was 0.0068 abs / ~1.4% of V range, §33)")
+    log("\n" + "=" * 60)
+    for arm, (rate, se, succ) in results.items():
+        log(f"{arm:8s} {args.shift:6s}  {rate:.3f} +- {se:.3f}  ({succ}/{args.episodes})")
+    if pool is not None:
+        pool.close()
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()

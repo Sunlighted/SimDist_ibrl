@@ -1,0 +1,63 @@
+# Square_D0 SOURCE expert, rotw1 window (120-180 deg), hand_init sigma = 0.1.
+#
+# Re-train of square_ibrl_rotw1_seed1 (which used the default sigma 0.02) at the
+# sigma the project now standardises on. Everything else identical: same MLP BC
+# prior, same plain IBRL (no prior-margin, per CLAUDE.md 32), same nut z_rot
+# window so source and target share an init distribution by construction.
+bc_policy: exps/mimicgen/square_source_mlp_bc_n1000_seed1/model0.pt
+discount: 0.99
+end_on_success: 1
+episode_length: 400
+eval_domain_shift:
+  mode: none
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_init_dist:
+  enabled: true
+  nut_z_rot:
+  - 2.0943951023931953
+  - 3.141592653589793
+log_per_step: 10000
+mix_rl_rate: 0.5
+mp_eval: 1
+nstep: 3
+num_critic_update: 5
+num_eval_episode: 50
+num_train_step: 400000
+num_warm_up_episode: 50
+obs_stack: 1
+preload_datapath: release/data/mimicgen/core/square_d0/processed_data96.hdf5
+preload_num_data: 10
+prop_stack: 1
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1
+  state_actor:
+    dropout: 0
+    hidden_dim: 1024
+    layer_norm: 0
+    num_layer: 3
+  state_critic:
+    hidden_dim: 1024
+    layer_norm: 1
+    num_k: 2
+    num_layer: 3
+    num_q: 5
+replay_buffer_size: 1000
+save_dir: exps/mimicgen/square_ibrl_rotw1_sig01_seed1
+seed: 1
+state_stack: 1
+stddev_max: 0.1
+stddev_min: 0.1
+task_name: Square_D0
+train_domain_shift:
+  mode: none
+train_hand_init_perturb_joint_sigma: 0.1
+train_init_dist:
+  enabled: true
+  nut_z_rot:
+  - 2.0943951023931953
+  - 3.141592653589793
+update_freq: 2
+use_state: 1
+use_wb: 1

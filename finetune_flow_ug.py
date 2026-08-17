@@ -61,6 +61,17 @@ def main():
     p.add_argument("--hand_init_sigma", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--device", type=str, default="cuda")
+    # --- CLAUDE.md §36 confound fixes (both default OFF = old behavior byte-identical) ---
+    p.add_argument("--eval_ta", type=int, default=0,
+                   help="Ta for the SELECTION eval. 0 = the flow's native Ta (=8), which is "
+                        "what the original run used -- but deployment is Ta=1 and the two "
+                        "differ hugely (0.15 vs 0.58), so the selected step need not be the "
+                        "best Ta=1 ckpt. Set 1 to select under the deployment mode.")
+    p.add_argument("--save_fixed_step", type=int, default=0,
+                   help="Also dump the ckpt at exactly this step as flow_fixed<N>.pt -- the "
+                        "NO-SELECTION control (matches SimDist stage-2's fixed bc_steps, so "
+                        "the flow-vs-MLP comparison can be reported without flow's "
+                        "best-of-9 selection advantage). 0 = off.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -94,6 +105,11 @@ def main():
         domain_shift=DomainShiftConfig(**TARGET_SHIFT),
         hand_init_perturb_joint_sigma=args.hand_init_sigma,
     )
+    if args.eval_ta > 0:
+        assert args.eval_ta <= flow.Tp, f"eval_ta {args.eval_ta} > Tp {flow.Tp}"
+        flow.Ta = args.eval_ta
+        print(f"[select] SELECTION eval Ta overridden -> {flow.Ta} "
+              f"(0 would have used the flow's native Ta)", flush=True)
     agent = FlowUGAgent(flow, None, FlowUGConfig(use_ug=0), device=device)
 
     opt = torch.optim.AdamW(flow.parameters(), lr=args.lr)
@@ -128,6 +144,10 @@ def main():
                   f"train_loss={last_loss:.4f}{tag}", flush=True)
             if step == args.steps:
                 break
+        if args.save_fixed_step > 0 and step == args.save_fixed_step:
+            fixed_path = os.path.join(args.save_dir, f"flow_fixed{args.save_fixed_step}.pt")
+            torch.save(flow.state_dict(), fixed_path)
+            print(f"[ft @ {step:5d}] no-selection control saved -> {fixed_path}", flush=True)
         # one train step
         flow.train()
         idx = torch.randint(0, N, (args.batch_size,), device=device)

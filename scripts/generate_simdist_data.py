@@ -375,6 +375,13 @@ def write_env_cfg(out_dir, env_params, args):
         "env_name": env_params["env_name"],
         "domain_shift": dataclasses.asdict(env_params["domain_shift"]),
         "hand_init_perturb_joint_sigma": args.hand_init_sigma,
+        # The reset distribution is inherited from the expert ckpt's eval_init_dist
+        # (build_source_env), so it is NOT visible from the CLI -- record it or a
+        # dataset collected under a narrowed window (e.g. Square rotw1's 120-180
+        # deg nut yaw) is indistinguishable from a full-circle one after the fact.
+        "init_distribution": (
+            dataclasses.asdict(env_params["init_distribution"])
+            if env_params.get("init_distribution") is not None else None),
         "use_state": env_params.get("use_state"),
         "expert_weight": args.expert,
         "expert_hybrid": args.expert_hybrid,
@@ -530,6 +537,7 @@ def main():
             train_rl.MainConfig, open(os.path.join(os.path.dirname(args.expert), "cfg.yaml"), "r"))
         env_params = {"env_name": ecfg.task_name,
                       "domain_shift": resolve_domain_shift(args, ecfg),
+                      "init_distribution": ecfg.eval_init_dist,
                       "use_state": ecfg.use_state}
         write_env_cfg(args.out_dir, env_params, args)
         for sp in shard_paths:

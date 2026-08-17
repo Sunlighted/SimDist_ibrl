@@ -34,8 +34,23 @@ Gates (per the chosen design):
   - needle speed: OPTIONAL (off when `max_needle_speed <= 0`); needle linear
                   speed must be below threshold (kills high-momentum ramming).
 
-Threading-only: relies on `ring_geom_ids` / `needle_joint` from
-`resolve_threading_bindings`.
+Task coverage. The `dwell` gate is task-agnostic and applies to any env. The
+other two gates are Threading-specific and are SKIPPED when their bindings are
+absent, so the same config works on Square/Coffee:
+
+  Threading (`ring_geom_ids` / `needle_joint` from `resolve_threading_bindings`)
+    -> dwell + tripod-displacement + optional needle speed.
+
+  Square (`object_body_ids` / optional `nut_joint` from
+  `resolve_square_bindings`) -> dwell + optional nut speed. Square's raw test
+  (`NutAssembly.on_peg`) is `|dx|<3cm and |dy|<3cm and z < table+5cm` plus "the
+  gripper is still within ~4.2 cm of the nut". A single-frame pass therefore
+  fires on a nut that is merely bouncing through the box, which the dwell gate
+  removes. NOTE what dwell does NOT remove: the horizontal box is wide relative
+  to the peg, so a nut RESTING ON THE TABLE next to the peg satisfies the raw
+  test indefinitely and passes any dwell length. Rejecting that needs a
+  geometric "the peg is actually inside the nut's hole" test, which this module
+  does not implement.
 """
 
 from dataclasses import dataclass
@@ -52,7 +67,8 @@ class StrictSuccessConfig:
     enabled: bool = False
 
     # Position test must hold for this many CONSECUTIVE control steps (20 Hz,
-    # so 3 = 0.15 s). Kills the one-frame transient / fly-through successes.
+    # so 3 = 0.15 s, 60 = 3 s). Kills the one-frame transient / fly-through
+    # successes. Task-agnostic: this is the only gate that runs on every task.
     dwell_steps: int = 3
 
     # Ring center may drift at most this far (meters) from its post-reset
@@ -65,8 +81,15 @@ class StrictSuccessConfig:
 
     # OPTIONAL needle linear-speed gate (m/s). <= 0 disables it (default). Set
     # e.g. 0.5 to also reject high-momentum ramming where the needle is still
-    # moving fast on the success frame.
+    # moving fast on the success frame. Threading only (needs `needle_joint`).
     max_needle_speed: float = 0.0
+
+    # OPTIONAL Square nut linear-speed gate (m/s), mirror of max_needle_speed.
+    # <= 0 disables it (default). Needs `nut_joint` in the bindings; silently
+    # inactive without it. Mostly redundant once dwell_steps is long -- a nut
+    # still moving fast cannot hold the position test for 3 s -- so leave it off
+    # unless you want to reject the success FRAME itself rather than the streak.
+    max_nut_speed: float = 0.0
 
 
 class SuccessValidator:
@@ -86,26 +109,41 @@ class SuccessValidator:
     def reset(self, env, bindings: dict) -> None:
         """Snapshot the ring center AFTER env.reset() + any domain-shift forward
         so the tripod-displacement gate measures drift from the true start pose
-        (a shifted hole_offset is part of that start pose, not drift)."""
+        (a shifted hole_offset is part of that start pose, not drift). On tasks
+        without a ring (Square/Coffee) the snapshot stays None and the
+        displacement gate is skipped."""
         self._streak = 0
         self._ring_center0 = self._ring_center(env, bindings)
 
     @staticmethod
-    def _ring_center(env, bindings: dict) -> np.ndarray:
-        return np.mean(env.sim.data.geom_xpos[bindings["ring_geom_ids"]], axis=0)
+    def _ring_center(env, bindings: dict) -> Optional[np.ndarray]:
+        ids = bindings.get("ring_geom_ids")
+        if not ids:
+            return None
+        return np.mean(env.sim.data.geom_xpos[ids], axis=0)
+
+    @staticmethod
+    def _joint_linear_speed(env, joint_name: str) -> float:
+        qvel = np.asarray(env.sim.data.get_joint_qvel(joint_name))
+        return float(np.linalg.norm(qvel[:3]))
 
     def _frame_valid(self, env, bindings: dict, raw_success: bool) -> bool:
         if not raw_success:
             return False
-        # Gate: the ring hasn't been shoved away from its reset pose.
+        # Gate (Threading): the ring hasn't been shoved away from its reset pose.
         if self.cfg.max_tripod_disp > 0 and self._ring_center0 is not None:
-            disp = np.linalg.norm(self._ring_center(env, bindings) - self._ring_center0)
-            if disp > self.cfg.max_tripod_disp:
+            center = self._ring_center(env, bindings)
+            if center is not None:
+                disp = np.linalg.norm(center - self._ring_center0)
+                if disp > self.cfg.max_tripod_disp:
+                    return False
+        # Gate (Threading, optional): the needle isn't still moving fast.
+        if self.cfg.max_needle_speed > 0 and "needle_joint" in bindings:
+            if self._joint_linear_speed(env, bindings["needle_joint"]) > self.cfg.max_needle_speed:
                 return False
-        # Gate (optional): the needle isn't still moving fast (no ramming).
-        if self.cfg.max_needle_speed > 0:
-            qvel = np.asarray(env.sim.data.get_joint_qvel(bindings["needle_joint"]))
-            if np.linalg.norm(qvel[:3]) > self.cfg.max_needle_speed:
+        # Gate (Square, optional): the nut isn't still moving fast.
+        if self.cfg.max_nut_speed > 0 and "nut_joint" in bindings:
+            if self._joint_linear_speed(env, bindings["nut_joint"]) > self.cfg.max_nut_speed:
                 return False
         return True
 

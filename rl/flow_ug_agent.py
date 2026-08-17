@@ -257,10 +257,11 @@ class OrigMppiFlowAgent(nn.Module):
 
     @torch.no_grad()
     def _base_seq(self, states: torch.Tensor, num: int) -> torch.Tensor:
-        """Planner hook. plan() passes a single [1,obs] state (return [H,num,act]);
-        plan_batch() passes [B,obs] with B=num_proc>1 (return [B,H,num,act])."""
-        seq = self._sample_base(states, num)                       # [B,H,num,act]
-        return seq[0] if states.shape[0] == 1 else seq
+        """Planner hook, ALWAYS batched: states[B,obs] -> [B,H,num,act].
+        plan() squeezes the leading 1 itself. (Do NOT dispatch on B here — mp eval
+        calls plan_batch with B=1 once only one env is left, which is
+        indistinguishable from plan()'s [1,obs] and used to return a 3-d tensor.)"""
+        return self._sample_base(states, num)                      # [B,H,num,act]
 
     @torch.no_grad()
     def act(self, obs, *, eval_mode: bool = True, stddev: float = 0.0, cpu: bool = True):

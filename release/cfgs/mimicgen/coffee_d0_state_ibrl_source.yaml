@@ -1,0 +1,74 @@
+# IBRL on Coffee_D0 — SOURCE domain, target = high source success.
+#
+# Uses the single-step MLP BC (coffee_source_mlp_bc_n1000_seed1) as the IBRL
+# BC prior + 10 seed demos from the official core data. state_stack=1 so the
+# MLP prior's obs space matches. No domain shift, no strict-success gating
+# (both are Threading/Square-only — resolve_bindings raises for Coffee).
+# Default sigma=0.02 joint init (matches the official demos).
+#
+# Plain ORIGINAL IBRL: no prior_margin, no add_bc_loss. Per CLAUDE.md §32, the
+# prior-margin annealing HURTS final performance (Square collapsed 0.64 -> 0.04
+# at 20k) — do not turn it on for a normal source run.
+#
+# BUDGET: 600k, NOT 400k. §32 measured Square at 400k = 77% but 600k = 94% —
+# IBRL on these tasks cold-starts (~100k near 0) and only lifts off in the second
+# half. Do NOT call a ceiling at 400k. Coffee is TWO-stage (grasp pod -> insert +
+# close lid) with horizon 400, so if anything it needs more, not less.
+#
+# If plain IBRL stalls, the proven lever (§32) is a STRONGER prior, not more
+# steps: Square went from 89.2% (MLP prior, 63%) to 97.8% (RNN-GMM prior, 83%),
+# +8.6pt / z=5.6 over 500 games. A coffee_d0_state_source_rnn_bc.yaml would be
+# the next thing to train.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/coffee_d0_state_ibrl_source.yaml \
+#       --save_dir exps/mimicgen/coffee_ibrl_source_seed1
+task_name: "Coffee_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# MLP BC prior + seed demos from the official core data.
+bc_policy: "exps/mimicgen/coffee_source_mlp_bc_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/coffee_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 600000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# SOURCE domain (no shift), no strict-success gating.
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

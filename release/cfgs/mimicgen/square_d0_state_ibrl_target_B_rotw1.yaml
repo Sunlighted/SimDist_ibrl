@@ -1,0 +1,85 @@
+# IBRL on Square_D0 TARGET-B, rotw1 init distribution.
+#
+# Mirrors square_d0_state_ibrl_target_B.yaml (same target-B shift: gripper_kp
+# 0.30 / peg_size 1.20 / peg_friction 2.0) with two changes:
+#   * nut z_rot narrowed to the rotw1 window (120-180 deg), matching the source
+#     expert square_ibrl_rotw1_seed1 -- train AND eval, so source and target
+#     share an identical init distribution by construction.
+#   * the prior is that source expert's IBRL HYBRID (source_agent_use_hybrid=1),
+#     not a BC head. NOTE: without that flag, load_frozen_agent pins the frozen
+#     source to act_method="rl" and the prior would be its BARE RL head.
+#
+# sgft_shaping=0 => plain IBRL, the source agent only serves as the prior.
+# hand_init sigma = 0.1 (train + eval). NOTE the source expert itself was
+# TRAINED at the default 0.02, so as a prior it runs outside its own init
+# distribution here (the CLAUDE.md 35 trap); its zero-shot target bar at 0.1 is
+# lower than the 28.2% measured at 0.02.
+# Bars on this target (500 games, hand_init sigma per cfg): source expert
+# zero-shot 28.2%, oracle-dynamics MPPI with that expert's value 90%.
+bc_policy: ''
+discount: 0.99
+end_on_success: 1
+episode_length: 400
+eval_domain_shift:
+  gripper_kp_scale: 0.3
+  mask_hole_offset_in_obs: false
+  mode: fixed
+  peg_friction_scale: 2.0
+  peg_size_scale: 1.2
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_init_dist:
+  enabled: true
+  nut_z_rot: &id001
+  - 2.0943951023931953
+  - 3.141592653589793
+log_per_step: 10000
+mix_rl_rate: 0.5
+mp_eval: 1
+nstep: 3
+num_critic_update: 5
+num_eval_episode: 50
+num_train_step: 400000
+num_warm_up_episode: 50
+obs_stack: 1
+preload_datapath: release/data/mimicgen/core/square_d0/processed_data96.hdf5
+preload_num_data: 10
+prop_stack: 1
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1
+  sgft_shaping: 0
+  state_actor:
+    dropout: 0
+    hidden_dim: 1024
+    layer_norm: 0
+    num_layer: 3
+  state_critic:
+    hidden_dim: 1024
+    layer_norm: 1
+    num_k: 2
+    num_layer: 3
+    num_q: 5
+replay_buffer_size: 1000
+save_dir: exps/mimicgen/square_ibrl_target_B_rotw1_seed1
+seed: 1
+sgft_source_agent: exps/mimicgen/square_ibrl_rotw1_seed1/model0.pt
+snapshot_period: 100000
+source_agent_use_hybrid: 1
+state_stack: 1
+stddev_max: 0.1
+stddev_min: 0.1
+task_name: Square_D0
+train_domain_shift:
+  gripper_kp_scale: 0.3
+  mask_hole_offset_in_obs: false
+  mode: fixed
+  peg_friction_scale: 2.0
+  peg_size_scale: 1.2
+train_hand_init_perturb_joint_sigma: 0.1
+train_init_dist:
+  enabled: true
+  nut_z_rot: *id001
+update_freq: 2
+use_state: 1
+use_wb: 1

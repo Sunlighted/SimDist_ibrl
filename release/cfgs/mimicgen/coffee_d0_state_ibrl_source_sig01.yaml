@@ -1,0 +1,78 @@
+# Coffee_D0 SOURCE IBRL, sigma=0.1 init (the standing convention from here on)
+# + periodic snapshots for later SimDist diverse-data generation.
+#
+# Differences vs coffee_d0_state_ibrl_source.yaml (which was sigma=0.02, the
+# robosuite default that matches the official demos):
+#   * train/eval hand_init_perturb_joint_sigma = 0.1  (5x the demo-collection
+#     spread; a wider, harder init distribution -- and the one every downstream
+#     Coffee experiment will use, so source and target stay comparable)
+#   * num_train_step 400k (not 600k)
+#   * snapshot_period 20000 -> 20 quality-spectrum checkpoints
+#     snapshot_{20000..400000}.pt, each loadable by train_rl.load_model since
+#     they sit next to cfg.yaml. These are the input to
+#     generate_simdist_data.py for a diverse (random -> expert) dataset.
+#
+# Prior is still the sigma-0.02-trained MLP BC. That is a deliberate mismatch we
+# accept: retraining the BC at sigma 0.1 would change two things at once, and
+# CLAUDE.md 32 measured that on Coffee the prior is NOT the bottleneck (MLP
+# 94.4% vs RNN 92.4%, z=1.27 ns). Revisit only if this run stalls.
+#
+# Plain ORIGINAL IBRL: no prior_margin, no add_bc_loss (CLAUDE.md 32 -- the
+# margin annealing collapsed Square from 0.64 to 0.04).
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/coffee_d0_state_ibrl_source_sig01.yaml \
+#       --save_dir exps/mimicgen/coffee_ibrl_source_sig01_seed1
+task_name: "Coffee_D0"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: "exps/mimicgen/coffee_source_mlp_bc_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/coffee_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 400000
+snapshot_period: 20000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+# sigma=0.1 joint-space init on BOTH the rollout env and the eval env.
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+# SOURCE domain (no shift).
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

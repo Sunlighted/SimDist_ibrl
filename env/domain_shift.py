@@ -49,6 +49,21 @@ class DomainShiftConfig:
     # the model). See apply_ring_shift() for the geometry + safe ranges.
     ring_size_scale: float = 1.0
     ring_friction_scale: float = 1.0
+    # needle_size_scale > 1.0 THICKENS the needle shaft (nominal 10x10 mm
+    # cross-section) instead of shrinking the ring. It is the OTHER way to
+    # close the same insertion clearance: the aperture the shaft must thread
+    # is (ring_opening - needle_cross_section), and this knob attacks it from
+    # the needle side. The needle geom's CENTER is untouched, so
+    # geom_xpos["needle_obj_needle"] -- the quantity the 12 mm success check
+    # reads -- is unchanged (exactly the ring_size_scale trick, mirrored).
+    # Mass/inertia are deliberately NOT rescaled: this is a pure geometry knob
+    # (use mass_scale for the inertial axis) so the two stay separable.
+    #   1.00 -> 10.0 mm shaft (3.0 mm/side vs a nominal 16 mm ring)
+    #   1.20 -> 12.0 mm shaft (2.0 mm/side vs 16 mm; 0.8 mm/side vs a 13.6 mm ring)
+    #   1.40 -> 14.0 mm shaft (1.0 mm/side vs 16 mm)
+    #   >=1.60 -> shaft >= 16 mm ring opening -> impossible at ring_size 1.0
+    # See apply_needle_shift() for the feasibility table.
+    needle_size_scale: float = 1.0
     # ---- TRAP knobs: make the tripod TIP OVER (target-only) ----------------
     # Motivation (CLAUDE.md §33 follow-up): every shift so far only makes the
     # task uniformly HARDER, which leaves the state ORDERING intact -- that is
@@ -85,6 +100,66 @@ class DomainShiftConfig:
     # peg_friction_scale scales the square peg's sliding friction (nominal 1.0).
     # Grippier peg -> a sloppy approach catches/jams instead of sliding down.
     peg_friction_scale: float = 1.0
+    # nut_size_scale < 1 SHRINKS the HELD square nut's inner hole (nominal
+    # 45.5x45.5 mm) by thickening the 4 frame bars inward -- the direct analog
+    # of Threading's ring_size_scale (shrink the opening the held object must
+    # thread), but on the manipulated NUT instead of thickening the fixed peg.
+    # Geometry: grow each frame bar's hole-facing (thin in-plane) half-size by
+    # delta = NUT_HOLE_HALF*(1-scale); symmetric growth keeps the nut body
+    # center fixed, so the success check (nut-body-pos vs fixed peg within 3 cm)
+    # is unchanged -- only the physical clearance over the peg shrinks. Peg is
+    # 32 mm, so the hole must stay > 32 mm: scale floor ~= 0.70 (32/45.5).
+    #   1.00 -> 45.5 mm hole (6.75 mm/side clearance, nominal)
+    #   0.85 -> 38.7 mm hole (3.35 mm/side; ~ peg_size 1.20's 3.55 mm/side)
+    #   0.80 -> 36.4 mm hole (2.2 mm/side)
+    #   <=0.70 -> hole <= peg -> impossible
+    nut_size_scale: float = 1.0
+
+    # ---- Coffee_D0-only knobs (see resolve_coffee_bindings / apply_coffee_shift) ----
+    # pod_holder_size_scale < 1.0 shrinks the pod holder's INNER opening (the
+    # 64 `coffee_machine_pod_holder_cup_body_hc_*` boxes forming the cup wall)
+    # by thickening each wall box radially. Direct analog of Threading's
+    # ring_size_scale. Symmetric growth keeps each box center -- and thus the
+    # holder body center -- fixed, and the success check reads Python-side
+    # attrs (`env.pod_holder_size` / `env.pod_size`, set from the MujocoObject
+    # spec, NOT re-read from sim.model), so `r_diff` stays 5.2 mm no matter
+    # what we do here. VERIFIED: 1.5x wall thickening + _setup_references()
+    # left r_diff at 0.0052 exactly.
+    #
+    # !! MEASURED, and it kills the obvious design: the nominal PHYSICAL
+    # clearance is only 0.41 mm/side -- cup inner radius 24.97 mm vs the pod
+    # mesh's true max radius 24.56 mm (the pod is a truncated cone: 20.71 mm at
+    # the bottom, 24.56 mm at the top rim). NOTE 24.56 != `env.pod_size[0]` =
+    # 24.30 mm; the latter is the MujocoObject spec's bounding half-size and is
+    # 0.26 mm SMALLER than the actual mesh. The 5.2 mm figure people quote is
+    # the SUCCESS TOLERANCE (`r_diff`, built from the holder's OUTER half-size
+    # 29.5 mm), not a physical clearance -- do not confuse the two.
+    #
+    # ⛔ EMPIRICALLY THIS KNOB IS A NO-OP (2026-08-08): the 99.8% source expert
+    # scored 100% at EVERY setting from 0.995 down to 0.976 (50 games each).
+    # Reason: the available travel before the wall reaches the pod is 0.41 mm,
+    # and sub-0.2 mm interference is simply absorbed by MuJoCo's contact
+    # softness (solimp dmin 0.9) -- the pod is pushed through. Success does
+    # genuinely require ~30 mm of real insertion (a rim-seated pod's center sits
+    # 30 mm above the band the closed lid allows), so this is not a loose-
+    # criterion artifact; the knob just cannot generate enough interference.
+    # Use gripper_kp_scale (stage 1) / lid_damping_scale (stage 2) instead.
+    # Floor 0.93 = wall thickened >1.7 mm, unambiguously impossible.
+    pod_holder_size_scale: float = 1.0
+    # Scales the cup wall's sliding friction (nominal 1.0). Contact mu =
+    # max(pod, cup); the pod is also 1.0, so >1 grips the insertion.
+    pod_holder_friction_scale: float = 1.0
+    # ---- lid knobs: Coffee's SECOND stage (Threading/Square have no analog) ----
+    # The lid hinge `coffee_machine_lid_main_joint0` is nominally near-free:
+    # dof_damping 0.005, frictionloss 0, stiffness 0, range [0, 2.094 rad].
+    # Reset always forces it open to 120 deg; success needs it closed < 15 deg.
+    # lid_damping_scale scales dof_damping (viscous, resists fast closing).
+    lid_damping_scale: float = 1.0
+    # lid_frictionloss is ABSOLUTE (N*m), not a scale -- nominal is exactly 0,
+    # so a multiplicative knob would be a no-op. Adds dry (Coulomb) friction to
+    # the hinge: the lid stops dead unless pushed hard enough. This is the
+    # cleanest "second-stage gets harder" lever.
+    lid_frictionloss: float = 0.0
 
     # ---- DR ranges (used when mode == "dr"); centered on 1.0, narrow ----
     # Per sgft design: target shift values (mass=3, fric=0.3, ...) deliberately
@@ -110,7 +185,7 @@ class DomainShiftConfig:
 
 @dataclass
 class InitDistConfig:
-    """Override the Threading needle/tripod reset placement bounds.
+    """Override an env's reset placement distribution (Threading or Square).
 
     Threading's reset distribution is defined by Threading._get_initial_placement_bounds()
     (x/y/z_rot uniform ranges, offset from table center). D0 fixes the tripod
@@ -127,30 +202,92 @@ class InitDistConfig:
     coords; needle long-axis half-extent ~0.08 m, tripod footprint ~0.05 m):
     keep the needle box clear of the tripod box by >= ~0.15 m and inside the
     table with margin, else `ensure_valid_placement` thrashes / resets stall.
+
+    **Square** uses a different mechanism (see _apply_square_init_distribution):
+    only `nut_z_rot` applies, and the default is Square_D0's own full circle, so
+    enabling this config on Square with no override is a no-op. Square_D0's nut
+    z_rot is (0, 2pi) = 360 deg wide, vs Threading_D0's 60 deg -- narrowing it is
+    the point of the knob.
     """
     enabled: bool = False
-    # needle (D1 defaults)
+    # ---- Threading: needle (D1 defaults) ----
     needle_x: tuple = (-0.2, 0.05)
     needle_y: tuple = (0.15, 0.25)
     needle_z_rot: tuple = (-7.0 * np.pi / 6.0, np.pi / 6.0)
-    # tripod / hole (D1 defaults)
+    # ---- Threading: tripod / hole (D1 defaults) ----
     tripod_x: tuple = (-0.1, 0.15)
     tripod_y: tuple = (-0.2, -0.1)
     tripod_z_rot: tuple = (np.pi / 6.0, 5.0 * np.pi / 6.0)
+    # ---- Square: SquareNut z-rotation window (default = Square_D0 as-is) ----
+    nut_z_rot: tuple = (0.0, 2.0 * np.pi)
 
 
 def apply_init_distribution(env, cfg: "InitDistConfig") -> None:
+    """Task-dispatched reset-distribution override. No-op unless cfg.enabled.
+
+    Called once at PixelRobosuite.__init__ (after robosuite.make). Threading and
+    Square need DIFFERENT mechanisms (monkeypatch vs live-sampler mutation) --
+    see each helper for why -- so dispatch on the env class, mirroring
+    resolve_bindings(). Square must be checked first: Square_D0 also defines
+    _get_initial_placement_bounds, but patching it is a no-op there.
+    """
+    if not getattr(cfg, "enabled", False):
+        return
+    cls = env.__class__.__name__
+    if cls.startswith("Square"):
+        _apply_square_init_distribution(env, cfg)
+        return
+    if cls.startswith("Threading"):
+        _apply_threading_init_distribution(env, cfg)
+        return
+    raise NotImplementedError(
+        f"apply_init_distribution not implemented for {cls}. "
+        f"Add a branch (see _apply_threading_init_distribution / "
+        f"_apply_square_init_distribution)."
+    )
+
+
+def _apply_square_init_distribution(env, cfg: "InitDistConfig") -> None:
+    """Narrow the SquareNut z-rotation window by mutating the live sampler.
+
+    Why not the Threading monkeypatch: Square_D0.__init__ reads
+    _get_initial_placement_bounds ONCE and hands the built SequentialCompositeSampler
+    to NutAssemblySquare as `placement_initializer`. _load_model only rebuilds it
+    when it is None (nut_assembly.py:406), and _reset_internal just calls
+    .sample() on the existing object (nut_assembly.py:598) -- so patching the
+    bounds method after construction would never be read again. Mutating the
+    sampler's `rotation` attr instead persists across hard resets;
+    SequentialCompositeSampler.reset() only clears sampled-object state
+    (placement_samplers.py:390) and does not touch it.
+
+    Only the SquareNut is touched. RoundNut is deliberately left alone (Square_D0
+    parks it off-table at y=(-1.1,-1.0)), as is the peg (Square_D0 has no peg
+    sampler at all -- it is fixed; D1/D2 add one).
+    """
+    samplers = getattr(getattr(env, "placement_initializer", None), "samplers", None)
+    if samplers is None or "SquareNutSampler" not in samplers:
+        raise NotImplementedError(
+            f"{env.__class__.__name__} has no 'SquareNutSampler' in its "
+            f"placement_initializer; cannot apply nut_z_rot."
+        )
+    nut_sampler = samplers["SquareNutSampler"]
+    if nut_sampler.rotation_axis != "z":
+        raise NotImplementedError(
+            f"SquareNutSampler rotates about '{nut_sampler.rotation_axis}', "
+            f"expected 'z'."
+        )
+    nut_sampler.rotation = tuple(cfg.nut_z_rot)
+
+
+def _apply_threading_init_distribution(env, cfg: "InitDistConfig") -> None:
     """Monkeypatch env._get_initial_placement_bounds to use cfg's ranges.
 
-    Threading-only. Called once at PixelRobosuite.__init__ (after robosuite.make);
-    persists across hard resets because _load_model re-invokes the (now patched)
+    Persists across hard resets because _load_model re-invokes the (now patched)
     bound method each reset. Rebuilds the placement_initializer immediately so the
     very first reset already uses the new bounds.
     """
     import types
 
-    if not getattr(cfg, "enabled", False):
-        return
     if not hasattr(env, "_get_initial_placement_bounds"):
         raise NotImplementedError(
             "apply_init_distribution only supports Threading-style envs "
@@ -220,6 +357,20 @@ def resolve_threading_bindings(env) -> dict:
     # needle's linear/angular velocity (optional speed gate).
     needle_joint = env.needle.joints[0]  # "needle_obj_joint0", a freejoint
 
+    # The SHAFT geoms only (the thin part that threads the ring), for
+    # apply_needle_shift(). The needle body carries 4 geoms:
+    # needle_obj_needle{,_vis} (shaft, 5x60x5 mm half-size) and
+    # needle_obj_handle{,_vis} (20 mm cube). We keep BOTH the collision geom
+    # and its visual twin -- unlike the ring case, a thicker needle is a real,
+    # legitimately-visible property of the object (not a hidden gap we must
+    # avoid leaking into pixels), so the render should match the physics.
+    _ng0 = int(model.body_geomadr[needle_bid])
+    _nng = int(model.body_geomnum[needle_bid])
+    needle_geom_ids = [
+        g for g in range(_ng0, _ng0 + _nng)
+        if (model.geom_id2name(g) or "").endswith(("_needle", "_needle_vis"))
+    ]
+
     # Tripod (hole) — gets per-reset position offset via its freejoint qpos.
     tripod_bid = model.body_name2id(env.tripod.root_body)
     tripod_joint = env.tripod.joints[0]  # "tripod_obj_joint0", a freejoint
@@ -270,6 +421,7 @@ def resolve_threading_bindings(env) -> dict:
         "object_body_ids": object_body_ids,
         "object_geom_ids": object_geom_ids,
         "needle_joint": needle_joint,
+        "needle_geom_ids": needle_geom_ids,
         "tripod_bid": tripod_bid,
         "tripod_joint": tripod_joint,
         "ring_geom_ids": ring_geom_ids,
@@ -317,6 +469,15 @@ def resolve_square_bindings(env) -> dict:
         and (m.geom_contype[g] != 0 or m.geom_conaffinity[g] != 0)
     ]
 
+    # The 4 frame bars forming the nut hole (for nut_size_scale). SquareNut
+    # collision geoms whose in-plane center is inside the hole region; the
+    # handle geom (at x~=0.054) is excluded by the 0.045 m position gate.
+    nut_frame_geom_ids = [
+        g for g in object_geom_ids
+        if (m.geom_contype[g] != 0 or m.geom_conaffinity[g] != 0)
+        and max(abs(float(m.geom_pos[g][0])), abs(float(m.geom_pos[g][1]))) < 0.045
+    ]
+
     gripper_act_ids = [
         m.actuator_name2id(a) for a in env.robots[0].gripper.actuators
     ]
@@ -330,10 +491,88 @@ def resolve_square_bindings(env) -> dict:
         and not (m.body_id2name(bid) or "").startswith(grip_prefix)
     ]
 
+    # Free joint of the square nut, mirroring Threading's `needle_joint`. Only
+    # consumed by the OPTIONAL strict-success speed gate (`max_nut_speed`); the
+    # shift paths ignore it.
+    nut_joint = "SquareNut_joint0"
+
     return {
         "object_body_ids": object_body_ids,
         "object_geom_ids": object_geom_ids,
         "peg_geom_ids": peg_geom_ids,
+        "nut_frame_geom_ids": nut_frame_geom_ids,
+        "gripper_act_ids": gripper_act_ids,
+        "arm_body_ids": arm_body_ids,
+        "nut_joint": nut_joint,
+    }
+
+
+def resolve_coffee_bindings(env) -> dict:
+    """MuJoCo ids for the Coffee_D0 contact shift.
+
+    `env` is the raw robosuite env. `object_body_ids` / `object_geom_ids` /
+    `gripper_act_ids` are consumed by apply_contact_shift() AS-IS (pod mass via
+    mass_scale, pod friction via friction_scale, gripper kp via
+    gripper_kp_scale), plus Coffee-specific keys for apply_coffee_shift():
+    `pod_holder_geom_ids` (cup wall: opening size + friction) and `lid_dof_ids`
+    (hinge damping / frictionloss). No ring/peg/hole keys -> the Threading- and
+    Square-only shift paths are skipped by the wrapper (it branches on binding
+    contents).
+
+    NOTE `CoffeePreparation_D0` is a Coffee SUBCLASS with extra objects (mug,
+    drawer) and a different success check; it is deliberately NOT accepted here
+    until its own knobs are designed.
+    """
+    cls = env.__class__.__name__
+    if not cls.startswith("Coffee_D"):
+        raise NotImplementedError(
+            f"resolve_coffee_bindings supports Coffee_D0/D1/D2, got {cls}."
+        )
+    m = env.sim.model
+
+    # The coffee pod: the only manipulated free body. Its root body carries the
+    # mass; both geoms (collision `coffee_pod_g0` + `_visual` twin) take the
+    # friction shift -- friction on a non-colliding visual geom is a harmless
+    # no-op, same convention as Threading/Square.
+    pod_bid = env.obj_body_id["coffee_pod"]
+    object_body_ids = [pod_bid]
+    object_geom_ids = [g for g in range(m.ngeom) if m.geom_bodyid[g] == pod_bid]
+
+    # Cup wall = 64 thin boxes `coffee_machine_pod_holder_cup_body_hc_{i}`
+    # arranged on a circle of local radius 27.22 mm, each with radial half-size
+    # 2.247 mm -> inner opening radius 24.97 mm. Take them from the env (it
+    # already resolved these for its contact checks) so we stay in sync with
+    # upstream naming; fall back to a name scan if that attr is absent.
+    pod_holder_geom_ids = list(getattr(env, "pod_holder_geom_ids", []))
+    if not pod_holder_geom_ids:
+        pod_holder_geom_ids = [
+            g for g in range(m.ngeom)
+            if (m.geom_id2name(g) or "").startswith(
+                "coffee_machine_pod_holder_cup_body_hc_"
+            )
+        ]
+
+    # Lid hinge dof (single hinge joint -> single dof address).
+    lid_jid = m.joint_name2id("coffee_machine_lid_main_joint0")
+    lid_dof_ids = [int(m.jnt_dofadr[lid_jid])]
+
+    gripper_act_ids = [
+        m.actuator_name2id(a) for a in env.robots[0].gripper.actuators
+    ]
+
+    arm_prefix = env.robots[0].robot_model.naming_prefix
+    grip_prefix = env.robots[0].gripper.naming_prefix
+    arm_body_ids = [
+        bid for bid in range(m.nbody)
+        if (m.body_id2name(bid) or "").startswith(arm_prefix)
+        and not (m.body_id2name(bid) or "").startswith(grip_prefix)
+    ]
+
+    return {
+        "object_body_ids": object_body_ids,
+        "object_geom_ids": object_geom_ids,
+        "pod_holder_geom_ids": pod_holder_geom_ids,
+        "lid_dof_ids": lid_dof_ids,
         "gripper_act_ids": gripper_act_ids,
         "arm_body_ids": arm_body_ids,
     }
@@ -341,15 +580,19 @@ def resolve_square_bindings(env) -> dict:
 
 def resolve_bindings(env) -> dict:
     """Task-dispatched binding resolver. Threading_D0 -> threading bindings;
-    Square_D0* -> square bindings. Raises for anything else."""
+    Square_D0* -> square bindings; Coffee_D0* -> coffee bindings. Raises for
+    anything else."""
     cls = env.__class__.__name__
     if cls == "Threading_D0":
         return resolve_threading_bindings(env)
     if cls.startswith("Square"):
         return resolve_square_bindings(env)
+    if cls.startswith("Coffee_D"):
+        return resolve_coffee_bindings(env)
     raise NotImplementedError(
         f"domain_shift bindings not implemented for {cls}. "
-        f"Add a resolver (see resolve_threading_bindings / resolve_square_bindings)."
+        f"Add a resolver (see resolve_threading_bindings / resolve_square_bindings "
+        f"/ resolve_coffee_bindings)."
     )
 
 
@@ -413,6 +656,9 @@ def snapshot_nominal(env) -> dict:
         "geom_solimp": np.array(m.geom_solimp, copy=True),
         "geom_size": np.array(m.geom_size, copy=True),
         "dof_damping": np.array(m.dof_damping, copy=True),
+        # Coffee's lid_frictionloss knob mutates this; nominal is all-zero for
+        # Threading/Square so restoring it there is a no-op.
+        "dof_frictionloss": np.array(m.dof_frictionloss, copy=True),
         "actuator_gainprm": np.array(m.actuator_gainprm, copy=True),
         "actuator_biasprm": np.array(m.actuator_biasprm, copy=True),
     }
@@ -432,6 +678,9 @@ def restore_nominal(env, nominal: dict) -> None:
     m.geom_solimp[:] = nominal["geom_solimp"]
     m.geom_size[:] = nominal["geom_size"]
     m.dof_damping[:] = nominal["dof_damping"]
+    # .get() so snapshots taken by older code (no dof_frictionloss key) still load.
+    if "dof_frictionloss" in nominal:
+        m.dof_frictionloss[:] = nominal["dof_frictionloss"]
     m.actuator_gainprm[:] = nominal["actuator_gainprm"]
     m.actuator_biasprm[:] = nominal["actuator_biasprm"]
 
@@ -568,6 +817,56 @@ def apply_ring_shift(
             m.geom_friction[g] *= ring_friction_scale
 
 
+def apply_needle_shift(
+    env,
+    bindings: dict,
+    *,
+    needle_size_scale: float = 1.0,
+) -> None:
+    """THICKEN the needle shaft (Threading target-only, default off).
+
+    The mirror image of `ring_size_scale`: instead of shrinking the ring hole,
+    grow the thing that must pass through it. What the insertion actually cares
+    about is the CLEARANCE `ring_opening - needle_cross_section`, so both knobs
+    move the same physical quantity from opposite sides -- which makes this a
+    clean second, independent way to set the "tolerance window" of CLAUDE.md
+    §27 ("ceiling = model error / tolerance window").
+
+    Geometry: the shaft geom `needle_obj_needle` is a box with half-size
+    (0.005, 0.06, 0.005) -- 10x10 mm cross-section in its LOCAL x/z, 120 mm
+    long in y. The ring's aperture (16x16 mm) lies in the tripod's local y/z
+    with the hole axis along x, so the shaft threads it cross-section-first;
+    both openings are square, so orientation about the shaft axis is moot.
+    We scale ONLY the x/z half-sizes; the length (y) and the geom CENTER
+    (geom_pos) are untouched, so `geom_xpos["needle_obj_needle"]` -- the exact
+    quantity `threading.py:_check_success` compares against the ring center
+    with a 12 mm tolerance -- is unchanged. The success criterion therefore
+    does not move; only the physical aperture the shaft must clear does.
+
+    Clearance per side vs the ring opening (2*(ring/2 - shaft/2)/2):
+        needle 1.00 -> 10.0 mm : 3.0 mm/side @ ring 16.0 | 1.8 mm/side @ 13.6
+        needle 1.10 -> 11.0 mm : 2.5 mm/side @ ring 16.0 | 1.3 mm/side @ 13.6
+        needle 1.20 -> 12.0 mm : 2.0 mm/side @ ring 16.0 | 0.8 mm/side @ 13.6
+        needle 1.40 -> 14.0 mm : 1.0 mm/side @ ring 16.0 | impossible @ 13.6
+        needle >=1.60 -> >=16.0 mm : impossible even at a nominal ring
+    Safe "harder" range at ring_size 1.0 ~= [1.05, 1.40].
+
+    Mass and inertia are deliberately NOT rescaled with the volume: this stays
+    a pure geometry knob so it is separable from `mass_scale` (the inertial
+    axis). The shaft's own friction is likewise untouched.
+
+    Assumes restore_nominal() ran first so the scale composes from nominal
+    (`geom_size` is in the snapshot). Caller does sim.forward() afterwards.
+    """
+    if needle_size_scale == 1.0:
+        return
+    m = env.sim.model
+    for g in bindings.get("needle_geom_ids", []):
+        # x and z are the cross-section that threads the hole; y is the length.
+        m.geom_size[g, 0] *= needle_size_scale
+        m.geom_size[g, 2] *= needle_size_scale
+
+
 def apply_tripod_trap_shift(
     env,
     bindings: dict,
@@ -605,14 +904,20 @@ def apply_tripod_trap_shift(
         m.body_ipos[tb, 2] *= tripod_com_height_scale
 
 
+# Nominal SquareNut inner-hole half-width (45.5 mm hole -> 0.02275 m half).
+NOMINAL_NUT_HOLE_HALF = 0.02275
+
+
 def apply_square_peg_shift(
     env,
     bindings: dict,
     *,
     peg_size_scale: float = 1.0,
     peg_friction_scale: float = 1.0,
+    nut_size_scale: float = 1.0,
 ) -> None:
-    """Grow the square peg and/or raise its friction (Square_D0 target-only).
+    """Grow the square peg / raise its friction / shrink the nut hole
+    (Square_D0 target-only).
 
     peg_size_scale (>1 grows the peg's x/y half-size): shrinks the nut-over-peg
     clearance without moving the success threshold (success is nut-body-pos vs
@@ -623,6 +928,13 @@ def apply_square_peg_shift(
     peg_friction_scale: scales the peg collision geom's friction (nominal 1.0).
     Contact mu = max(nut, peg) in MuJoCo; the nut sliding mu is ~0.95, so this
     grips the insertion once above ~1.0.
+
+    nut_size_scale (<1 shrinks the HELD nut's hole): the analog of Threading's
+    ring_size_scale, on the manipulated nut. Each of the 4 frame bars grows its
+    hole-facing (thinner in-plane) half-size by delta = NOMINAL_NUT_HOLE_HALF*
+    (1-scale); symmetric growth keeps the nut body center fixed (success
+    threshold unchanged), only the physical hole over the peg shrinks. Floor
+    ~0.70 (hole must stay > 32 mm peg).
 
     Assumes restore_nominal() ran first so scales compose from nominal. Caller
     forwards the sim afterward.
@@ -635,6 +947,92 @@ def apply_square_peg_shift(
             m.geom_size[g, 1] *= peg_size_scale
         if peg_friction_scale != 1.0:
             m.geom_friction[g] *= peg_friction_scale
+
+    if nut_size_scale != 1.0:
+        delta = NOMINAL_NUT_HOLE_HALF * (1.0 - nut_size_scale)
+        for g in bindings.get("nut_frame_geom_ids", []):
+            # grow the thinner in-plane half-dim (the hole-facing wall) inward;
+            # symmetric so the geom center (and nut body center) is unchanged.
+            ax = 0 if m.geom_size[g, 0] <= m.geom_size[g, 1] else 1
+            m.geom_size[g, ax] += delta
+
+
+# Cup wall inner opening radius (m): the 64 `..._cup_body_hc_*` boxes sit on a
+# circle of local radius 0.02722 with radial half-size 0.00224729, so the pod
+# passes through 0.02722 - 0.00224729 = 0.024973. The pod's own radius is
+# 0.0243 -> nominal PHYSICAL clearance 0.67 mm/side. (Measured off the built
+# model, not read from XML.)
+NOMINAL_POD_HOLDER_INNER_R = 0.024973
+
+
+def apply_coffee_shift(
+    env,
+    bindings: dict,
+    *,
+    pod_holder_size_scale: float = 1.0,
+    pod_holder_friction_scale: float = 1.0,
+    lid_damping_scale: float = 1.0,
+    lid_frictionloss: float = 0.0,
+) -> None:
+    """Shrink the pod holder opening / grip its wall / stiffen the lid hinge
+    (Coffee_D0 target-only).
+
+    pod_holder_size_scale (<1 shrinks the cup's inner opening): thickens each
+    of the 64 cup-wall boxes RADIALLY by
+    `delta = NOMINAL_POD_HOLDER_INNER_R * (1 - scale)`. Growth is symmetric
+    about each box center, so the boxes -- and the holder body -- do not move,
+    and the success check is untouched (it compares body_xpos against the
+    Python-side `r_diff = env.pod_holder_size[0] - env.pod_size[0]` = 5.2 mm,
+    which is built from the MujocoObject spec and never re-read from
+    sim.model). Feasibility floor: opening must stay > the 24.30 mm pod, i.e.
+    scale > 0.973. See the DomainShiftConfig comment for the mm table.
+
+    The radial axis is index 0 for these boxes (half-size
+    [0.00225 radial, 0.00145 tangential, 0.028 height]); asserted below rather
+    than inferred, because getting it wrong would silently thicken the wall
+    tangentially (closing the gaps between boxes) instead of shrinking the bore.
+
+    pod_holder_friction_scale: scales the cup wall's sliding friction (nominal
+    1.0). MuJoCo max-combines, and the pod is also 1.0, so >1 raises contact mu.
+
+    lid_damping_scale / lid_frictionloss: the SECOND-stage knob. Nominal hinge
+    is near-free (damping 0.005, frictionloss 0), and reset always forces the
+    lid open to 120 deg while success needs < 15 deg. Damping is viscous
+    (resists fast closing); frictionloss is dry/Coulomb (absolute N*m -- the
+    lid simply stops unless pushed hard enough) and is the sharper of the two.
+
+    Assumes restore_nominal() ran first so scales compose from nominal. Caller
+    forwards the sim afterward.
+    """
+    m = env.sim.model
+
+    holder_geoms = bindings.get("pod_holder_geom_ids", [])
+    if pod_holder_size_scale != 1.0 and holder_geoms:
+        if pod_holder_size_scale <= 0.93:
+            raise ValueError(
+                f"pod_holder_size_scale={pod_holder_size_scale} thickens the cup "
+                f"wall by >1.7 mm, far past the pod's own radius -- insertion is "
+                f"physically impossible (floor 0.93)."
+            )
+        delta = NOMINAL_POD_HOLDER_INNER_R * (1.0 - pod_holder_size_scale)
+        for g in holder_geoms:
+            # radial axis is 0 for the cup boxes; verify rather than infer.
+            assert m.geom_size[g, 0] > m.geom_size[g, 1], (
+                f"cup box {m.geom_id2name(g)} half-size {m.geom_size[g]} is not "
+                f"radial-major; apply_coffee_shift's axis assumption is wrong."
+            )
+            m.geom_size[g, 0] += delta
+
+    if pod_holder_friction_scale != 1.0:
+        for g in holder_geoms:
+            m.geom_friction[g] *= pod_holder_friction_scale
+
+    lid_dofs = bindings.get("lid_dof_ids", [])
+    for dof in lid_dofs:
+        if lid_damping_scale != 1.0:
+            m.dof_damping[dof] *= lid_damping_scale
+        if lid_frictionloss != 0.0:
+            m.dof_frictionloss[dof] = lid_frictionloss
 
 
 # ---------------------------------------------------------------------------

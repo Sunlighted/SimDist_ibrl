@@ -435,12 +435,26 @@ class SimDistAgent(nn.Module):
         }
 
     # ------------------------------------------------ TARGET adaptation phases
-    def update_bc_policy(self, states, actions, lr: float = 3e-4) -> dict[str, float]:
+    def update_bc_policy(self, states, actions, lr: float = 3e-4,
+                         anchor_states=None, anchor_actions=None,
+                         anchor_coef: float = 0.0) -> dict[str, float]:
         """Stage-2 TARGET BC: train ONLY the policy head, freezing everything else
         (INCLUDING the encoder). The policy is a pure state->action map
         (`policy_action(s) = policy(encode(s))`); the BC loss is a flat MSE over all
         (s_t, a_t) pairs in the sampled segments — no dynamics rollout needed. The
-        encoder is frozen by exclusion from the optimizer (only `model.policy`)."""
+        encoder is frozen by exclusion from the optimizer (only `model.policy`).
+
+        OPTIONAL SOURCE ANCHOR (`anchor_coef > 0`, default OFF ⇒ byte-identical to
+        the legacy path). Adds `anchor_coef * MSE(pi_theta(s_src), pi_src(s_src))`
+        over SOURCE states, where `anchor_actions` are pi_src's actions captured
+        BEFORE stage-2 started (frozen targets). This makes "how far the fine-tune
+        moves the policy away from pi_src" an explicit knob, decoupled from "how
+        many BC steps" and "which demos": the demo term fits the TARGET actions
+        where the demos live, the anchor pins the policy where only SOURCE data
+        lives. Motivation: the stage-1 value head is a distilled V^{pi_src} fitted
+        on the SOURCE distribution and is FROZEN through stages 2-3, so a policy
+        that drifts far from pi_src may invalidate the terminal value MPPI ranks
+        with. `anchor_coef` sweeps that trade-off directly."""
         if self._bc_opt is None:
             self._bc_opt = torch.optim.Adam(self.model.policy.parameters(), lr=lr)
         H = states.shape[1] - 1
@@ -448,19 +462,45 @@ class SimDistAgent(nn.Module):
         a_flat = actions.reshape(-1, actions.shape[-1])        # [B*H, act]
         pred = self.model.policy_action(s_flat)
         loss = F.mse_loss(pred, a_flat)
+        total, anchor_loss = loss, None
+        if anchor_coef > 0 and anchor_states is not None:
+            anchor_loss = F.mse_loss(self.model.policy_action(anchor_states),
+                                     anchor_actions)
+            total = loss + anchor_coef * anchor_loss
         self._bc_opt.zero_grad()
-        loss.backward()
+        total.backward()
         gnorm = nn.utils.clip_grad_norm_(
             self.model.policy.parameters(), self.cfg.world_model.grad_clip)
         self._bc_opt.step()
-        return {"bc/policy_loss": float(loss.item()), "bc/grad_norm": float(gnorm)}
+        out = {"bc/policy_loss": float(loss.item()), "bc/grad_norm": float(gnorm)}
+        if anchor_loss is not None:
+            out["bc/anchor_loss"] = float(anchor_loss.item())
+        return out
 
-    def update_dynamics_only(self, states, actions, lr: float = 3e-4) -> dict[str, float]:
+    def update_dynamics_only(self, states, actions, lr: float = 3e-4,
+                             anchor_z=None, anchor_a=None, anchor_tgt=None,
+                             anchor_coef: float = 0.0) -> dict[str, float]:
         """Stage-3 TARGET adapt: train ONLY the dynamics head, freezing everything
         else (INCLUDING the encoder). Multi-step latent-consistency loss
         ||next(z,a) - sg(encode(s'))||^2 rolled from the segment's first state
         (TD-MPC2 style); the next-state targets are produced by the FROZEN encoder,
-        and only `model.dynamics` is in the optimizer."""
+        and only `model.dynamics` is in the optimizer.
+
+        anchor_* (default OFF, byte-identical when anchor_coef<=0): the SOURCE
+        anchor, the dynamics-side mirror of stage-2's bc_anchor. Adds
+        `anchor_coef * MSE(next(z_src, a_src), next_stage1(z_src, a_src))` on
+        SOURCE (z, a) pairs whose targets were snapshotted from the stage-1
+        dynamics BEFORE adapt began. Motivation: stage-3 refits the dynamics on
+        whatever narrow on-policy slice the current planner visits, and a
+        134-run meta-analysis (CLAUDE.md corr(round-0, gain) = -0.72) shows every
+        arm collapsing toward one ~0.7 attractor regardless of where it started
+        -- consistent with the source structure being overwritten. The anchor
+        pins the model on source (z, a) the target rollouts never cover, exactly
+        as bc_anchor pins the policy.
+
+        NOTE the anchor targets the ENSEMBLE MEAN (`next`), not each head, so
+        head diversity -- which is where the dynens gain comes from -- stays
+        free."""
         if self._dyn_opt is None:
             self._dyn_opt = torch.optim.Adam(self.model.dynamics_parameters(), lr=lr)
         cfg = self.cfg.world_model
@@ -480,12 +520,19 @@ class SimDistAgent(nn.Module):
             cons_l = cons_l + w * cons_step
             z = z_next_pred  # roll the predicted latent (multi-step, TD-MPC2)
         cons_l = cons_l / wsum
+        out = {"adapt/consistency": float(cons_l.item())}
+        total = cons_l
+        if anchor_coef > 0 and anchor_z is not None:
+            anc = F.mse_loss(self.model.next(anchor_z, anchor_a), anchor_tgt)
+            total = total + anchor_coef * anc
+            out["adapt/dyn_anchor"] = float(anc.item())
         self._dyn_opt.zero_grad()
-        cons_l.backward()
+        total.backward()
         gnorm = nn.utils.clip_grad_norm_(
             self.model.dynamics_parameters(), cfg.grad_clip)
         self._dyn_opt.step()
-        return {"adapt/consistency": float(cons_l.item()), "adapt/grad_norm": float(gnorm)}
+        out["adapt/grad_norm"] = float(gnorm)
+        return out
 
     def reinit_head(self, name: str):
         """Head-ablation (train_simdist_headablate.py): re-initialize ONE head's

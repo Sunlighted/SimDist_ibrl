@@ -27,8 +27,10 @@ from env.domain_shift import (
     apply_contact_shift,
     apply_hole_offset,
     apply_ring_shift,
+    apply_needle_shift,
     apply_tripod_trap_shift,
     apply_square_peg_shift,
+    apply_coffee_shift,
     mask_hole_offset_from_obs,
     apply_init_distribution,
 )
@@ -246,9 +248,10 @@ class PixelRobosuite:
         self.past_obses = defaultdict(list)
         self.past_actions = deque(maxlen=self.cond_action)
 
-        # ---- optional init-distribution override (Threading D1/Enlarged) ----
-        # Monkeypatches the placement bounds; no-op when disabled. Persists
-        # across hard resets (the env re-reads the patched bounds each reset).
+        # ---- optional init-distribution override (Threading D1/Enlarged,
+        # Square nut z_rot window) ----
+        # Task-dispatched; no-op when disabled. Persists across hard resets
+        # (Threading re-reads the patched bounds; Square keeps the mutated sampler).
         self.init_distribution = init_distribution
         if self.init_distribution is not None and getattr(
             self.init_distribution, "enabled", False
@@ -347,6 +350,11 @@ class PixelRobosuite:
                     ring_size_scale=cfg.ring_size_scale,
                     ring_friction_scale=cfg.ring_friction_scale,
                 )
+                apply_needle_shift(
+                    self.env,
+                    self._bindings,
+                    needle_size_scale=cfg.needle_size_scale,
+                )
                 apply_tripod_trap_shift(
                     self.env,
                     self._bindings,
@@ -359,6 +367,16 @@ class PixelRobosuite:
                     self._bindings,
                     peg_size_scale=cfg.peg_size_scale,
                     peg_friction_scale=cfg.peg_friction_scale,
+                    nut_size_scale=cfg.nut_size_scale,
+                )
+            elif "pod_holder_geom_ids" in self._bindings:  # Coffee
+                apply_coffee_shift(
+                    self.env,
+                    self._bindings,
+                    pod_holder_size_scale=cfg.pod_holder_size_scale,
+                    pod_holder_friction_scale=cfg.pod_holder_friction_scale,
+                    lid_damping_scale=cfg.lid_damping_scale,
+                    lid_frictionloss=cfg.lid_frictionloss,
                 )
         self.env.sim.forward()
 
