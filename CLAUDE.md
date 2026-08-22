@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-08-14
+Last updated: 2026-08-21
 
 ---
 
@@ -16,7 +16,7 @@ Last updated: 2026-08-14
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
 | **`docs/findings.md`** | ~1350 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~1000 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef`。 |
+| **`docs/simdist.md`** | ~1190 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)**。 |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~555 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
 | **`docs/infra.md`** | ~410 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义。 |
@@ -35,7 +35,7 @@ Last updated: 2026-08-14
 |---|---:|---:|---:|---|
 | **Threading_D0** | IBRL 0.98 | model-free IBRL **0.9815**(n=2000) | **dynens 0.962**(n=2000) / plain 0.879 | findings §31 |
 | **Square_D0 (rotw1)** | 0.98 | **0.98–1.00** | plain **0.78**（= oracle 0.92 的 85%） | tasks §41；dynens 跑中 |
-| **Coffee_D0** | **0.998** | 跑中 | 未开始 | tasks §40；零样本 24% |
+| **Coffee_D0** | 0.998 (σ.02) / **0.938** (σ.1) | **0.982** (C50) / 0.96 (C75) / 0.93 (G5x) | **0.907**(G5x, 2seed) = oracle 0.94 | tasks §40–40e |
 
 Threading target 的参考线阶梯（同一 harness，n≥300）：
 `policy 头裸跑 0.37–0.42` < `plain SimDist MPPI 0.88` < `dynens MPPI 0.962`
@@ -82,6 +82,8 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
 10. **代理指标会给反向结论**：`policy_only` 两次给出 z=−5.3/−14 的反向判断；
     一度记为"已验证"的 `contact_steps` 在 n=13 上从 ρ=+0.855 崩到 −0.209。
     **判据必须是最终目标（跑完 adapt 的 target 分数）。**
+    ⚠️ 推论（§43）：**两个共线的候选解释，必须专门造一个把它们分开的臂**，否则拟合再好也归错因 ——
+    尾部厚度与 `bc_loss` 的 Spearman 是 0.90，单变量干预后尾部的效应量是 **0**。
 11. **`nohup` 挡不住 Bash 工具的 timeout(143)**（子进程同进程组）⇒ 长任务必须
     `setsid ... </dev/null & disown`，且不要在同一条命令里跟 `sleep`。
 12. **`num_eval_proc` 必须整除 `num_eval_episode`**（mp eval 断言，已踩两次）。
@@ -91,7 +93,14 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
 14. **`TopkSaver` 会覆盖 `model0.pt`** ⇒ 用它收的数据事后不可考（那个 0.952 之谜）。
     收数据时把 ckpt 快照 / sha256 写进 sidecar。另：`model0.pt` = 单次 50/100 局
     in-training eval 的最高分，系统性乐观 0.06–0.19 ⇒ **headline 一律用多点均值或独立大样本重评**。
-15. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
+15. **`evaluate/eval.py` 的 MPPI eval 自带 ±6 点噪声**：同 ckpt/同 planner/同 seed/同 100 局
+    两次测出 86% 与 92%（planner 候选走 torch RNG，只有 episode 级 `np.random.seed` 受控）
+    ⇒ **<12 点的 planner 比较不可读**（tasks §40e）。
+16. **stage-2 的无正则 BC 会摧毁 proposal，破坏力 target-dependent**：1000 步 × batch256
+    ≈ 157 epoch 打在 1633 个 demo transition 上，且**代码里零正则**。`bc_anchor_coef≈1`
+    是修法，实测把 round-0 抬 **+0.35~+0.44**（三个 Coffee target 一致）。⚠️ 但 λ=0 的破坏
+    幅度差 22 倍（C75kp25 round-0 **0.02** vs G5x **0.44**）⇒ 换 target 必须重测 λ=0。
+17. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
 
 ### 常用命令
@@ -147,6 +156,11 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   BC（adv_std 0.011 vs Q_std 0.258）⇒ 用 RWR**；margin 崩塌的真正归因。
 - **§42** ★ stage-2 的 policy 受**两个竞争条件**约束（靠近 π_src ⊗ target 成功率），
   `bc_anchor_coef=λ≈1` 在弱 base 上 **+0.164 (t=112.6)**、强 base 上测不到 ⇒ 交互 t=5.2。
+- **§43** ★ **anchor 形式轴封闭**：现役 MSE **就是** KL（等协方差高斯下 W2/JS/Hellinger/χ² 全是
+  同一标量的单调函数 ⇒ 换散度是空操作）。53 标定格 + 12 adapt run 证出**形式只通过一个渠道起作用**：
+  `score ≈ 1.065 − 11.1·bc_loss`（R²=0.93，残差 sd 0.010 < seed 噪声）。度量必须是 Fisher（参数空间
+  L2 付 3.4× 代价 ⇒ −0.277）；目标必须是 π_src（weight decay 结构性够不到）；**罚 vs 硬约束、尾部形状、
+  偏差落在哪个相位全部无因果**。★ 尾部：Spearman 0.90 但干预后效应 0 —— 共线变量必须造臂分开。
 
 **`docs/demo-collection.md`**
 - **§35** 什么属性决定 adapt：成功率**无关**（ρ=+0.20）；4×4 交叉析因（policy 53% /
@@ -160,6 +174,10 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   **别用 prior_margin**（会拉低最终性能）；target A/B 设计 + 迭代 bootstrapping 到 94.2%。
 - **§40** Coffee_D0：source 一轮打通 **99.8%**；更强 prior 的杠杆在这里**不存在**；
   target 用**动力学 gap**选而不是成功率选；**§40c/§40d planner 超参不可跨任务/跨 dynamics 移植**。
+- **§40e** ★ Coffee 三 target 横评：**G5x + `bc_anchor_coef 1.0` → 0.907 = oracle 0.94**
+  （首次追平完美 dynamics）。**杠杆是 stage-2 的 anchor（+0.40），不是 stage-3 adapt（+0.03）**；
+  选 target 看 `stage-1 MPPI 分数`不看 oracle；**难度必须与 gap 同相位且占数据主体**
+  （C50 唯一崩掉：难度 86% 在只占 4% 转移的 close-lid 相）。附 6 个被证伪的假设 + 两个测量地板。
 - **§41** Square rotw1 全链条；**MPPI 信任域 = `init_std` + `base_policy_std` 两堵墙**；
   planner 的价值完全由 dynamics 精度定（oracle +0.63 vs 训练域内 learned +0.015 ns）；
   蒸馏 V̂ 可直接替代 V_src；⚠️ 两个测量地板（episode 级不可复现、seed 跨度 0.035）。

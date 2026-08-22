@@ -76,6 +76,28 @@ class AdaptConfig(common_utils.RunConfig):
     bc_anchor_episodes: int = 2000   # source episodes to sample the anchor states from
     bc_anchor_states: int = 40000    # anchor pool size
     bc_anchor_batch: int = 256       # anchor minibatch per BC step
+    # ---- FORM of the pi_src proximity constraint (all default 0 => legacy path) ----
+    # The stage-2 anchor above is EXACTLY a KL penalty: modelling the deterministic
+    # policy head as N(pi(s), sigma^2 I) gives KL = ||pi_theta-pi_src||^2/(2 sigma^2),
+    # i.e. the MSE up to a constant absorbed by bc_anchor_coef. These three knobs
+    # sweep the FORM of that same constraint at MATCHED D_SRC (the achieved distance),
+    # so form is not confounded with strength:
+    #   F1 bc_anchor_coef            KL penalty, correct (Fisher) metric   [existing]
+    #   F2 bc_weight_decay           NOT a KL: pulls theta->0, not ->pi_src  (control)
+    #   F3 bc_l2init_coef            KL with the Fisher metric replaced by I
+    #   F4 bc_anchor_eps             KL as a per-state HARD trust region (needs F1 on)
+    bc_anchor_eps: float = 0.0       # >0 => hinge relu(||da||-eps)^2 instead of MSE
+    #   F5 bc_anchor_sat             KL's mirror on the g(d) axis: SATURATING
+    #      (= Hellinger^2, 1-exp(-d^2/tau)) -- caps the penalty on large deviations
+    #      so the demo term can win outright where it needs to. Tests whether any
+    #      form reaches a (D_SRC, bc_loss) frontier strictly inside F1's.
+    bc_anchor_sat: float = 0.0       # >0 => saturating; takes precedence over eps
+    bc_l2init_coef: float = 0.0      # >0 => + coef * ||theta - theta_src||^2
+    bc_weight_decay: float = 0.0     # >0 => Adam weight_decay on the policy head
+    # Build the source pool + snapshot pi_src even when the anchor is OFF, purely to
+    # report D_SRC (mean |pi_theta(s_src) - pi_src(s_src)|, the metric docs/simdist.md
+    # §42 tabulates) at the end of stage-2. Needed to calibrate F2/F3 to F1's D_SRC.
+    bc_measure_dsrc: int = 0
     # stage 3: TARGET dynamics adaptation
     adapt_interval: int = 1000       # collect this many TARGET transitions per round
     max_transitions: int = 20000     # stop after this many collected (=> #rounds)
@@ -404,7 +426,7 @@ class AdaptWorkspace:
         touches the policy head. Returns (states, frozen pi_src actions) or (None,
         None) when the anchor is off. Called at the top of `bc_finetune`, where
         `self.agent.model.policy` is still exactly the stage-1 (pi_src) head."""
-        if self.cfg.bc_anchor_coef <= 0:
+        if self.cfg.bc_anchor_coef <= 0 and not self.cfg.bc_measure_dsrc:
             return None, None
         import h5py
         rng = np.random.RandomState(self.cfg.seed)
@@ -469,20 +491,40 @@ class AdaptWorkspace:
             states, actions, _ = self.demo_replay.sample(
                 self.cfg.bc_batch_size, self.H, "cuda")
             a_s = a_a = None
-            if anchor_pool is not None:
+            if anchor_pool is not None and self.cfg.bc_anchor_coef > 0:
                 j = torch.randint(len(anchor_pool), (self.cfg.bc_anchor_batch,),
                                   device=anchor_pool.device)
                 a_s, a_a = anchor_pool[j], anchor_tgt[j]
             metrics = self.agent.update_bc_policy(
                 states, actions, lr=self.cfg.bc_lr,
                 anchor_states=a_s, anchor_actions=a_a,
-                anchor_coef=self.cfg.bc_anchor_coef)
+                anchor_coef=self.cfg.bc_anchor_coef,
+                anchor_eps=self.cfg.bc_anchor_eps,
+                anchor_sat=self.cfg.bc_anchor_sat,
+                l2init_coef=self.cfg.bc_l2init_coef,
+                weight_decay=self.cfg.bc_weight_decay)
             self.stat.append(metrics)
             pbar.update(1)
             if (step + 1) % max(self.cfg.bc_steps // 10, 1) == 0:
                 pbar.set_postfix(loss=f"{metrics['bc/policy_loss']:.4f}")
         pbar.close()
         print(f"stage-2 done: final policy BC loss = {metrics['bc/policy_loss']:.5f}")
+        if anchor_pool is not None:
+            # D_SRC = mean elementwise |pi_theta(s_src) - pi_src(s_src)| over the
+            # SOURCE pool (verified against the §42 lambda sweep: 0.2390/0.0522/
+            # 0.0246/0.0182 for lambda=0/0.1/1/3 vs the tabulated 0.2354/0.0517/
+            # 0.0248/0.0179). This is the axis F1..F4 are matched on.
+            with torch.no_grad():
+                cur = torch.cat([self.agent.model.policy_action(anchor_pool[i:i + 8192])
+                                 for i in range(0, len(anchor_pool), 8192)])
+                d = cur - anchor_tgt
+                d_src = float(d.abs().mean())
+                d_l2 = float(d.norm(dim=-1).mean())
+            print(f"[D_SRC] {d_src:.4f}  (L2mean {d_l2:.4f})  "
+                  f"bc_loss {metrics['bc/policy_loss']:.5f}  "
+                  f"| anchor={self.cfg.bc_anchor_coef} eps={self.cfg.bc_anchor_eps} "
+                  f"l2init={self.cfg.bc_l2init_coef} wd={self.cfg.bc_weight_decay}")
+            self.stat.append({"bc/D_SRC": d_src})
 
     # ------------------------------------ stage 3: TARGET dynamics adaptation
     def _collect(self, n_transitions: int):

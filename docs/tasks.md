@@ -561,3 +561,113 @@ bias spread 0.121 vs perturb 0.024  ⇒ 84% 的偏差是逐状态常数偏移
 - [ ] §38 提醒：demo 用的是**已触顶**的 600k ckpt（标准 SimDist 做法）；snapshot 都在，
       想榨那 ~0.14 可换 `snapshot_200000/300000` 重采。
 - [ ] 全部单 seed（训练侧）。
+
+---
+
+### 40e. ★ Coffee 三个 target 横评 —— **G5x + `bc_anchor_coef 1.0` 追平 oracle**（2026-08-22）
+
+#### 定稿：Coffee 的 target 用 **G5x**
+```
+gripper_kp_scale 0.30 / lid_damping_scale 5.0 / mass_scale 8.0
+friction_scale 0.2   / pod_holder_friction_scale 5.0
+```
+（`lid_damping` 近标称是**故意的**，见下面 ③。cfg：
+`release/cfgs/mimicgen/coffee_d0_state_ibrl_target_g5x.yaml`）
+
+| target | stage-1 MPPI<br>(source-only dyn) | anchor λ=1 后<br>round-0 | **100k adapt** | oracle | **距 oracle** |
+|---|---:|---:|---:|---:|---:|
+| C50 | 56% | 0.86 | 0.62 | 0.98 | **−0.36** |
+| C75kp25 | 24% | 0.46 | 0.71 (2 seed) | 0.90 | −0.19 |
+| **G5x** | 51% | **0.87–0.88** | **0.907** (2 seed) | 0.94 | **−0.03** |
+
+**G5x 的 0.907（seed1 0.896 / seed2 0.918）与 oracle 0.94（n=50, SE≈3.4%）统计不可区分**
+—— Coffee 线上第一次 learned world model 追平完美 dynamics 的天花板。
+
+#### anchor λ 响应（每个 target 各自的形状）
+| λ | C75kp25 (2 seed 均值) | **G5x** (2 seed 均值) |
+|---:|---:|---:|
+| 0 | **0.19** ⚠️ | 0.653 |
+| 0.3 | 0.68 | 0.859 |
+| **1.0** | **0.71** | **0.907** |
+| 3.0 | **0.41**（崩） | 0.868（不崩） |
+| ∞ (noBC) | 0.45 | 0.786 |
+
+**⇒ λ≈1 是跨 target 的安全默认值**（两个 target 上都是峰或并列峰；G5x 上两个 seed 一致胜出）。
+但 **λ 响应的形状 target-dependent**：C75kp25 是倒 U（λ=3 崩到 0.41），G5x 是宽平台
+（λ∈[0.3,3] 全在 0.86–0.91）。所以"λ=3 一定不行"**不成立**，别外推。
+
+#### 三条会改变"下次怎么做"的结论
+
+**① 真正的杠杆是 stage-2 的 anchor，不是 stage-3 的 adapt。** G5x 上 anchor 把 round-0
+从 0.44–0.49 抬到 **0.87–0.88（+0.40）**，在此之上 adapt 只再加 **+0.03**。adapt 的作用是
+**把低起点拉到同一平台**（λ=0: 0.44→0.578、0.49→0.728），平台高度由 anchor 决定。
+⇒ 有限算力优先调 stage-2，不是 stage-3。
+
+**② 选 target 的判据：看 `stage-1 MPPI 在 target 上的分数`，不看 oracle。**
+我当初按"oracle 要高（⇒ value/proposal 够用）"选了 C50 —— 但**"oracle 高"恰恰等价于
+"source 的 value/proposal 在 target 上已经够用"，与"gap 大"自相矛盾**。C50 的 stage-1 已有
+56%（anchor 后 87%），adapt 无事可做。正确判据是 stage-1 分数**低**。
+⚠️ 但它也不是充分判据：G5x 的 stage-1（51%）比 C50（56%）只低 5 点，结局却是 +0.03 vs −0.24。
+
+**③ 难度必须落在"数据主体 + 有 gap"的相位上。** C50 是唯一崩掉的，而它的难度 86% 集中在
+**close-lid 相**，那个相位只占 **4%** 的转移、pod gap 只有 0.110 mm（全场最小）。
+stage-3 的 on-policy 数据里它几乎不出现 ⇒ dynamics 被另外 96% 主导地重训 ⇒ 对 close-lid
+有用的那点结构被冲掉。G5x 的难度和 gap 都在 transport/insert（0.310 / 0.179 mm，占 ~96%）。
+⇒ **造 target 时先量分阶段 gap，确认难度与 gap 在同一个相位、且那个相位占数据主体。**
+
+#### 资产
+| | 路径 / 值 |
+|---|---|
+| source 专家 σ=0.1 | `coffee_ibrl_source_sig01_seed1/model0.pt` — 93.8%（+20 snapshot） |
+| source diverse data | `coffee_d0_source_diverse_v1/dataset.hdf5` — 100k 条 / 51.9% / 7.2 GB |
+| stage-1 world model | `coffee_simdist_diversev1_h5_seed1/latest.pt`（**5 头 dynens**；source-only ⇒ **换 target 不需重训**） |
+| **G5x target 专家** | `coffee_ibrl_target_G5x_seed1`（1M；曲线 400k=0.86 拐点 / 首个 1.00 @530k；20 snapshot） |
+| **G5x target demo** | `coffee_d0_target_G5x/dataset.hdf5` — 20 条，采自 `snapshot_400000`(0.86)，平均 91.5 步 |
+| C75kp25 专家 / demo | `coffee_ibrl_target_seed1`(95.8%) / `coffee_d0_target_C75kp25{,_sat,_weak}` |
+| C50 专家 / demo | `coffee_ibrl_target_C50_seed1`(98.2%) / `coffee_d0_target_C50{,_weak200k,_sat1000k}` |
+
+#### 复现命令
+```bash
+# stage-1 cfg 副本：换 target_demo_path + eval_domain_shift（world model 本身复用）
+python train_simdist_adapt.py --stage1_ckpt <s1_G5x>/latest.pt \
+  --save_dir exps/mimicgen/coffee_G5x_adapt_anchor1.0_seedN \
+  --bc_steps 1000 --bc_anchor_coef 1.0 \
+  --bc_anchor_path release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5 \
+  --adapt_interval 1000 --max_transitions 100000 --dyn_update_steps 1000 \
+  --eval_every_rounds 5 --num_eval_episode 100 --original_mppi 1 --adapt_value 0
+```
+
+#### ⛔ 本轮被实测证伪的假设（别重试）
+1. **"梯度太小 ⇒ 没东西可学"** —— Coffee adapt 的 `consistency 6e-5 / grad_norm 1e-4`，我据此
+   判 C50 无 gap；但 **Threading 全部 118 条 adapt 是同样的数值**却能 0.19→0.94。这个量级只是
+   SimNorm latent 空间里 consistency loss 的正常尺度，与能否学到东西**无关**。
+2. **"adapt 把模型改坏了"** —— 实测 H 步 latent rollout 误差**降 25–30%**，且两个 held-out
+   demo 池同样降（无灾难性遗忘）。模型更准了，planner 分数不涨。
+3. **"adapt 破坏 dynamics–value 共适应（§33 的镜像）"** —— 排序保真度实测**没降**
+   （spearman 0.124→0.112/0.133/**0.231**，top-6 重合 0.278→0.31–0.39）。
+   ⚠️ 但该测量用的是**均匀随机候选**而非 CEM elite 分布，按铁律 #5 属于"在 planner 不访问的
+   分布上量它的排序能力"，所以只能算弱证据。
+4. **"stage-3 学习率/UTD 太大（过拟合）"** —— A（lr÷10）、B（UTD÷10）、C（延后到 10k 起训）
+   三个臂**全部照样在 5k–25k 深跌**。C 最干净：5k 时零梯度步、成绩纹丝不动停在 0.85，训练一
+   开始立刻掉 → **不是更新幅度的问题，是方向**。
+5. **"结局由 round-0 决定"（`corr(round-0,gain)=−0.72`，134 条 run）** —— C50 从 0.86 跌到
+   0.62、G5x 从 0.87 涨到 0.896。**同起点、不同 target、相反结局** ⇒ 那条相关只是相关，
+   机制在 target 的相位结构（见 ③）。
+6. **"σ=0.1 的宽初始分布是 SimDist 的负担"** —— 同 ckpt 同 planner，σ=0.02 vs 0.1 实测
+   64%/60%（stage-1）、91%/92%（anchor round-0）—— **完全无差别**。
+
+#### ⚠️ 两个测量地板（本轮踩出来的）
+- **standalone eval 的 σ ≈ ±6 点**：同 ckpt / 同 planner / 同 seed / 同 100 局，两次测出
+  **86% 与 92%**。根因 = MPPI 候选采样走 torch RNG，`evaluate/eval.py` 只按 episode 设
+  `np.random.seed`，planner 的 `torch.randn` 不受控。⇒ **<12 点的 planner 比较不可读。**
+- **adapt 的 seed 间 σ ≈ 0.09–0.13**（与 §38 的 0.092 一致）。C75kp25 上 λ=0.3 vs 1.0 的
+  排序**在两个 seed 间翻转**（seed1 差 +17 点、seed2 差 −11 点）⇒ **<0.2 的 adapt 差异需 ≥2 seed。**
+
+#### TODO
+- [ ] G5x λ=1.0 补第 3 个 seed；λ=3.0 补 seed2（现只有单 seed 0.868）。
+- [ ] G5x 上重扫 planner（现有数字全部用 original 配方；§40d 显示各 ckpt 最优配方不同，
+      0.907 可能仍被低估）。
+- [ ] 用 ③ 的判据造一个"难度与 gap 同相位、且 stage-1 分数更低"的 target，检验能否复现
+      Threading 那种 +0.4 级别的 adapt 增益。
+- [ ] `dyn_anchor_coef`（本轮新加的 dynamics 侧 source 锚，`rl/simdist_agent.py` +
+      `train_simdist_adapt.py`，默认 0 逐位兼容）**尚未验证** —— 两条 run 起了但被中断。

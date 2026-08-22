@@ -437,7 +437,9 @@ class SimDistAgent(nn.Module):
     # ------------------------------------------------ TARGET adaptation phases
     def update_bc_policy(self, states, actions, lr: float = 3e-4,
                          anchor_states=None, anchor_actions=None,
-                         anchor_coef: float = 0.0) -> dict[str, float]:
+                         anchor_coef: float = 0.0, anchor_eps: float = 0.0,
+                         anchor_sat: float = 0.0, l2init_coef: float = 0.0,
+                         weight_decay: float = 0.0) -> dict[str, float]:
         """Stage-2 TARGET BC: train ONLY the policy head, freezing everything else
         (INCLUDING the encoder). The policy is a pure state->action map
         (`policy_action(s) = policy(encode(s))`); the BC loss is a flat MSE over all
@@ -456,7 +458,13 @@ class SimDistAgent(nn.Module):
         that drifts far from pi_src may invalidate the terminal value MPPI ranks
         with. `anchor_coef` sweeps that trade-off directly."""
         if self._bc_opt is None:
-            self._bc_opt = torch.optim.Adam(self.model.policy.parameters(), lr=lr)
+            self._bc_opt = torch.optim.Adam(self.model.policy.parameters(), lr=lr,
+                                            weight_decay=weight_decay)
+            # (F3) theta_src snapshot for the L2-to-init variant. Taken here, i.e.
+            # BEFORE the first .step(), so `model.policy` is still exactly pi_src.
+            self._bc_init = ([p.detach().clone()
+                              for p in self.model.policy.parameters()]
+                             if l2init_coef > 0 else None)
         H = states.shape[1] - 1
         s_flat = states[:, :H].reshape(-1, states.shape[-1])  # [B*H, obs]
         a_flat = actions.reshape(-1, actions.shape[-1])        # [B*H, act]
@@ -464,9 +472,36 @@ class SimDistAgent(nn.Module):
         loss = F.mse_loss(pred, a_flat)
         total, anchor_loss = loss, None
         if anchor_coef > 0 and anchor_states is not None:
-            anchor_loss = F.mse_loss(self.model.policy_action(anchor_states),
-                                     anchor_actions)
+            if anchor_sat > 0:
+                # (F5) SATURATING anchor -- the mirror image of the hinge on the
+                # g(d) axis. Quadratic for small deviations, capped for large ones,
+                # so the demo term is free to win outright on the few states where
+                # it wants to move a lot. This is exactly Hellinger^2 between the
+                # two fixed-covariance Gaussians (1 - exp(-d^2/8 sigma^2)), i.e. a
+                # real divergence, with anchor_sat playing the role of 8 sigma^2.
+                d = self.model.policy_action(anchor_states) - anchor_actions
+                anchor_loss = (1.0 - torch.exp(-d.pow(2).sum(-1) / anchor_sat)).mean()
+            elif anchor_eps > 0:
+                # (F4) KL as a per-state HARD trust region instead of a penalty:
+                # KL <= delta  <=>  ||pi_theta(s) - pi_src(s)||_2 <= eps, with
+                # eps = sigma*sqrt(2*delta). Free inside the ball, quadratic
+                # outside. sqrt(.+1e-8) because torch.norm's backward is NaN at 0
+                # and the anchor residual does collapse toward 0 late in stage-2.
+                d = self.model.policy_action(anchor_states) - anchor_actions
+                dist = torch.sqrt(d.pow(2).sum(-1) + 1e-8)
+                anchor_loss = F.relu(dist - anchor_eps).pow(2).mean()
+            else:
+                anchor_loss = F.mse_loss(self.model.policy_action(anchor_states),
+                                         anchor_actions)
             total = loss + anchor_coef * anchor_loss
+        l2init_loss = None
+        if l2init_coef > 0 and self._bc_init is not None:
+            # (F3) same KL trust region but with the Fisher metric replaced by I:
+            # proximity to pi_src in PARAMETER space rather than in function space
+            # on the source state distribution.
+            l2init_loss = sum(((p - p0) ** 2).sum() for p, p0
+                              in zip(self.model.policy.parameters(), self._bc_init))
+            total = total + l2init_coef * l2init_loss
         self._bc_opt.zero_grad()
         total.backward()
         gnorm = nn.utils.clip_grad_norm_(
@@ -475,6 +510,8 @@ class SimDistAgent(nn.Module):
         out = {"bc/policy_loss": float(loss.item()), "bc/grad_norm": float(gnorm)}
         if anchor_loss is not None:
             out["bc/anchor_loss"] = float(anchor_loss.item())
+        if l2init_loss is not None:
+            out["bc/l2init_loss"] = float(l2init_loss.item())
         return out
 
     def update_dynamics_only(self, states, actions, lr: float = 3e-4,
