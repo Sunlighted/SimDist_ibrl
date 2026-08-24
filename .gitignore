@@ -40,3 +40,6 @@ viz/demo_replays/
 *.mp4
 # stray stderr captures from ad-hoc diagnostic runs
 err_*.txt
+exps/_stale/
+cluster/ibrl.sif
+*.sif

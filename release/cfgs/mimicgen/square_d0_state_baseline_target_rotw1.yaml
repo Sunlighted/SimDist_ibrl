@@ -1,0 +1,121 @@
+# Square_D0 rotw1 TARGET-B — shared base for the three MODEL-FREE baselines
+# (IBRL / IQL / RLPD) at the matched 100k-transition budget.
+#
+# Mirrors the Threading arms in exps/simdist_threading_3arm/{ibrl,iql,rlpd}_seed*
+# field-for-field; only the env block is Square. Every hyper-parameter below is
+# copied from ibrl_seed1/cfg.yaml so the two tasks are directly comparable.
+#
+# log_per_step = 1000 IS the eval frequency (train_rl.py:716 gates eval on
+# `global_step % log_per_step`), so 100k steps => 100 eval points.
+#
+# The three arms differ ONLY in what you override on the CLI:
+#
+#   IBRL   --bc_policy exps/mimicgen/square_source_mlp_bc_n1000_seed1/model0.pt
+#          (the SOURCE BC, unmodified + shared across seeds. Threading fine-tunes
+#           its prior on the target demos; on Square that measured 0.26 -> 0.00
+#           at every length tried -- see scripts/prep_square_baselines.sh)
+#          --preload_datapath release/data/mimicgen/square_sat_600000_s<N>/dataset.hdf5
+#          --preload_num_data 20 --num_warm_up_episode 30 --replay_buffer_size 1000
+#          (q_agent.act_method / bootstrap_method stay `ibrl`)
+#
+#   IQL    --q_agent.act_method rl --q_agent.bootstrap_method rl
+#          --load_pretrained_agent exps/mimicgen/square_iql_offline_source/agent_warmstart.pt
+#          --preload_datapath release/data/mimicgen/square_sat_600000_s<N>/dataset.hdf5
+#          --preload_num_data 20 --num_warm_up_episode 30 --replay_buffer_size 1000
+#          NOTE act_method MUST become `rl`: IQL has no BC prior and
+#          `assert len(self.bc_policies) == 1` fires under act_method=ibrl.
+#
+#   RLPD   --q_agent.act_method rl --q_agent.bootstrap_method rl
+#          --preload_datapath release/data/mimicgen/square_rlpd_prior_s<N>/dataset.hdf5
+#          --preload_num_data 2020 --num_warm_up_episode 2030 --replay_buffer_size 4000
+#          (mix_rl_rate 0.5 below is what makes the sampling 50/50 prior-vs-online)
+#
+# TARGET-B rotw1 definition (identical to square_d0_state_ibrl_target_B_rotw1_sig01):
+#   shift  gripper_kp 0.30 / peg_size 1.20 / peg_friction 2.0, mode fixed
+#   init   SquareNut z-rot narrowed to 120-180 deg (source expert shares it)
+#   sigma  hand_init_perturb_joint_sigma 0.1, train AND eval
+# strict_success is Threading-only and stays off; Square uses MimicGen's own
+# success (nut on peg).
+
+task_name: Square_D0
+episode_length: 400
+use_state: 1
+obs_stack: 1
+state_stack: 1
+prop_stack: 1
+
+train_domain_shift: &shift
+  mode: fixed
+  gripper_kp_scale: 0.3
+  peg_size_scale: 1.2
+  peg_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+eval_domain_shift: *shift
+
+train_init_dist: &initdist
+  enabled: true
+  nut_z_rot:
+  - 2.0943951023931953      # 120 deg
+  - 3.141592653589793       # 180 deg
+eval_init_dist: *initdist
+
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+# ---- budget + logging (100k transitions, eval every 1k => 100 points) ----
+num_train_step: 100000
+log_per_step: 1000
+num_eval_episode: 100
+mp_eval: 1
+snapshot_period: 0
+
+# ---- RL hyper-parameters: copied verbatim from the Threading arms ----
+discount: 0.99
+end_on_success: 1
+nstep: 3
+num_critic_update: 5
+update_freq: 2
+batch_size: 256
+mix_rl_rate: 0.5
+stddev_max: 0.1
+stddev_min: 0.1
+freeze_bc_replay: 1
+
+# per-arm CLI overrides these three
+bc_policy: ''
+preload_datapath: release/data/mimicgen/square_sat_600000_s1/dataset.hdf5
+preload_num_data: 20
+# CAREFUL: train_rl.py.__post_init__ does `num_warm_up_episode += preload_num_data`
+# whenever preload_datapath is set (it is the TOTAL replay size to reach, demos
+# included). 10 here therefore means "10 fresh env episodes on top of the demos",
+# and reproduces the Threading arms exactly -- their SAVED cfgs read 30 (ibrl/iql,
+# 10+20) and 2030 (rlpd, 10+2020) because pyrallis dumps the POST-init value.
+num_warm_up_episode: 10
+replay_buffer_size: 1000
+
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1.0
+  bc_loss_coef: 0.1
+  critic_target_tau: 0.01
+  lr: 0.0001
+  q_target_min: 0.0
+  q_target_max: 1.0
+  sgft_shaping: 0
+  state_actor:
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 0
+    dropout: 0.0
+  state_critic:
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 1
+    num_q: 5
+    num_k: 2
+    dropout: 0.0
+
+use_wb: 1
+seed: 1
+save_dir: exps/square_rotw1_baselines/ibrl_seed1

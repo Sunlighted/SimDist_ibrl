@@ -1,0 +1,164 @@
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-runtime-ubuntu22.04
+
+# Apptainer image for running the Square baselines on Compute Canada.
+#
+# torch 2.7.0+cu128 -- the SAME build as the workstation, so numerics match and
+# there is one less thing to explain. The target is H100 (sm_90), which that
+# build covers (its arch list is sm_75/80/86/90/100/120). CUDA 12.x wheels carry
+# their own runtime and rely on CUDA minor-version compatibility, so any driver
+# >= 525 works -- check the cluster's with `nvidia-smi` on a GPU node before
+# trusting this. If it is older, change the two cu128 strings to cu124 and
+# torch to 2.5.1/0.20.1; nothing else needs touching.
+#
+# NOTE this image is NOT portable to V100 (sm_70): that arch is absent from the
+# 2.7.0+cu128 build. Fine here (H100 only), but do not reuse it on Cedar/Graham/
+# Beluga.
+#
+# WHY -runtime WITHOUT cudnn: torch bundles its own cuDNN in
+# dist-packages/nvidia/cudnn, so the -cudnn- base duplicated it -- measured 3.1 GB
+# of /usr/local/cuda-12.8 that nothing reads. Dropping it takes the image from
+# 7.2 GB to ~4 GB. The CUDA apt repo is still configured (that is what the nvidia/
+# base buys us over plain ubuntu), which is how nvcc/cudart-dev get installed.
+#
+# WHY -runtime and not -devel: the -devel base ships the full CUDA toolkit
+# (nvcc, headers, static libs) at 6.6 GB, and the torch wheel ALREADY bundles its
+# own CUDA runtime in dist-packages/nvidia (3.6 GB) -- so -devel was paying twice
+# for CUDA. common_utils/CMakeLists.txt declares `project(rela)` with no CUDA
+# language and only `find_package(Torch REQUIRED)`; the CMAKE_CUDA_COMPILER line
+# is commented out. rela is plain C++ + pybind11, so g++/cmake from apt is all it
+# needs. That is VERIFIED at build time below by actually compiling rela.
+#
+# rela is still NOT baked into the image: it must match the torch ABI AND it is
+# imported from the repo's own PYTHONPATH, which is a bind mount at run time. So
+# the image carries the toolchain and you build it ONCE on the cluster INSIDE the
+# container (see cluster/README.md step 3b). The build-time compile here is only
+# a check that the toolchain is complete.
+#
+# robosuite / robomimic / mimicgen are installed NON-editable from the repo's
+# deps/ submodules, so they are baked in and the container does not need deps/
+# present at run time (unlike the workstation's editable install, which hardcodes
+# /home/Chenyang/ibrl_deps paths).
+#
+# Build (needs the repo as the build context; ~20 min, ~7 GB):
+#     bash cluster/build_sif.sh
+
+%files
+    deps/robosuite   /opt/src/robosuite
+    deps/robomimic   /opt/src/robomimic
+    deps/mimicgen    /opt/src/mimicgen
+    common_utils     /opt/src/common_utils
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 python3.10-dev python3-pip git build-essential cmake \
+        libgl1 libglew-dev libosmesa6-dev libegl1 libglib2.0-0 patchelf \
+        && rm -rf /var/lib/apt/lists/*
+    # Minimal CUDA dev bits, NOT the whole toolkit. torch's CMake config
+    # (Caffe2Config.cmake) runs FindCUDA and hard-requires CUDA_NVCC_EXECUTABLE +
+    # CUDA_CUDART_LIBRARY even though rela compiles no CUDA code -- verified: on a
+    # plain -runtime base the rela build dies with "Your installed Caffe2 version
+    # uses CUDA but I cannot find the CUDA libraries". torch bundles
+    # nvidia/cuda_runtime (headers + libcudart) but ships NO nvcc, so these two
+    # packages are the gap. ~200 MB, versus 6.6 GB for the -devel base.
+    apt-get update && apt-get install -y --no-install-recommends \
+        cuda-nvcc-12-8 cuda-cudart-dev-12-8 \
+        && rm -rf /var/lib/apt/lists/*
+    ln -sf /usr/bin/python3.10 /usr/local/bin/python
+    python -m pip install --upgrade pip
+
+    # torch: identical to the workstation's build (see header)
+    python -m pip install torch==2.7.0 torchvision==0.22.0 \
+        --index-url https://download.pytorch.org/whl/cu128
+
+    # LOAD-BEARING PINS (docs/setup.md 1):
+    #   mujoco 2.3.2      -- MimicGen requires it (not 3.x)
+    #   numpy<2           -- wandb 0.16.4 uses the removed np.float_
+    #   huggingface_hub   -- robomimic v0.5 hard-pins 0.23.4
+    python -m pip install "numpy<2" "mujoco==2.3.2" "huggingface_hub==0.23.4"
+    python -m pip install /opt/src/robosuite /opt/src/robomimic /opt/src/mimicgen
+    python -m pip install Cython==0.29.36 einops==0.7.0 fasteners==0.19 \
+        pyrallis==0.3.1 tabulate==0.9.0 typing-inspect==0.9.0 wandb==0.16.4 \
+        cloudpickle "gym==0.26.2" h5py pybind11 "opencv-python<5" rich \
+        typer httpx
+    # rich is a HARD requirement, not a nicety: train_rl.py's __main__ block does
+    # `from rich.traceback import install`, so the job dies at import before any
+    # output. It was missed by an import-level smoke test and only surfaced when
+    # the entry point was actually run. typer/httpx are here purely for parity
+    # with the workstation env (they are transitive there, unused by our code).
+
+    # opencv-python<5 above: robosuite pulls the latest (5.0.0), which is a major
+    # version ahead of the workstation's 4.13.0 AND declares numpy>=2, conflicting
+    # with the pin below. robosuite 1.4.1 was written against opencv 4.
+    #
+    # numpy<2 LAST, and asserted. robosuite/robomimic/mimicgen all require numpy
+    # without an upper bound, so installing them AFTER the pin silently pulls
+    # numpy 2.x back in -- and then `import wandb` dies on the removed
+    # `np.float_` (wandb 0.16.4 references it at import time). Caught by the
+    # container smoke test; the assertion turns a future regression into a build
+    # failure instead of a job failure.
+    python -m pip install --force-reinstall "numpy<2"
+    python - <<'CHK'
+import numpy, wandb, torch, robosuite, mujoco, h5py, pyrallis, cv2, rich, huggingface_hub
+assert numpy.__version__.startswith("1."), f"numpy must be <2, got {numpy.__version__}"
+assert cv2.__version__.startswith("4."), f"opencv must be 4.x, got {cv2.__version__}"
+assert huggingface_hub.__version__ == "0.23.4", \
+    f"robomimic v0.5 hard-pins huggingface_hub 0.23.4, got {huggingface_hub.__version__}"
+from importlib.metadata import version as _v   # rich exposes no __version__
+print("numpy", numpy.__version__, "| wandb", wandb.__version__, "| cv2", cv2.__version__,
+      "| rich", _v("rich"), "| hf_hub", huggingface_hub.__version__)
+from rich.traceback import install as _ri        # the exact import train_rl.py does
+print("rich.traceback: OK")
+print("torch", torch.__version__, torch.cuda.get_arch_list())
+print("mujoco", mujoco.__version__, "| robosuite", robosuite.__version__)
+CHK
+
+    # torch already ships EVERY CUDA runtime library it uses, under
+    # dist-packages/nvidia/*/lib as lib<X>.so.12. What it does not ship is the
+    # unversioned lib<X>.so dev symlink that CMake's FindCUDA does
+    # `find_library(CUDA_<x>_LIBRARY <x>)` on -- which is why a -runtime base got
+    # "CUDA_nvrtc_LIBRARY ... NOTFOUND" even after nvcc + cudart-dev were added.
+    # Symlinking them into the toolkit libdir costs ZERO bytes and points CMake at
+    # exactly the libraries torch loads at run time anyway, instead of pulling in
+    # the 6.6 GB -devel toolkit for its dev symlinks.
+    NV=/usr/local/lib/python3.10/dist-packages/nvidia
+    mkdir -p /usr/local/cuda/lib64
+    for so in $(find $NV -name "lib*.so.*" | grep -v "\.alt\."); do
+        stem=$(basename "$so"); stem=${stem%%.so.*}
+        [ -e "/usr/local/cuda/lib64/$stem.so" ] || ln -s "$so" "/usr/local/cuda/lib64/$stem.so"
+    done
+    ldconfig
+    echo "linked $(ls /usr/local/cuda/lib64/*.so | wc -l) CUDA dev symlinks from torch's bundle"
+
+    # Prove the toolchain can build rela on THIS base image, before anyone ships
+    # 5 GB and finds out on the cluster. Uses a throwaway copy; the real build
+    # happens on the cluster against the bind-mounted repo.
+    rm -rf /opt/src/common_utils/build
+    ( cd /opt/src/common_utils && make -j8 )
+    ls -l /opt/src/common_utils/build/rela.cpython-310-x86_64-linux-gnu.so
+    echo "rela compiles on this image: OK"
+
+    # /opt/src exists only so pip could install from it (1.3 GB, and robosuite's
+    # source duplicates the installed copy). Nothing reads it at run time.
+    rm -rf /opt/src
+    python -m pip cache purge || true
+    rm -rf /root/.cache
+
+%environment
+    export MUJOCO_GL=egl
+    export OMP_NUM_THREADS=1
+    export PYTHONNOUSERSITE=1     # ignore ~/.local/lib, which WILL shadow the
+                                  # image's packages on CC otherwise
+    # robomimic imports huggingface_hub, which tries to write a cache. Without
+    # this it inherits the host's HF_HOME and warns (or fails) on a path that
+    # does not exist inside the container / on the cluster.
+    export HF_HOME=${HF_HOME:-/tmp/hf}
+    export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/tmp/hf}
+    export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/mpl}
+
+%runscript
+    exec python "$@"
+
+%labels
+    Purpose Square_D0 rotw1 model-free + Dyna baselines
