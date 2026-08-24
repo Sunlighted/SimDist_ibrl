@@ -203,6 +203,16 @@ class MainConfig(common_utils.RunConfig):
     pretrain_epoch_len: int = 10000
     load_pretrained_agent: str = ""
     load_policy_only: int = 1
+    # Skip robosuite's offscreen renderer entirely for state-based runs. The
+    # policy only ever reads obs["state"], so the 224x224 render is pure waste --
+    # and building the EGL context is what breaks on MIG-partitioned GPUs, where
+    # CUDA_VISIBLE_DEVICES is a "MIG-<uuid>" string and robosuite's EGL device
+    # selection does int() on it:
+    #     ValueError: invalid literal for int() with base 10: 'MIG-ca42af...'
+    # (hit on Compute Canada's fir). It also removes the EGL context that makes
+    # multi-process eval deadlock. Requires use_state=1; asserted below.
+    # Default 0 keeps the old rendering path byte-for-byte.
+    state_only_no_render: int = 0
     add_bc_loss: int = 0
     # IBRL prior-preference margin (safe policy improvement; see §26 CLAUDE.md +
     # train_ibrl_simdist). The RL actor's Q is penalized by `margin` in the max-Q
@@ -319,6 +329,11 @@ class MainConfig(common_utils.RunConfig):
             assert self.preload_num_data > 0
 
         self.stddev_min = min(self.stddev_max, self.stddev_min)
+
+        if self.state_only_no_render:
+            assert self.use_state, "state_only_no_render requires use_state=1"
+            assert self.save_per_success <= 0, \
+                "state_only_no_render cannot record videos (no images rendered)"
 
         if self.preload_datapath:
             self.num_warm_up_episode += self.preload_num_data
@@ -497,6 +512,7 @@ class Workspace:
             hand_init_perturb=self.cfg.train_hand_init_perturb,
             hand_init_perturb_joint_sigma=self.cfg.train_hand_init_perturb_joint_sigma,
             init_distribution=self.cfg.train_init_dist,
+            state_only_no_render=bool(self.cfg.state_only_no_render),
         )
         self.eval_env_params = dict(
             env_name=self.cfg.task_name,
@@ -516,6 +532,7 @@ class Workspace:
             hand_init_perturb=self.cfg.eval_hand_init_perturb,
             hand_init_perturb_joint_sigma=self.cfg.eval_hand_init_perturb_joint_sigma,
             init_distribution=self.cfg.eval_init_dist,
+            state_only_no_render=bool(self.cfg.state_only_no_render),
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 
@@ -925,7 +942,12 @@ if __name__ == "__main__":
     from rich.traceback import install
 
     install()
-    os.environ["MUJOCO_GL"] = "egl"
+    os.environ.setdefault("MUJOCO_GL", "egl")   # setdefault, not "=": an outer
+    # MUJOCO_GL=osmesa must survive. On MIG-partitioned GPUs (Compute Canada fir)
+    # `import mujoco` with MUJOCO_GL=egl dies at IMPORT time -- "your EGL driver
+    # does not support the PLATFORM_DEVICE extension" -- so those runs must pass
+    # MUJOCO_GL=osmesa from outside, together with --state_only_no_render 1 so no
+    # GL context is ever actually created.
     torch.backends.cudnn.allow_tf32 = True  # type: ignore
     torch.backends.cudnn.benchmark = True  # type: ignore
     main()

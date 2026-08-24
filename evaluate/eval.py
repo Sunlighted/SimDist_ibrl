@@ -99,7 +99,8 @@ if __name__ == "__main__":
     # make logging more beautiful
     rich.traceback.install()
 
-    os.environ["MUJOCO_GL"] = "egl"
+    os.environ.setdefault("MUJOCO_GL", "egl")  # see train_rl.py: an outer
+    # MUJOCO_GL=osmesa must survive (MIG GPUs cannot init EGL at import time).
     torch.backends.cudnn.benchmark = False  # type: ignore
     torch.backends.cudnn.deterministic = True  # type: ignore
     np.set_printoptions(precision=4, linewidth=100, suppress=True)

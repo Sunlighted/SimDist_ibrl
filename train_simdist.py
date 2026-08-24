@@ -135,6 +135,7 @@ class MainConfig(common_utils.RunConfig):
     # log
     save_dir: str = "exps/simdist/run1"
     use_wb: int = 0
+    state_only_no_render: int = 0
     # SOURCE (train) and TARGET (eval) domain shifts
     train_domain_shift: DomainShiftConfig = field(default_factory=lambda: DomainShiftConfig(mode="none"))
     eval_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
@@ -238,6 +239,12 @@ class Workspace:
             state_stack=self.cfg.state_stack,
             prop_stack=self.cfg.prop_stack,
             strict_success=self.cfg.strict_success,
+            # See train_rl.py's field of the same name: skips robosuite's
+            # offscreen renderer for state-based runs. Required on MIG-partitioned
+            # GPUs, where CUDA_VISIBLE_DEVICES is a "MIG-<uuid>" string that
+            # robosuite's EGL device selection cannot parse. Default 0 keeps the
+            # old rendering path byte-for-byte.
+            state_only_no_render=bool(self.cfg.state_only_no_render),
         )
         # SOURCE (online training)
         self.train_env = PixelRobosuite(
@@ -589,7 +596,12 @@ def main():
 if __name__ == "__main__":
     from rich.traceback import install
     install()
-    os.environ["MUJOCO_GL"] = "egl"
+    os.environ.setdefault("MUJOCO_GL", "egl")   # setdefault, not "=": an outer
+    # MUJOCO_GL=osmesa must survive. On MIG-partitioned GPUs (Compute Canada fir)
+    # `import mujoco` with MUJOCO_GL=egl dies at IMPORT time -- "your EGL driver
+    # does not support the PLATFORM_DEVICE extension" -- so those runs must pass
+    # MUJOCO_GL=osmesa from outside, together with --state_only_no_render 1 so no
+    # GL context is ever actually created.
     torch.backends.cudnn.allow_tf32 = True  # type: ignore
     torch.backends.cudnn.benchmark = True  # type: ignore
     main()

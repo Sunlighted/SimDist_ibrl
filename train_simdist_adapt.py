@@ -207,6 +207,12 @@ class AdaptConfig(common_utils.RunConfig):
     # curve instead. (CLAUDE.md 38: this exact mechanism inflated a post-hoc
     # grouping by 2.4x.)
     eval_disagree_coefs: str = ""
+    # Skip robosuite's offscreen renderer (state-based runs only). The stage-1
+    # cfg.yaml on disk predates this field, so pyrallis fills the default 0 --
+    # hence the explicit override onto base_cfg below. Required on MIG-partitioned
+    # GPUs: CUDA_VISIBLE_DEVICES is a "MIG-<uuid>" string there and robosuite's
+    # EGL device selection does int() on it. Default 0 = unchanged.
+    state_only_no_render: int = 0
     # Override the MPPI planner to the ORIGINAL SimDist recipe (broad search:
     # low policy mixture + large init_std + more iterations) instead of the
     # ibrl-tuned "trust-the-proposal" defaults (mixture 0.8 / init_std 0.15).
@@ -289,6 +295,9 @@ class AdaptWorkspace:
                 cfg.eval_hand_init_perturb_joint_sigma
             print(f"[adapt] override eval hand_init_perturb_joint_sigma = "
                   f"{cfg.eval_hand_init_perturb_joint_sigma}")
+        if cfg.state_only_no_render:
+            self.base_cfg.state_only_no_render = 1
+            print("[adapt] state_only_no_render = 1 (no offscreen GL context)")
         self.ws = Workspace(self.base_cfg, from_main=False)
         self.agent = self.ws.agent
         print(f"loading stage-1 ckpt: {cfg.stage1_ckpt}")
@@ -750,7 +759,12 @@ def main():
 if __name__ == "__main__":
     from rich.traceback import install
     install()
-    os.environ["MUJOCO_GL"] = "egl"
+    os.environ.setdefault("MUJOCO_GL", "egl")   # setdefault, not "=": an outer
+    # MUJOCO_GL=osmesa must survive. On MIG-partitioned GPUs (Compute Canada fir)
+    # `import mujoco` with MUJOCO_GL=egl dies at IMPORT time -- "your EGL driver
+    # does not support the PLATFORM_DEVICE extension" -- so those runs must pass
+    # MUJOCO_GL=osmesa from outside, together with --state_only_no_render 1 so no
+    # GL context is ever actually created.
     torch.backends.cudnn.allow_tf32 = True  # type: ignore
     torch.backends.cudnn.benchmark = True   # type: ignore
     main()
