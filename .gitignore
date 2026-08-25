@@ -43,3 +43,4 @@ err_*.txt
 exps/_stale/
 cluster/ibrl.sif
 *.sif
+.pylibs/

@@ -50,9 +50,22 @@ if [ -n "${SIF:-}" ]; then
     # "version `GLIBC_ABI_DT_RELR' not found". Putting the container's own libdir
     # FIRST makes its libGL win, while the NVIDIA vendor libs still resolve from
     # the injected dir. Verified on fir.
+    # .pylibs shadows the image's tensorboard 2.21.0 with 2.20.0. robomimic
+    # requires tensorboard with no upper bound, so the image got the newest, whose
+    # summary_pb2.py is protoc-6-generated and needs google.protobuf.runtime_version
+    # (protobuf >= 5.27) -- the image has 4.25.9, pinned there because wandb 0.16.4
+    # requires protobuf<5. wandb.init() starts a TBWatcher that lazily imports it,
+    # so every run died with "MailboxError: transport failed" at init. The
+    # workstation has tensorboard 2.20.0, which is protoc-4-generated and fine.
+    # Populate it once on a LOGIN node (compute nodes have no internet):
+    #   apptainer exec -B $PWD:$PWD cluster/ibrl.sif \
+    #     python -m pip install --no-deps --target=$PWD/.pylibs "tensorboard==2.20.0"
+    # --no-deps is load-bearing: without it pip also drops numpy 2.x and protobuf
+    # 7.x into the shadow dir, which then shadow the image's correct versions and
+    # `import wandb` dies on the removed np.float_.
     R=$(realpath "$PWD")          # CC home/scratch paths are symlinks; bind the real one
     PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp --pwd $R \
-        --env PYTHONPATH=$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
+        --env PYTHONPATH=$R/.pylibs:$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
         --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/.singularity.d/libs \
         $SIF python"
 else
