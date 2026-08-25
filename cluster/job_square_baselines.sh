@@ -131,7 +131,7 @@ case $ARM in
       --target_demo_path $DEMOS \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb $USE_WB \\
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb $USE_WB \
       --state_only_no_render 1 ;;
   dyna_sgft)
     $PY train_simdist_dyna.py --stage1_ckpt $STAGE1 --save_dir $OUT --seed $SEED \
