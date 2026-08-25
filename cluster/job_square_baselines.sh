@@ -69,10 +69,19 @@ if [ -n "${SIF:-}" ]; then
     # --no-deps is load-bearing: without it pip also drops numpy 2.x and protobuf
     # 7.x into the shadow dir, which then shadow the image's correct versions and
     # `import wandb` dies on the removed np.float_.
+    # CA bundle: fir is RHEL-based and exports SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+    # / CURL_CA_BUNDLE pointing at /etc/pki/tls/certs/ca-bundle.crt. apptainer
+    # forwards them into the Ubuntu image, where that path does not exist, so any
+    # TLS call dies with "Could not find a suitable TLS CA certificate bundle".
+    # It hit `pip install` first and then wandb.init under WANDB_MODE=online.
+    # Point them at the image's own bundle. Harmless when offline.
     R=$(realpath "$PWD")          # CC home/scratch paths are symlinks; bind the real one
     PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp --pwd $R \
         --env PYTHONPATH=$R/.pylibs:$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
         --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/.singularity.d/libs \
+        --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+        --env REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+        --env CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
         $SIF python"
 else
     module purge; module load StdEnv/2023 gcc/12.3 python/3.10 cuda/12.2
