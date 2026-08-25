@@ -107,13 +107,20 @@ JOB1=$(sed -n "${L1}p" cluster/jobs_square_baselines.txt)
 JOB2=$(sed -n "${L2}p" cluster/jobs_square_baselines.txt)   # empty on the last, odd task
 echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> lines $L1,$L2 = '$JOB1' '$JOB2'"
 
+# save_dir's PARENT directory IS the wandb project (common_utils/py/run_cfg.py
+# derives wb_exp/wb_run/wb_group from it as read-only properties; --wb_* are not
+# CLI args and argparse rejects them). Writing into square_rotw1_6arm puts these
+# five baseline groups in the SAME project as the six SimDist groups already
+# there (sq_plain_*/sq_dynens_*/sq_dynens_anch_*), so all eleven can be overlaid
+# on one chart by group. Group names do not collide. Override with EXP_DIR.
+EXP_DIR=${EXP_DIR:-exps/square_rotw1_6arm}
 BASE=release/cfgs/mimicgen/square_d0_state_baseline_target_rotw1.yaml
 STAGE1=exps/mimicgen/square_simdist_rotw1_dynens_h5_seed1/latest.pt
 
 run_one() {
   local ARM=$1 SEED=$2
   [ -z "$ARM" ] && return 0
-  local OUT=exps/square_rotw1_baselines/${ARM}_seed${SEED}
+  local OUT=$EXP_DIR/${ARM}_seed${SEED}
   local DEMOS=release/data/mimicgen/square_sat_600000_s$SEED/dataset.hdf5
   echo "[$(date +%H:%M)] start $ARM seed$SEED"
 case $ARM in
