@@ -55,7 +55,13 @@ mkdir -p cluster/logs
 # actually renders anything. Verified: the two paths produce BIT-IDENTICAL
 # trajectories (max abs diff 0.000e+00 over 60 steps).
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
-export WANDB_MODE=${WANDB_MODE:-offline}   # compute nodes have no internet;
+export WANDB_MODE=${WANDB_MODE:-offline}
+# Escape hatch: USE_WB=0 turns wandb off entirely. train.log still records every
+# metric, and scripts/wandb_import_logs.py can replay them into wandb afterwards
+# from a login node. Use this if wandb.init itself is broken (it was, on the
+# tensorboard-2.21 / protobuf-4.25 mismatch) rather than losing runs to it.
+#   USE_WB=0 SIF=... sbatch --export=ALL,SIF,USE_WB ...
+USE_WB=${USE_WB:-1}   # compute nodes have no internet;
                                            # `wandb sync wandb/offline-run-*` later
 if [ -n "${SIF:-}" ]; then
     module purge; module load apptainer
@@ -121,7 +127,7 @@ case $ARM in
     $PY train_rl.py --config_path $BASE --seed $SEED --save_dir $OUT \
       --bc_policy exps/mimicgen/square_source_mlp_bc_n1000_seed1/model0.pt \
       --preload_datapath $DEMOS --preload_num_data 20 \
-      --num_warm_up_episode 10 --replay_buffer_size 1000 --state_only_no_render 1 ;;
+      --num_warm_up_episode 10 --replay_buffer_size 1000 --state_only_no_render 1 --use_wb $USE_WB ;;
   iql)
     # act_method MUST be rl: IQL has no BC prior and act_method=ibrl trips
     # `assert len(self.bc_policies) == 1`.
@@ -129,7 +135,7 @@ case $ARM in
       --q_agent.act_method rl --q_agent.bootstrap_method rl \
       --load_pretrained_agent exps/mimicgen/square_iql_offline_source/agent_warmstart.pt \
       --preload_datapath $DEMOS --preload_num_data 20 \
-      --num_warm_up_episode 10 --replay_buffer_size 1000 --state_only_no_render 1 ;;
+      --num_warm_up_episode 10 --replay_buffer_size 1000 --state_only_no_render 1 --use_wb $USE_WB ;;
   rlpd)
     # prior buffer = 2000 source rollouts + this seed's 20 target demos, and
     # mix_rl_rate 0.5 (in $BASE) is what makes the sampling 50/50.
@@ -137,20 +143,20 @@ case $ARM in
       --q_agent.act_method rl --q_agent.bootstrap_method rl \
       --preload_datapath release/data/mimicgen/square_rlpd_prior_s${SEED}/dataset.hdf5 \
       --preload_num_data 2020 \
-      --num_warm_up_episode 10 --replay_buffer_size 4000 --state_only_no_render 1 ;;
+      --num_warm_up_episode 10 --replay_buffer_size 4000 --state_only_no_render 1 --use_wb $USE_WB ;;
   dyna|dyna_h5)
     $PY train_simdist_dyna.py --stage1_ckpt $STAGE1 --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb 1 \\
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb $USE_WB \\
       --state_only_no_render 1 ;;
   dyna_sgft)
     $PY train_simdist_dyna.py --stage1_ckpt $STAGE1 --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb 1 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 0 --use_wb $USE_WB \
       --dyna.sgft_coef 1.0 --state_only_no_render 1 ;;
   *) echo "unknown arm '$ARM'"; return 1 ;;
 esac
