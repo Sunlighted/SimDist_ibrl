@@ -147,6 +147,7 @@ class PixelRobosuite:
         hand_init_perturb_joint_sigma: Optional[float] = None,
         init_distribution: Optional[InitDistConfig] = None,
         state_only_no_render: bool = False,
+        stage_reward: float = 0.0,
     ):
         assert isinstance(camera_names, list)
         self.camera_names = camera_names
@@ -237,6 +238,22 @@ class PixelRobosuite:
         self.device = device
 
         self.time_step = 0
+        # Optional ONE-SHOT bonus for finishing an intermediate subtask, for
+        # tasks whose env exposes _get_partial_task_metrics() (currently only
+        # ThreePieceAssembly). 0.0 = off => byte-for-byte upstream behavior.
+        #
+        # WHY: TPA's reward fires only when BOTH pieces are assembled, so
+        # "piece_1 placed" carries no return signal at all. Forensics on the
+        # plain-IBRL run (300k steps, 30/30 eval points at 0.00): piece_1 gets
+        # placed in 4/12 rollouts but piece_2 is never touched (max disp 0.002 m,
+        # z pinned at the 0.880 table height), and cumulative successes freeze
+        # at 207 from 230k on while Q drifts back up 0.25 -> 0.36.
+        #
+        # ONE-SHOT is load-bearing: a per-step bonus would let the agent park in
+        # stage 1 and farm it. success/terminal are untouched, so eval stays
+        # comparable with every earlier run.
+        self.stage_reward = float(stage_reward)
+        self._stage1_fired = False
         self.episode_reward = 0
         self.episode_extra_reward = 0
         self.terminal = True
@@ -501,6 +518,7 @@ class PixelRobosuite:
 
     def reset(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self.time_step = 0
+        self._stage1_fired = False
         self.episode_reward = 0
         self.episode_extra_reward = 0
         self.terminal = False
@@ -585,6 +603,12 @@ class PixelRobosuite:
                 step_reward = 1.0 if frame_success else 0.0
             else:
                 frame_success = step_reward == 1
+
+            if self.stage_reward > 0.0 and not self._stage1_fired:
+                metrics_fn = getattr(self.env, "_get_partial_task_metrics", None)
+                if metrics_fn is not None and metrics_fn().get("first_piece_assembled"):
+                    self._stage1_fired = True
+                    step_reward += self.stage_reward
 
             reward += step_reward
             self.episode_reward += step_reward

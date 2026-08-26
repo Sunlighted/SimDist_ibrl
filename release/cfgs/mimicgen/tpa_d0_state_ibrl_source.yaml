@@ -1,0 +1,79 @@
+# IBRL on ThreePieceAssembly_D0 -- SOURCE domain. SCOPING RUN.
+#
+# Gate for adding this task to the SimDist set: does a source expert reach
+# ~0.98? Threading/Square/Coffee all did. This task has 4 MimicGen subtasks
+# (vs 2), demos are 1.5x longer (mean 337 vs 224), so the risk is horizon,
+# not precision -- measured clearances are 3-6 mm/side, LOOSER than
+# Threading's 1.9 mm/side (see the BC cfg header).
+#
+# episode_length 1000 (not 600): measured saturation point, see the BC cfg.
+# PRIOR STRENGTH, measured (this is what IBRL actually gets): IBRL queries the
+# prior one step at a time (rl/q_agent.py:376 -> bc_policy.act -> chunk[0]),
+# i.e. Ta=1. At Ta=1 this Tp=10 prior scores 0.25 (vs 0.59 at Ta=4). The same
+# measurement on Square's RNN prior -- the one whose IBRL reached 97.8% -- is
+# 0.68. So this run is the WEAK-PRIOR arm of a two-point comparison; the
+# strong arm uses tpa_d0_state_source_rnn_bc_tp1.yaml (Tp=1, trained to match
+# the Ta=1 query). Square's own slope: MLP prior 0.63 -> 89.2%, RNN 0.82 -> 97.8%.
+# STRONG-PRIOR ARM (current): prior = tpa_d0_state_source_rnn_bc_tp1.yaml
+# (Tp=1, trained to match the Ta=1 query). Measured at Ta=1: final eval
+# 0.62 / best 0.74, vs 0.25 for the Tp=10 prior and 0.68 for Square's.
+# prior ckpt sha256 46dfdcda4203c646b4182f0214d582c310c3024462eb7bd6e685a9fd50a5ce64
+# The weak-prior arm (Tp=10, 0.25) ran to 40k steps in
+# exps/mimicgen/tpa_ibrl_source_weakprior_seed1 and was stopped early.
+#
+# Prior = the BC-RNN+GMM from tpa_d0_state_source_rnn_bc.yaml (per tasks §32,
+# the RNN prior was the decisive lever on Square: 89.2% -> 97.8%; plain MLP
+# prior stalled there). state_stack=1 so the prior's obs space matches.
+#
+# No domain shift, no strict-success gating (neither is wired for this task).
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_source.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_source_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: "exps/mimicgen/tpa_source_rnn_bc_tp1_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

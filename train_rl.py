@@ -224,6 +224,10 @@ class MainConfig(common_utils.RunConfig):
     # prior_margin_init = 0.0 (default) => plain IBRL, byte-for-byte unchanged.
     # Fixes the cold-start stall when the prior isn't strong enough for the
     # critic to self-calibrate (max-Q locks onto a still-bad RL actor).
+    # One-shot intermediate-subtask bonus, passed to PixelRobosuite. Only the
+    # TRAIN env gets it: eval must keep the original sparse success signal so
+    # score/score stays comparable with every earlier run. 0.0 = off.
+    stage_reward: float = 0.0
     prior_margin_init: float = 0.0
     prior_margin_steps: int = 100000
     prior_margin_final: float = 0.0
@@ -513,6 +517,7 @@ class Workspace:
             hand_init_perturb_joint_sigma=self.cfg.train_hand_init_perturb_joint_sigma,
             init_distribution=self.cfg.train_init_dist,
             state_only_no_render=bool(self.cfg.state_only_no_render),
+            stage_reward=self.cfg.stage_reward,
         )
         self.eval_env_params = dict(
             env_name=self.cfg.task_name,

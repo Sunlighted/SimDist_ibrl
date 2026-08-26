@@ -1,0 +1,87 @@
+# IBRL on ThreePieceAssembly_D0 -- SOURCE, plain IBRL + ONE-SHOT STAGE REWARD.
+#
+# Single-variable vs tpa_d0_state_ibrl_source.yaml (the plain arm): the ONLY
+# change is stage_reward. prior_margin stays 0 -- the margin arm is dead
+# (tpa_ibrl_source_margin_seed1: peaked at 0.60 == the prior's own 0.62, i.e.
+# zero net gain, then collapsed to 0.00 by 260k as margin decayed).
+#
+# WHY stage_reward. Plain IBRL sat at 0.00 for all 30 eval points to 300k.
+# Forensics: piece_1 IS placed (4/12 rollouts, final xy-dist to base
+# 0.002-0.014 == a successful BC episode) but piece_2 is NEVER touched (max
+# displacement 0.002 m in 8/12; its z never leaves the 0.880 table height).
+# Cumulative successes freeze at 207 from 230k on -- 170 straight episodes with
+# zero success -- while critic_qt drifts back UP 0.25 -> 0.36 with no success
+# data to correct it. Reward fires only when BOTH pieces are assembled, so
+# "piece_1 placed" carries no return signal whatsoever.
+#
+# Measured dose-response from the margin arm (margin -> bc_train -> score):
+#   bc_train 0.95 -> 0.60 | 0.85 -> 0.28 | 0.76 -> 0.00 | 0.45 -> 0.00
+# i.e. TPA tolerates <10% RL actions; Square reaches 0.50 at 65%. Stage reward
+# targets credit assignment, NOT this tolerance -- they may or may not couple,
+# so this run is a genuine test, not a sure thing.
+#
+# Verified before launch (3 episodes each): fires EXACTLY once per episode, at
+# first_piece_assembled with piece_1 1-6 mm from base, at t=138-208 while
+# success lands at t=331-396; total_r = 0.5 + 1.0. A 0.0 setting reproduces the
+# old behavior bit-for-bit. TRAIN ENV ONLY (train_rl.py:520) -- eval keeps the
+# original sparse signal, so score/score stays comparable to every earlier run.
+#
+# READ CRITERIA, fixed in advance:
+#   - score/num_success must keep GROWING (plain arm froze at 207) -> the
+#     vicious cycle is broken.
+#   - score/score must clear 0.62 (the prior's own level) for IBRL to have
+#     produced any net gain at all.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_source_stage.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_source_stage_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: "exps/mimicgen/tpa_source_rnn_bc_tp1_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+
+# ---- one-shot subtask-1 bonus (the single change vs the plain arm) ----
+stage_reward: 0.5

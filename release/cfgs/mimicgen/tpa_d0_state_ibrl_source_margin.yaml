@@ -1,0 +1,86 @@
+# IBRL on ThreePieceAssembly_D0 -- SOURCE, WITH prior-preference margin.
+#
+# WHY (diagnosed on tpa_ibrl_source_tp1prior_seed1, 0.00 through 280k steps):
+# the plain-IBRL run learns subtask 1 and then stops. Rollout forensics over
+# 12 episodes: piece_1 gets placed on the base in 4/12 (final xy-dist to base
+# 0.002-0.014, same as a successful BC episode), but piece_2 is NEVER touched
+# -- max displacement 0.002 m in 8/12, and its z stays at the 0.880 table
+# height every single episode. Its own prior does the whole task at 0.62.
+#
+# Mechanism: reward fires only when BOTH pieces are assembled, so "piece_1
+# placed" carries no return signal at all; in phase 2 the RL actor has never
+# seen a success, its Q there is pure extrapolation, and max-Q still picks it.
+# Square never hits this -- 2 subtasks / 400 steps, so phase 1 is already
+# adjacent to the reward. Diagnostics rule out the alternatives: critic is
+# healthy (Q 0.475 -> 0.334), BC-selection rate matches Square's almost
+# exactly (0.47 vs 0.35), throughput is stable, and pieces are not knocked away.
+#
+# The margin makes max-Q defer to the prior until the RL actor beats it by
+# > margin (rl/q_agent.py:401-406), so phase 2 falls back to the prior -- which
+# knows to grasp piece_2 -- long enough to bank full two-stage successes for
+# the critic to learn from.
+#
+# final=0.0 (anneal to plain IBRL), NOT a permanent floor: tasks §32 found a
+# permanent margin lowers final performance on Square.
+# steps=300k (vs the 100k default) because TPA must bank BOTH stages.
+# Scale check: critic_qt ~ 0.334, so margin 0.1 is a ~30% bar.
+#
+# NOTE eval also sees the margin (train_rl.py:776 passes self.agent, which
+# carries the annealed value), so score/score starts near the prior's ~0.62
+# and the anneal itself shows whether RL takeover helps or hurts.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_source_margin.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_source_margin_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: "exps/mimicgen/tpa_source_rnn_bc_tp1_n1000_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+
+# ---- prior-preference margin (the single change vs the plain arm) ----
+prior_margin_init: 0.1
+prior_margin_final: 0.0
+prior_margin_steps: 300000

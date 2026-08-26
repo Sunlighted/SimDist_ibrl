@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=sq_base
 #SBATCH --array=1-21
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=32G
-#SBATCH --time=12:00:00
+#SBATCH --mem=24G
+#SBATCH --time=8:00:00
 #SBATCH --output=cluster/logs/%x_%A_%a.out
 # ^ --account=def-<pi> must be supplied at submit time:
 #       sbatch --account=def-<pi> cluster/job_square_baselines.sh
@@ -36,7 +36,8 @@ mkdir -p cluster/logs
 # actually renders anything. Verified: the two paths produce BIT-IDENTICAL
 # trajectories (max abs diff 0.000e+00 over 60 steps).
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
-export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_MODE=${WANDB_MODE:-online}
+export WANDB_API_KEY="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"
 # Escape hatch: USE_WB=0 turns wandb off entirely. train.log still records every
 # metric, and scripts/wandb_import_logs.py can replay them into wandb afterwards
 # from a login node. Use this if wandb.init itself is broken (it was, on the

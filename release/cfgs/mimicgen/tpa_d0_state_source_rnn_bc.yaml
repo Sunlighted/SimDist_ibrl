@@ -1,0 +1,68 @@
+# ThreePieceAssembly_D0 -- MimicGen BC-RNN+GMM (StateRnnGmmPolicy, open-loop) on
+# the 1000 official core demos, trained + evaluated on SOURCE (no shift).
+#
+# SCOPING RUN. This is the gate for whether ThreePieceAssembly can join
+# Threading/Square/Coffee as a SimDist task: SimDist needs a ~0.98 source
+# expert. BC-RNN's own number here is the first read on task difficulty
+# (the D0 task has 4 MimicGen subtasks vs 2 for Threading/Coffee).
+#
+# Geometry measured in-sim (not from the paper): piece_1 plate 0.102 into a
+# 0.114 base hole -> 6 mm/side clearance; piece_2 slot 0.040 over piece_1's
+# 0.034 column -> 3 mm/side. Both far LOOSER than Threading/Square (~1.9
+# mm/side), so per findings §27/§39 the precision demand is low -- the
+# difficulty here is horizon/multi-stage, not the tolerance window.
+#
+# demo length: mean 337, median 331, max 375 (Threading = 224). eval len 1000:
+# measured on the epoch-299 ckpt, 100 games each -- 600 -> 0.270, 1000 -> 0.370,
+# 1400 -> 0.370. 1000 and 1400 are identical, so 600 was truncating.
+# RNN hyperparams match robomimic low_dim BC-RNN-GMM (lr 1e-3, hidden 400,
+# seq 10, 5 GMM modes), same as square_d0_state_source_rnn_bc.yaml.
+#
+# state_stack=1 (default) so it can later serve as the IBRL prior. No strict /
+# no domain_shift (neither exists for this task yet -- resolve_bindings() has
+# no ThreePieceAssembly resolver, and the raw _check_success is only a 20 mm
+# xy threshold with no real insertion check).
+#
+#   python train_bc.py --config_path release/cfgs/mimicgen/tpa_d0_state_source_rnn_bc.yaml \
+#       --save_dir exps/mimicgen/tpa_source_rnn_bc_n1000_seed1
+
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5
+  use_state: 1
+  action_horizon: 10        # = Tp (MimicGen seq_length)
+  build_state_chunk: 0      # open-loop RNN
+  num_data: -1              # all 1000 demos
+  eval_episode_len: 1000
+  val_ratio: 0.0
+
+use_flow: 0
+use_rnn: 1
+rnn_policy:
+  rnn_hidden_dim: 400
+  rnn_num_layers: 2
+  num_modes: 5
+  min_std: 0.01
+  std_activation: "softplus"
+  low_noise_eval: 1
+  use_tanh: 1
+  pred_horizon: 10          # = dataset.action_horizon
+  action_horizon: 8         # Ta (chunked eval; <= pred_horizon)
+  use_ema: 0
+
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-3
+weight_decay: 0
+grad_clip: 5
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+save_dir: exps/mimicgen/tpa_source_rnn_bc_n1000_seed1

@@ -149,7 +149,12 @@ class StateRnnGmmPolicy(nn.Module):
     def loss(self, batch):
         """NLL of action_chunk under per-timestep GMM."""
         state = batch.obs["state"]                                   # (B, S)
-        a = batch.action["action_chunk"]                             # (B, Tp, D)
+        # DatasetConfig.action_horizon == 1 stores a plain "action" (bc/dataset.py
+        # only builds "action_chunk" when H > 1). A Tp=1 policy is the single-step
+        # prior IBRL actually queries, so accept that layout too.
+        a = batch.action.get("action_chunk")
+        if a is None:
+            a = batch.action["action"].unsqueeze(1)                  # (B, 1, D)
         assert a.shape[1] == self.Tp, (
             f"action_chunk Tp={a.shape[1]} doesn't match policy pred_horizon={self.Tp} "
             "— check DatasetConfig.action_horizon"

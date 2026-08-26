@@ -1,0 +1,115 @@
+# IBRL on ThreePieceAssembly_D0 -- SOURCE, plain IBRL with the FULL demo set.
+#
+# Change vs the plain arm (tpa_d0_state_ibrl_source.yaml): preload_num_data
+# 10 -> 1000. replay_buffer_size 1000 -> 2000 is NOT a second experimental
+# variable -- bc_replay stores one entry per TRAJECTORY and shares this same
+# capacity number, so 1000 demos would exactly fill it with zero headroom.
+# prior_margin stays 0, stage_reward stays off.
+#
+# WHY. The plain arm never once succeeded: score/num_success is pinned at 42
+# (= 32 warmup + 10 preload) from 10k through 280k, across 290 episodes, with
+# every episode running the full 1000 steps. Rollout forensics locate the
+# lock precisely -- piece_1 does get assembled (4/12 rollouts, 1-14 mm from
+# base, same as a successful BC episode) but piece_2 is never touched (max
+# displacement 0.002 m in 8/12; z pinned at the 0.880 table height). Ruled out
+# by the logs: action blow-up (anorm_rl 0.98-1.34 vs anorm_bc 0.88-1.06),
+# critic divergence (critic_qt descends 0.47 -> 0.32), and freezing (the arm
+# keeps moving for all 1000 steps).
+#
+# So exploration will NEVER manufacture a phase-2 success, which is why the
+# stage-reward arm was abandoned before it could finish: a stage bonus
+# improves exploitation of signal that exists, it does not create the phase-2
+# success that has never happened once in 300k steps. The only remaining way
+# to get phase-2 data into the critic is to PUT it there.
+#
+# This cfg is already RLPD-shaped -- mix_rl_rate 0.5 (symmetric sampling),
+# layer_norm 1, num_q 5 / num_k 2, UTD 2.5 -- it was just running on 10
+# trajectories. Half of every critic batch was drawn from ~3.4k transitions
+# covering a 1000-step, 4-subtask, 3-free-body task, leaving phase 2 almost
+# entirely to extrapolation; and the RL actor, trained to argmax Q, homes in
+# on exactly those extrapolated peaks.
+#
+# NOTE ~1.8% of the official demos never fire the success check on replay
+# (see the BC cfg), and add() drops non-success episodes from bc_replay, so
+# bc_replay ends up holding ~982, not 1000.
+#
+# CAVEAT: this addresses phase-2 Q extrapolation only. It does NOT address the
+# other measured problem -- TPA tolerates <10% RL actions (bc_train 0.95 ->
+# score 0.60, 0.85 -> 0.28, 0.76 -> 0.00) where Square still scores 0.50 at
+# 65%. The two may couple (better Q -> saner RL actions) or may not.
+#
+# READ CRITERIA, fixed in advance:
+#   - score/num_success must climb past its preload baseline -> exploration is
+#     finally producing successes.
+#   - score/score must clear 0.62 (the prior's own level) for any net gain.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_source_alldemo.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_source_alldemo_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: "exps/mimicgen/tpa_source_rnn_bc_tp1_n1000_seed1/model0.pt"
+preload_num_data: 1000
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 2000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+
+# ---- CONTINUATION of tpa_ibrl_source_alldemo_seed1 (died at 430k) ----
+# That run WORKED: score 0.00 through 290k, then num_success left its 1026
+# baseline at 300k and score climbed 0.00 -> 0.06 -> 0.22 -> 0.48 by 400k.
+# It did not plateau -- it was killed by an mp-eval deadlock (main proc in
+# futex_wait_queue_me, all 10 eval workers gone), the EGL-context deadlock
+# documented at env/robosuite_wrapper.py:158-162.
+#
+# state_only_no_render: 1 removes the offscreen GL context entirely. It is a
+# BUG FIX, not an experimental variable -- training is state-only, so the
+# rendered frames were pure waste that only served to hang eval.
+#
+# Warm-start carries the critic that took 430k steps to learn. load_policy_only
+# MUST be 0: the default 1 restores the pre-load (random) critic, which for
+# IBRL means throwing away exactly the thing worth keeping. The online replay
+# (incl. ~72 on-policy phase-2 successes) is NOT recoverable -- the process was
+# wedged, so its dump could not be triggered. bc_replay's 982 demos reload.
+state_only_no_render: 1
+load_pretrained_agent: "exps/mimicgen/tpa_ibrl_source_alldemo_seed1/latest.pt"
+load_policy_only: 0
