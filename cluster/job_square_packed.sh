@@ -95,7 +95,21 @@ if [ -n "${SIF:-}" ]; then
     # It hit `pip install` first and then wandb.init under WANDB_MODE=online.
     # Point them at the image's own bundle. Harmless when offline.
     R=$(realpath "$PWD")          # CC home/scratch paths are symlinks; bind the real one
-    PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp --pwd $R \
+    # mimicgen's XML assets are NOT in the image. The image installs mimicgen
+    # NON-editable, and its setup.py never declares assets/**/*.xml in
+    # package_data, so pip ships only the .py files -- the container's
+    # mimicgen/models/robosuite tree has 0 xml files while the submodule has 19
+    # (12 MB). Coffee_D0 loads coffee_pod.xml from there and dies with
+    # FileNotFoundError; Square_D0 escapes it because NutAssembly's assets come
+    # from robosuite itself. The workstation never saw this: it installs mimicgen
+    # EDITABLE, so the package resolves into the source tree.
+    # Bind the submodule's assets over the installed package's empty one.
+    MG_ASSETS=$R/deps/mimicgen/mimicgen/models/robosuite/assets
+    MG_DEST=/usr/local/lib/python3.10/dist-packages/mimicgen/models/robosuite/assets
+    MG_BIND=""
+    [ -d "$MG_ASSETS" ] && MG_BIND="-B $MG_ASSETS:$MG_DEST"
+
+    PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp $MG_BIND --pwd $R \
         --env PYTHONPATH=$R/.pylibs:$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
         --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/.singularity.d/libs \
         --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
