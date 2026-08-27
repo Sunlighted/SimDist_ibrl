@@ -1,0 +1,104 @@
+# Coffee_D0 G5x TARGET — shared base for the MODEL-FREE baselines (IBRL / IQL /
+# RLPD) at the matched 100k-transition budget. Exact analogue of
+# square_d0_state_baseline_target_rotw1.yaml; every RL hyper-parameter is copied
+# from the Threading arms so all three tasks stay comparable.
+#
+# log_per_step = 1000 IS the eval frequency (train_rl.py gates eval on
+# `global_step % log_per_step`), so 100k steps => 100 eval points.
+#
+# Per-arm CLI overrides (see cluster/job_coffee_baselines.sh):
+#   IBRL  --bc_policy <the chosen Coffee prior>
+#         --preload_datapath release/data/mimicgen/coffee_g5x_sat400k_s<N>/dataset.hdf5
+#         --preload_num_data 20 --num_warm_up_episode 10 --replay_buffer_size 1000
+#   IQL   --q_agent.act_method rl --q_agent.bootstrap_method rl
+#         --load_pretrained_agent exps/mimicgen/coffee_iql_offline_source/agent_warmstart.pt
+#         (act_method MUST become rl: IQL has no BC prior and
+#          `assert len(self.bc_policies) == 1` fires under act_method=ibrl)
+#   RLPD  --q_agent.act_method rl --q_agent.bootstrap_method rl
+#         --preload_datapath release/data/mimicgen/coffee_rlpd_prior_s<N>/dataset.hdf5
+#         --preload_num_data 2020 --replay_buffer_size 4000
+#
+# G5x target (docs/tasks.md §40): chosen by measuring the DYNAMICS GAP directly,
+# not the expert's success rate. Unlike Square rotw1 there is NO init_distribution
+# override here — Coffee_D0's own reset distribution is used.
+#   gripper_kp 0.30 · lid_damping 5.0 · mass 8.0 · friction 0.2 · pod_holder_friction 5.0
+# solref/pod_holder_size are deliberately absent (clamped regime / measured no-op).
+
+task_name: Coffee_D0
+episode_length: 400
+use_state: 1
+obs_stack: 1
+state_stack: 1
+prop_stack: 1
+
+train_domain_shift: &shift
+  mode: fixed
+  gripper_kp_scale: 0.30
+  lid_damping_scale: 5.0
+  mass_scale: 8.0
+  friction_scale: 0.2
+  pod_holder_friction_scale: 5.0
+  mask_hole_offset_in_obs: false
+eval_domain_shift: *shift
+
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+# ---- budget + logging (100k transitions, eval every 1k => 100 points) ----
+num_train_step: 100000
+log_per_step: 1000
+num_eval_episode: 100
+mp_eval: 1
+snapshot_period: 0
+
+# ---- RL hyper-parameters: copied verbatim from the Threading / Square arms ----
+discount: 0.99
+end_on_success: 1
+nstep: 3
+num_critic_update: 5
+update_freq: 2
+batch_size: 256
+mix_rl_rate: 0.5
+stddev_max: 0.1
+stddev_min: 0.1
+freeze_bc_replay: 1
+
+# CAREFUL: train_rl.py.__post_init__ does `num_warm_up_episode += preload_num_data`
+# whenever preload_datapath is set (it is the TOTAL replay size to reach, demos
+# included). 10 here means "10 fresh env episodes on top of the demos".
+bc_policy: ''
+preload_datapath: release/data/mimicgen/coffee_g5x_sat400k_s1/dataset.hdf5
+preload_num_data: 20
+num_warm_up_episode: 10
+replay_buffer_size: 1000
+
+# Skip robosuite's offscreen renderer: state-only runs never read the image, and
+# on MIG-partitioned GPUs building the EGL context is impossible.
+state_only_no_render: 1
+
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1.0
+  bc_loss_coef: 0.1
+  critic_target_tau: 0.01
+  lr: 0.0001
+  q_target_min: 0.0
+  q_target_max: 1.0
+  sgft_shaping: 0
+  state_actor:
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 0
+    dropout: 0.0
+  state_critic:
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 1
+    num_q: 5
+    num_k: 2
+    dropout: 0.0
+
+use_wb: 1
+seed: 1
+save_dir: exps/coffee_g5x_3arm/ibrl_seed1

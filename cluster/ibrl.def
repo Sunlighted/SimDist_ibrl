@@ -81,13 +81,22 @@ From: nvidia/cuda:12.8.1-runtime-ubuntu22.04
     python -m pip install Cython==0.29.36 einops==0.7.0 fasteners==0.19 \
         pyrallis==0.3.1 tabulate==0.9.0 typing-inspect==0.9.0 wandb==0.16.4 \
         cloudpickle "gym==0.26.2" h5py pybind11 "opencv-python<5" rich \
-        typer httpx
+        typer httpx "tensorboard<2.21"
     # rich is a HARD requirement, not a nicety: train_rl.py's __main__ block does
     # `from rich.traceback import install`, so the job dies at import before any
     # output. It was missed by an import-level smoke test and only surfaced when
     # the entry point was actually run. typer/httpx are here purely for parity
     # with the workstation env (they are transitive there, unused by our code).
 
+    # tensorboard<2.21 above: robomimic requires tensorboard with NO upper bound,
+    # so the image otherwise gets 2.21.0, whose summary_pb2.py is protoc-6
+    # generated and imports google.protobuf.runtime_version (protobuf >= 5.27).
+    # protobuf is pinned at 4.25.9 because wandb 0.16.4 requires protobuf<5 --
+    # a hard conflict. wandb.init() starts a TBWatcher that lazily imports
+    # summary_pb2, so EVERY run died at init with "MailboxError: transport
+    # failed", the real error one frame down. 2.20.0 is protoc-4 generated and
+    # matches the workstation. Asserted below.
+    #
     # opencv-python<5 above: robosuite pulls the latest (5.0.0), which is a major
     # version ahead of the workstation's 4.13.0 AND declares numpy>=2, conflicting
     # with the pin below. robosuite 1.4.1 was written against opencv 4.
@@ -101,11 +110,16 @@ From: nvidia/cuda:12.8.1-runtime-ubuntu22.04
     python -m pip install --force-reinstall "numpy<2"
     python - <<'CHK'
 import numpy, wandb, torch, robosuite, mujoco, h5py, pyrallis, cv2, rich, huggingface_hub
+from importlib.metadata import version as _v
 assert numpy.__version__.startswith("1."), f"numpy must be <2, got {numpy.__version__}"
 assert cv2.__version__.startswith("4."), f"opencv must be 4.x, got {cv2.__version__}"
+assert tuple(int(x) for x in _v("tensorboard").split(".")[:2]) < (2, 21), \
+    f"tensorboard must be <2.21 (protobuf 4.x), got {_v('tensorboard')}"
+import wandb as _wb  # the exact failure path: TBWatcher -> summary_pb2
+from tensorboard.compat.proto import summary_pb2 as _sp
+print("tensorboard/protobuf compatible: OK")
 assert huggingface_hub.__version__ == "0.23.4", \
     f"robomimic v0.5 hard-pins huggingface_hub 0.23.4, got {huggingface_hub.__version__}"
-from importlib.metadata import version as _v   # rich exposes no __version__
 print("numpy", numpy.__version__, "| wandb", wandb.__version__, "| cv2", cv2.__version__,
       "| rich", _v("rich"), "| hf_hub", huggingface_hub.__version__)
 from rich.traceback import install as _ri        # the exact import train_rl.py does
