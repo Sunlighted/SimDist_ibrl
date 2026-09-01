@@ -15,10 +15,10 @@ Last updated: 2026-08-21
 
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
-| **`docs/findings.md`** | ~1350 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
+| **`docs/findings.md`** | ~1400 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
 | **`docs/simdist.md`** | ~1190 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)**。 |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
-| **`docs/tasks.md`** | ~555 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
+| **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
 | **`docs/infra.md`** | ~410 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
@@ -29,12 +29,12 @@ Last updated: 2026-08-21
 
 ## 速查
 
-### 三个任务的当前状态（全部 strict / σ=0.1 / target = 各自的 §12/§32/§40 配方）
+### 三个任务的当前状态（σ=0.1 / target = 各自的 §12/§32/§40 配方；strict 仅 Threading·Coffee，**Square 线上 `strict_success.enabled` 全是 false**，见 tasks §41b）
 
 | 任务 | source 专家 | target 专家 | SimDist adapt | 详见 |
 |---|---:|---:|---:|---|
 | **Threading_D0** | IBRL 0.98 | model-free IBRL **0.9815**(n=2000) | **dynens 0.962**(n=2000) / plain 0.879 | findings §31 |
-| **Square_D0 (rotw1)** | 0.98 | **0.98–1.00** | plain **0.78**（= oracle 0.92 的 85%） | tasks §41；dynens 跑中 |
+| **Square_D0 (rotw1)** | 0.98 | **0.98–1.00** | anchor **0.837**(10seed) / 0.886(d600) | tasks §41 · **§41b 拆账** |
 | **Coffee_D0** | 0.998 (σ.02) / **0.938** (σ.1) | **0.982** (C50) / 0.96 (C75) / 0.93 (G5x) | **0.907**(G5x, 2seed) = oracle 0.94 | tasks §40–40e |
 
 Threading target 的参考线阶梯（同一 harness，n≥300）：
@@ -100,7 +100,19 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     ≈ 157 epoch 打在 1633 个 demo transition 上，且**代码里零正则**。`bc_anchor_coef≈1`
     是修法，实测把 round-0 抬 **+0.35~+0.44**（三个 Coffee target 一致）。⚠️ 但 λ=0 的破坏
     幅度差 22 倍（C75kp25 round-0 **0.02** vs G5x **0.44**）⇒ 换 target 必须重测 λ=0。
-17. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
+17. **eval 脚本的环境跟着 ckpt 走 ⇒ 换 agent 会静默换任务。** `train_rl.load_model(weight)`
+    连 `env_params` 一起返回，所以 `--weight` 一换，**σ 和 `eval_init_dist` 也跟着变**。
+    §41 那张 2×2 就是这么废掉的（π_src 行 σ=null/rotw1，π_tgt 行 σ=0.1/全360°），
+    整整一条"换 value 就崩"的结论是假的。**跨 ckpt 比较前必须逐行核对 `[setup]`/`[EVAL ENV]`
+    里的 σ / init_dist / strict / planner 全参数**；`eval_square_oracle_mppi.py` 现在会全打印。
+    ⚠️ 同理 `bool(cfg_object)` 恒为 True —— 判开关要读 `.enabled`（我自己刚踩过）。
+18. **接近天花板时，加法尺度上的 null 不含信息量。** 报效应量必须同时给"剩余差距缩小的比例"
+    （或 log-odds）。实例：anchor 在 learned 上 +0.025（基线 0.820）、在 oracle 上 +0.005
+    （基线 **0.965**，离 1.0 只剩 0.035）—— 加法看像"机制消失"，但**差距缩小比例两边一样**
+    （13.9% vs 14.3%，log-odds +0.18 vs +0.16）⇒ 那个 null 是**算术必然**，不是证据。
+    与 §42 强 base 那格同型（那次是 CI 覆盖 0 被读成"无效"）。**要证机制消失，必须先造出余量**
+    （例：oracle 上削弱 planner 让基线掉到 ~0.75，模型误差仍为零但余量 0.25）。
+19. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
 
 ### 常用命令
@@ -178,6 +190,11 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   （首次追平完美 dynamics）。**杠杆是 stage-2 的 anchor（+0.40），不是 stage-3 adapt（+0.03）**；
   选 target 看 `stage-1 MPPI 分数`不看 oracle；**难度必须与 gap 同相位且占数据主体**
   （C50 唯一崩掉：难度 86% 在只占 4% 转移的 close-lid 相）。附 6 个被证伪的假设 + 两个测量地板。
+- **§41b** ★★ 受控重测推翻 §41 的 2×2：**缺口是 dynamics 不是 value**。同预算 dynamics 误差
+  **+0.175 (z=5.1)** ≫ proposal +0.030 > **value +0.015 (ns)**，任务残差 0.015；value 的效应是
+  **proposal-conditional**（弱 proposal 上 +0.330，target-BC 过的 proposal 上归零）；oracle 下
+  "value 需与延续策略自洽"被证伪（F>E +0.060）；蒸馏 V̂ > source 专家 critic +0.085。
+  ⚠️ Square 线上 strict 全 false；anchor 臂 seed2/seed1 的 demo 集不对齐。
 - **§41** Square rotw1 全链条；**MPPI 信任域 = `init_std` + `base_policy_std` 两堵墙**；
   planner 的价值完全由 dynamics 精度定（oracle +0.63 vs 训练域内 learned +0.015 ns）；
   蒸馏 V̂ 可直接替代 V_src；⚠️ 两个测量地板（episode 级不可复现、seed 跨度 0.035）。

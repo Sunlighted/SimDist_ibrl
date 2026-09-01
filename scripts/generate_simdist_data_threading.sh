@@ -46,6 +46,18 @@ HYBRID="${HYBRID:-1}"
 # the sub-optimal snapshots stay bare RL actors (act_method=rl).
 SNAP_HYBRID="${SNAP_HYBRID:-1}"
 EXPERT_BC_POLICY="${EXPERT_BC_POLICY:-}"
+# MAX_LEN caps rollout length. 400 is NOT a universal default: it happens to equal
+# episode_length for Threading/Coffee/Square (all 400), i.e. no truncation there.
+# ThreePieceAssembly runs at episode_length=1000 (demos avg 336 steps, 4 subtasks),
+# so leaving this at 400 silently truncates ~40% of every unfinished rollout and
+# drops the late-phase transitions entirely. Set it to the task's episode_length.
+MAX_LEN="${MAX_LEN:-400}"
+# HAND_INIT_SIGMA: joint-space init perturbation for the collection env. 0.1 for all
+# three precedent source_diverse sets; note it is independent of what the run was
+# TRAINED at (TPA trains at sigma=null) -- widening coverage here is deliberate.
+HAND_INIT_SIGMA="${HAND_INIT_SIGMA:-0.1}"
+# `python` is not on PATH in this repo's env and set_env.sh does not activate conda.
+PYTHON="${PYTHON:-/home/Chenyang/.conda/envs/ibrl/bin/python}"
 # VALUE_IBRL=1 labels V_e(s) with the HYBRID value max(Q(s,pi_rl), Q(s,prior)) —
 # the value of the action the hybrid expert actually executes. Needs HYBRID=1.
 VALUE_IBRL="${VALUE_IBRL:-0}"
@@ -62,7 +74,7 @@ echo "expert=$EXPERT"
 echo "snapshots=$CKPTS"
 echo "out=$OUT  num_traj=$NUM_TRAJ  num_proc=$NUM_PROC  p_expert=$P_EXPERT"
 
-CMD=(python scripts/generate_simdist_data.py
+CMD=("$PYTHON" scripts/generate_simdist_data.py
     --expert "$EXPERT"
     --checkpoints "$CKPTS"
     --out_dir "$OUT"
@@ -72,8 +84,8 @@ CMD=(python scripts/generate_simdist_data.py
     --sigma_min 0.05 --sigma_max 0.2
     --noise_min 1 --noise_max 5
     --nonoise_min 5 --nonoise_max 10
-    --max_len 400
-    --hand_init_sigma 0.1
+    --max_len "$MAX_LEN"
+    --hand_init_sigma "$HAND_INIT_SIGMA"
     --expert_hybrid "$HYBRID"
     --snapshot_hybrid "$SNAP_HYBRID"
     --expert_bc_policy "$EXPERT_BC_POLICY"

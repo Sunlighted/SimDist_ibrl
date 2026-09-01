@@ -101,15 +101,17 @@ eval_domain_shift:
 # futex_wait_queue_me, all 10 eval workers gone), the EGL-context deadlock
 # documented at env/robosuite_wrapper.py:158-162.
 #
-# state_only_no_render: 1 removes the offscreen GL context entirely. It is a
-# BUG FIX, not an experimental variable -- training is state-only, so the
-# rendered frames were pure waste that only served to hang eval.
+# state_only_no_render was tried and REMOVED: it was meant to fix an EGL
+# deadlock that turned out not to be the cause. Two runs with it wedged at
+# step 2237 and step 133 (all 7 python threads in futex_wait_queue_me).
+# Real cause: those ran on GPU3 while two isaaclab jobs held 77.7 GB each,
+# leaving 4 CUDA contexts fighting over the remainder. The 430k run that
+# worked was on GPU1. Keep this arm on a GPU with real headroom.
 #
 # Warm-start carries the critic that took 430k steps to learn. load_policy_only
 # MUST be 0: the default 1 restores the pre-load (random) critic, which for
 # IBRL means throwing away exactly the thing worth keeping. The online replay
 # (incl. ~72 on-policy phase-2 successes) is NOT recoverable -- the process was
 # wedged, so its dump could not be triggered. bc_replay's 982 demos reload.
-state_only_no_render: 1
 load_pretrained_agent: "exps/mimicgen/tpa_ibrl_source_alldemo_seed1/latest.pt"
 load_policy_only: 0

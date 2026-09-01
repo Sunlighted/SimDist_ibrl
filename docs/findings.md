@@ -1002,6 +1002,38 @@ value 是致命的；dynens（畸变小得多、天花板 0.96）里几乎免费
 "加宽初始分布 ⇒ 必须 adapt value"这类需求应当**在 dynens 系统上做**，可以用简单得多的
 方案（甚至全局重拟合）。
 
+### ★★ 2026-08-28 Square 上的受控重测：value 的效应是 **proposal-conditional**（见 tasks §41b）
+
+同一把尺子（oracle dynamics + 只换一个部件，rotw1/σ=0.1/n=200 每格）在 Square 上量出来的结果，
+给 §33 这套结论加了一条**新的、与"dynamics 误差"正交的边界**：
+
+| proposal 裸跑 | "把 value 换成 target 训的" 的收益 | z |
+|---|---:|---:|
+| π_src **0.135** | **+0.330** | 8.4 |
+| SimDist stage-2 policy 头 **0.595** | **+0.015** | **0.67 (ns)** |
+
+⇒ **"value 值不值钱"主要由 proposal 有多好决定**，不是由 value 本身决定。proposal 差时，
+更好的 value 能把搜索从烂候选里拽出来；proposal 一旦 target-BC 过，value 就没东西可补。
+这解释了为什么 Threading 上"别 adapt value"如此干脆（那里 proposal 一直是 stage-2 BC 出来的，
+oracle + **冻结** source value 就有 99.3%），也解释了 Square 上一度看起来"value 至关重要"。
+
+**同一批实验的完整拆账**（proposal 固定为 SimDist stage-2 policy 头）：
+`dynamics 误差 +0.175 (同预算, z=5.1)` ≫ `proposal +0.030` > `value +0.015 (ns)`，任务残差 0.015。
+
+两条对 §33 的直接修正：
+1. **§41 那张"换 value 就崩到 0.42"的 2×2 作废**（两行跑在不同的 σ 和不同的初始分布上）。
+   干净口径下反对角是 **0.925 / 0.940**，是**提升**不是崩塌。
+2. **在 oracle dynamics 下，"value 必须与延续策略自洽"被证伪**：同一个弱 proposal 配
+   *更强但不自洽* 的 value 反而好 +0.060 (z=2.2)。与 §33 不矛盾 —— §33 的机制是
+   "value 的特权来自补偿 dynamics 畸变"，**dynamics 完美时没有畸变要补，自洽性就不值钱**。
+   ⇒ 自洽性重要 **∝ dynamics 误差**；value 可改进的余量重要 **∝ proposal 的差距**。两条轴。
+
+⚠️ 顺带作废：Square 上所有 value-iteration 的判决（`square_value_iter{,2}.py` / `kill_test.py`）
+都建在 σ=null 的 `square_ibrl_rotw1_seed1` 上 —— 那里余量 ≤0.06 而噪声地板 ±0.04，
+**信噪比 1.3:1**，而且 kill test 的前提"失败只占 ~10%"在 σ=0.1 下（失败 40%）根本不成立。
+
+---
+
 ### ★★★ 2026-07-29/30 什么时候 value 才真的必须 adapt —— 答案是 OOD，不是"可达性"
 §33 主体证明"别 adapt value"，但没回答"什么情况下不 adapt 就不行"。用同一把尺子
 （**oracle dynamics + 冻结的 source value**：模型误差=0 ⇒ planner 唯一还能出错的部件

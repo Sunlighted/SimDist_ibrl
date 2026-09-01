@@ -1,5 +1,9 @@
 # Running the Square baselines on a Compute Canada cluster
 
+> Threading's `dyna_bc10` + `plain_h5` job lives in a separate file:
+> **`cluster/README_threading_dyna_plain.md`** (`job_threading_dyna_plain.sh`,
+> `sync_threading_dyna_plain.sh`). The env setup in step 3 below is shared.
+
 Square_D0 rotw1 TARGET-B, matched **100k-transition** budget, mirroring
 `exps/simdist_threading_3arm/{ibrl,iql,rlpd,dyna_h5,dyna_sgft}_seed*`
 field-for-field. Five arms:
@@ -226,6 +230,21 @@ a login node afterwards:
 ```bash
 wandb sync wandb/offline-run-*
 ```
+
+**The API key is never written into a job script** — those are tracked by git.
+Every job file resolves it in this order, and falls back to `offline` (with a log
+line) if it finds nothing, instead of dying in `wandb.init` with
+`api_key not configured (no-tty)` after the checkpoints are already loaded:
+
+1. `WANDB_API_KEY=... sbatch --export=ALL,SIF,WANDB_MODE,WANDB_API_KEY ...`
+2. a key file outside the repo — `~/.config/wandb/key`, `chmod 600`
+   (path overridable with `WANDB_KEY_FILE`)
+3. `wandb login` once on a login node — it writes `~/.netrc`, and `$HOME` is
+   shared with the compute nodes and mounted inside the container by default
+
+The key reaches the container through `APPTAINERENV_WANDB_API_KEY`, **not**
+`apptainer --env` — the latter puts it in argv, where any other user on the node
+can read it out of `ps`.
 Runs land in project `square_rotw1_baselines` with group = the arm, because
 `common_utils/py/run_cfg.py` derives `wb_exp/wb_run/wb_group` from `save_dir`
 as read-only properties — `--wb_group` / `--wb_exp` are **not** CLI arguments

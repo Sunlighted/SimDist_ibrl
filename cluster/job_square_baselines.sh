@@ -37,7 +37,31 @@ mkdir -p cluster/logs
 # trajectories (max abs diff 0.000e+00 over 60 steps).
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
 export WANDB_MODE=${WANDB_MODE:-online}
-export WANDB_API_KEY="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"
+# The key is NEVER hardcoded here -- this file is tracked by git. Three ways to
+# supply it, checked in this order:
+#   1. export it yourself:  WANDB_API_KEY=... sbatch --export=ALL,SIF,WANDB_API_KEY ...
+#   2. a key file outside the repo:  chmod 600 ~/.config/wandb/key   (override
+#      the path with WANDB_KEY_FILE=...)
+#   3. `wandb login` once on a login node -- it writes ~/.netrc, and $HOME is
+#      shared with the compute nodes and mounted inside the container by default.
+# Note we do NOT pass the key via `apptainer --env` (that would put it in argv,
+# where any user on the node can read it out of `ps`); APPTAINERENV_* forwards it
+# through the environment instead.
+WANDB_KEY_FILE=${WANDB_KEY_FILE:-$HOME/.config/wandb/key}
+if [ -z "${WANDB_API_KEY:-}" ] && [ -r "$WANDB_KEY_FILE" ]; then
+    WANDB_API_KEY=$(tr -d '[:space:]' < "$WANDB_KEY_FILE")
+fi
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export APPTAINERENV_WANDB_API_KEY="$WANDB_API_KEY"
+# online with no credentials at all dies inside wandb.init with
+# "api_key not configured (no-tty)" and takes the whole task down with it, after
+# the checkpoints are already loaded. Fall back rather than lose the run.
+if [ "$WANDB_MODE" = "online" ] && [ -z "$WANDB_API_KEY" ] \
+   && ! grep -qs 'api\.wandb\.ai' "$HOME/.netrc"; then
+    echo "[wandb] no API key and no ~/.netrc entry -> falling back to WANDB_MODE=offline"
+    echo "[wandb] sync afterwards from a login node:  wandb sync wandb/offline-run-*"
+    export WANDB_MODE=offline
+fi
 # Escape hatch: USE_WB=0 turns wandb off entirely. train.log still records every
 # metric, and scripts/wandb_import_logs.py can replay them into wandb afterwards
 # from a login node. Use this if wandb.init itself is broken (it was, on the

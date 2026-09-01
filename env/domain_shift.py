@@ -115,6 +115,31 @@ class DomainShiftConfig:
     #   <=0.70 -> hole <= peg -> impossible
     nut_size_scale: float = 1.0
 
+    # ---- ThreePieceAssembly_D0-only knobs (see resolve_three_piece_bindings) ----
+    # base_friction_scale > 1 raises the sliding friction of the FIXED base's
+    # collision geoms (nominal 1.0). The base is the cleanest possible
+    # "insertion-only" surface in this task: it weighs 8.78 kg (density 10000,
+    # set upstream to "make the task easier"), never moves, and is never
+    # grasped -- so its friction acts ONLY while piece_1 is being seated into
+    # the hole. Direct analog of Threading's ring_friction_scale (grippier rim
+    # -> a sloppy approach jams instead of sliding in). Contact mu in MuJoCo is
+    # max(piece, base) and the pieces are already 1.0, so this bites above 1.0.
+    base_friction_scale: float = 1.0
+    # base_hole_size_scale < 1 SHRINKS the base's 3x3-cell hole by thickening
+    # its 12 wall cells inward -- the analog of ring_size_scale / nut_size_scale.
+    # Growth is symmetric so every geom center (and the base body pos) is
+    # unchanged, leaving the success check untouched (it compares body
+    # positions with a 20 mm xy threshold, blind to geom size).
+    # Geometry, measured off the built model (unit half-size 0.019, so the hole
+    # spans x,y in (-0.057, 0.057) = 114 mm) vs piece_1's 102 mm base plate:
+    #   1.00 -> 114.0 mm hole, 6.00 mm/side clearance (nominal)
+    #   0.96 -> 109.4 mm hole, 3.72 mm/side
+    #   0.94 -> 107.1 mm hole, 2.58 mm/side
+    #   0.92 -> 104.8 mm hole, 1.44 mm/side  (~Threading-tight, 1.9 mm/side)
+    #   <=0.91 -> below the ~1.3 mm/side floor where findings §39 showed even
+    #             ORACLE dynamics fails -> that is task-killing, not a gap.
+    base_hole_size_scale: float = 1.0
+
     # ---- Coffee_D0-only knobs (see resolve_coffee_bindings / apply_coffee_shift) ----
     # pod_holder_size_scale < 1.0 shrinks the pod holder's INNER opening (the
     # 64 `coffee_machine_pod_holder_cup_body_hc_*` boxes forming the cup wall)
@@ -578,9 +603,122 @@ def resolve_coffee_bindings(env) -> dict:
     }
 
 
+def resolve_three_piece_bindings(env) -> dict:
+    """MuJoCo ids for the ThreePieceAssembly_D0 contact shift.
+
+    Generic keys (`object_body_ids` / `object_geom_ids` / `gripper_act_ids`) are
+    consumed by apply_contact_shift() AS-IS -> piece mass/friction/solref/solimp
+    and gripper kp. `base_wall_geom_ids` drives apply_three_piece_shift()
+    (hole shrink + insertion friction). No ring/peg/pod keys, so the
+    Threading- / Square- / Coffee-only paths are skipped by the wrapper.
+
+    Both manipulated pieces are included in the generic keys: piece_1 (58.96 g)
+    is seated into the base, piece_2 (140.80 g) is then slid over piece_1's
+    column, so a mass/friction shift hits BOTH subtasks. That matters here --
+    tasks §40e found a target only works if the added difficulty is in phase
+    with the gap AND covers the bulk of the transitions; TPA's two insertion
+    phases split the episode roughly 40/60 (stage 1 completes at t~138-208 of
+    a ~337-step demo), unlike Coffee C50 whose difficulty sat in a phase
+    holding just 4% of transitions.
+
+    The base itself is deliberately NOT in object_body_ids: at 8.78 kg it never
+    moves, and scaling its mass would be a no-op dressed up as a shift.
+    """
+    cls = env.__class__.__name__
+    if not cls.startswith("ThreePieceAssembly"):
+        raise NotImplementedError(
+            f"resolve_three_piece_bindings supports ThreePieceAssembly_D0*, got {cls}."
+        )
+    m = env.sim.model
+
+    piece_bids = [env.obj_body_id["piece_1"], env.obj_body_id["piece_2"]]
+    object_body_ids = list(piece_bids)
+    object_geom_ids = [g for g in range(m.ngeom) if m.geom_bodyid[g] in piece_bids]
+
+    # Base hole walls. Identify by GRID POSITION rather than by name: the base
+    # is a 5x5 lattice of 0.038 m cells centred on the body, so cells live at
+    # i, j in {-2..2} and the carved-out hole is |i|<2 and |j|<2. A wall cell is
+    # one that borders the hole; the four CORNERS (|i|=2 and |j|=2) touch it
+    # only diagonally and must be left alone, or the hole would not shrink
+    # squarely. Visual twins (contype==conaffinity==0) are excluded: resizing
+    # them would shrink only the rendered hole, and re-frictioning them is a
+    # silent no-op that makes the shift look bigger than it is.
+    base_bid = env.obj_body_id["base"]
+    cell = 2.0 * 0.019
+    base_geom_ids, base_wall_geom_ids = [], []
+    for g in range(m.ngeom):
+        if m.geom_bodyid[g] != base_bid:
+            continue
+        if m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0:
+            continue
+        base_geom_ids.append(g)
+        i = int(round(float(m.geom_pos[g][0]) / cell))
+        j = int(round(float(m.geom_pos[g][1]) / cell))
+        if (abs(i) == 2) != (abs(j) == 2):   # exactly one axis on the rim
+            base_wall_geom_ids.append((g, 0 if abs(i) == 2 else 1))
+
+    gripper_act_ids = [m.actuator_name2id(a) for a in env.robots[0].gripper.actuators]
+
+    arm_prefix = env.robots[0].robot_model.naming_prefix
+    grip_prefix = env.robots[0].gripper.naming_prefix
+    arm_body_ids = [
+        bid for bid in range(m.nbody)
+        if (m.body_id2name(bid) or "").startswith(arm_prefix)
+        and not (m.body_id2name(bid) or "").startswith(grip_prefix)
+    ]
+
+    return {
+        "object_body_ids": object_body_ids,
+        "object_geom_ids": object_geom_ids,
+        "base_geom_ids": base_geom_ids,
+        "base_wall_geom_ids": base_wall_geom_ids,
+        "gripper_act_ids": gripper_act_ids,
+        "arm_body_ids": arm_body_ids,
+        "piece_joints": ["piece_1_joint0", "piece_2_joint0"],
+    }
+
+
+def apply_three_piece_shift(
+    env,
+    bindings: dict,
+    *,
+    base_hole_size_scale: float = 1.0,
+    base_friction_scale: float = 1.0,
+) -> None:
+    """Shrink the base hole / raise the base's insertion friction (target-only).
+
+    base_friction_scale scales friction on the base's COLLISION geoms only.
+    The base is never grasped and never moves, so this is a pure insertion-phase
+    knob -- unlike scaling the pieces, which would also change how they sit in
+    the gripper.
+
+    base_hole_size_scale < 1 thickens each of the 12 wall cells INWARD by
+    delta = NOMINAL_BASE_HOLE_HALF * (1 - scale), along the axis that faces the
+    hole (precomputed per geom by the resolver). Growth is symmetric about each
+    geom centre, so the base body pose -- and therefore the success check -- is
+    untouched; only the physical clearance over piece_1's 102 mm plate shrinks.
+    Outward growth overlaps neighbouring base cells, which is harmless (one
+    rigid fixed body).
+
+    Assumes restore_nominal() ran first so scales compose from nominal; the
+    caller forwards the sim afterwards.
+    """
+    m = env.sim.model
+
+    if base_friction_scale != 1.0:
+        for g in bindings.get("base_geom_ids", []):
+            m.geom_friction[g] *= base_friction_scale
+
+    if base_hole_size_scale != 1.0:
+        delta = NOMINAL_BASE_HOLE_HALF * (1.0 - base_hole_size_scale)
+        for g, ax in bindings.get("base_wall_geom_ids", []):
+            m.geom_size[g, ax] += delta
+
+
 def resolve_bindings(env) -> dict:
     """Task-dispatched binding resolver. Threading_D0 -> threading bindings;
-    Square_D0* -> square bindings; Coffee_D0* -> coffee bindings. Raises for
+    Square_D0* -> square bindings; Coffee_D0* -> coffee bindings;
+    ThreePieceAssembly* -> three-piece bindings. Raises for
     anything else."""
     cls = env.__class__.__name__
     if cls == "Threading_D0":
@@ -589,6 +727,8 @@ def resolve_bindings(env) -> dict:
         return resolve_square_bindings(env)
     if cls.startswith("Coffee_D"):
         return resolve_coffee_bindings(env)
+    if cls.startswith("ThreePieceAssembly"):
+        return resolve_three_piece_bindings(env)
     raise NotImplementedError(
         f"domain_shift bindings not implemented for {cls}. "
         f"Add a resolver (see resolve_threading_bindings / resolve_square_bindings "
@@ -963,6 +1103,13 @@ def apply_square_peg_shift(
 # 0.0243 -> nominal PHYSICAL clearance 0.67 mm/side. (Measured off the built
 # model, not read from XML.)
 NOMINAL_POD_HOLDER_INNER_R = 0.024973
+
+
+# ThreePieceAssembly_D0 base hole: the 5x5 base is built from unit boxes of
+# half-size 0.019, with the centre 3x3 carved out. The wall cells sit at
+# |i|=2 (or |j|=2) i.e. centre +-0.076, so the opening runs to 0.076-0.019.
+# Measured off the built model, not read from XML.
+NOMINAL_BASE_HOLE_HALF = 0.057
 
 
 def apply_coffee_shift(

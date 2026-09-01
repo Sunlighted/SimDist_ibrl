@@ -1,0 +1,368 @@
+% ============================================================================
+% Requires in the preamble:
+%   \usepackage{amsmath,amssymb,amsthm}
+%   \newtheorem{assumption}{Assumption}
+%   \newtheorem{definition}{Definition}
+%   \newtheorem{remark}{Remark}
+% ============================================================================
+
+\section{Problem Formulation}
+\label{preliminary}
+
+\subsection{Preliminaries}
+
+\paragraph{MDPs and the role of the dynamics.}
+We model each domain as a Markov decision process (MDP)
+$\mathcal{M} = (\mathcal{S}, \mathcal{A}, p, r, \gamma, \rho_0)$ with state space
+$\mathcal{S}$, action space $\mathcal{A}$, transition kernel
+$p(s' \mid s, a)$, reward function $r$, discount $\gamma \in [0,1)$ and initial
+state distribution $\rho_0$. Among the components of this tuple, the transition
+kernel $p$ --- the \emph{dynamics} --- is the only one that encodes physics: it
+is where inertia, friction, contact stiffness and actuator response enter the
+problem. The remaining components specify the task ($r$, $\gamma$, $\rho_0$) or
+the agent's interface to it ($\mathcal{S}$, $\mathcal{A}$). Our entire setting
+is built on this decomposition: we hold the task fixed and perturb only $p$.
+
+\paragraph{Policies and values are solutions \emph{relative to} a kernel.}
+A policy $\pi(a \mid s)$ interacting with $p$ induces the discounted return, the
+value functions, and the normalized state--action occupancy
+\begin{equation}
+J_{p}(\pi) = \mathbb{E}_{\pi,p}\!\left[\sum_{t\ge0} \gamma^t r_t\right],
+\quad
+V^{\pi}_{p}(s) = \mathbb{E}_{\pi,p}\!\left[\sum_{t\ge0} \gamma^{t} r_t \,\Big|\, s_0 = s\right],
+\quad
+Q^{\pi}_{p}(s,a) = \mathbb{E}_{\pi,p}\!\left[\sum_{t\ge0} \gamma^{t} r_t \,\Big|\, s_0 = s, a_0 = a\right],
+\end{equation}
+\begin{equation}
+d^{\pi}_{p}(s,a) = (1-\gamma)\sum_{t\ge0}\gamma^{t}\,
+\Pr_{\pi,p}\!\left(s_t = s,\, a_t = a\right).
+\label{eq:occupancy}
+\end{equation}
+We deliberately carry the kernel in the subscript, because the central
+difficulty of this paper is that a policy is a \emph{kernel-independent object}
+but a \emph{kernel-dependent solution}: the map $s \mapsto a$ can be executed
+verbatim in any domain sharing $\mathcal{S}$ and $\mathcal{A}$, yet the property
+that makes it worth executing --- optimality, or even competence --- was
+established under one particular $p$ and does not travel with it.
+
+The same is true of value functions, but one step more indirectly. $Q^{\pi}_{p}$
+is defined only implicitly, as the fixed point of the Bellman operator
+\begin{equation}
+\left(\mathcal{T}_{p}\,Q\right)(s,a) \;=\; r(s,a) \;+\;
+\gamma\, \mathbb{E}_{s' \sim p(\cdot \mid s,a)}\!\left[\,Q\!\left(s', \pi(s')\right)\right],
+\label{eq:bellman}
+\end{equation}
+which is itself an expectation \emph{under $p$}. Value learning --- fitting
+$Q$ by repeatedly applying a sampled version of \eqref{eq:bellman} to collected
+transitions --- therefore never observes $p$ directly; it only ever sees $p$
+through the successor states in its data. A critic trained to satisfy
+$Q = \mathcal{T}_{p_s} Q$ is, when the kernel changes, simply no longer a fixed
+point: its Bellman residual under the new kernel is the value-side signature of
+a dynamics gap. Finally, note that the occupancy \eqref{eq:occupancy} depends on
+\emph{both} arguments: the same $\pi$ visits different state distributions under
+different kernels. This is why, in an adaptation setting, ``on-policy'' is not a
+well-formed notion until one also says \emph{in which domain} --- a distinction
+that will turn out to decide whether adaptation works at all.
+
+\paragraph{Learned dynamics models.}
+The true kernel is never available to the agent; a model-based method instead
+fits a parametric approximation $\hat{p}_\theta \approx p$ from observed
+transitions and uses it as a stand-in for $p$. Following recent latent
+world-model architectures, we do not estimate a density over raw states but a
+deterministic transition in a learned latent space: an encoder
+$z = h_\phi(s)$ and a latent dynamics head $z' = d_\theta(z,a)$, trained by
+multi-step latent consistency
+\begin{equation}
+\mathcal{L}_{\mathrm{dyn}}(\theta,\phi) \;=\;
+\mathbb{E}_{(s_{0:H},\,a_{0:H-1}) \sim \mu}
+\sum_{t=0}^{H-1} \lambda^{t}\,
+\big\|\, d_\theta(\hat{z}_t, a_t) \;-\; \mathrm{sg}\!\left(h_\phi(s_{t+1})\right)
+\big\|^{2},
+\qquad \hat{z}_0 = h_\phi(s_0),\;\; \hat{z}_{t+1} = d_\theta(\hat{z}_t,a_t),
+\label{eq:consistency}
+\end{equation}
+where $\mathrm{sg}$ denotes stop-gradient and $\lambda$ discounts longer
+horizons. Two features of \eqref{eq:consistency} matter for what follows.
+First, the model is trained by \emph{rolling its own predictions}, so its
+accuracy is a property of $H$-step trajectories rather than of single
+transitions. Second, and more consequentially, the objective is an expectation
+under a sampling distribution $\mu$: a learned model is only constrained where
+$\mu$ places mass. We will argue that in adaptation the choice of $\mu$ --- not
+the capacity of $d_\theta$ or the size of the dataset --- is what determines
+success.
+
+\paragraph{Source and target domains.}
+We instantiate two MDPs that share $(\mathcal{S}, \mathcal{A}, r, \gamma,
+\rho_0)$ and differ only in their kernels: a \emph{source} domain with $p_s$,
+in which interaction is cheap and unlimited, and a \emph{target} domain with
+$p_t$, in which it is scarce. We abbreviate $J_s \!:=\! J_{p_s}$,
+$J_t \!:=\! J_{p_t}$, and likewise for $V$, $Q$ and $d^\pi$. Unrestricted
+reinforcement learning in the source yields an expert $\pi_s$ together with its
+critic $Q^{\pi_s}_{p_s}$; deployment, however, happens under $p_t$. Since
+$\pi_s$ was optimized against $\mathcal{T}_{p_s}$ and the contact-phase physics
+it presumes, executing it under $p_t$ generally incurs a performance drop
+\begin{equation}
+\mathrm{gap}(\pi_s) \;=\; J_{s}(\pi_s) \;-\; J_{t}(\pi_s) \;>\; 0,
+\label{eq:gapdef}
+\end{equation}
+which we refer to as the \emph{dynamics gap} and formalize in
+Section~\ref{sec:setting}.
+
+This leaves the agent with three transferable assets, each carrying the source
+kernel's imprint in a different way, and each repairable at a different price:
+the \textbf{policy} $\pi_s$, which is executable anywhere but optimal only under
+$p_s$; the \textbf{value} $Q^{\pi_s}_{p_s}$, which is a fixed point of the wrong
+Bellman operator but may still \emph{rank} states correctly if the task is
+unchanged; and the \textbf{model} $\hat{p}_\theta$, which is the only asset that
+represents the mismatched quantity explicitly and can therefore be corrected by
+target data directly, without waiting for reward to propagate. The question this
+paper asks is which of the three a limited target-interaction budget should be
+spent on.
+
+\paragraph{Sparse, goal-defined reward.}
+We study contact-rich manipulation with a terminal success reward,
+\begin{equation}
+r(s,a) = \mathbf{1}\!\left[s \in \mathcal{G}\right],
+\label{eq:sparse}
+\end{equation}
+where the goal set $\mathcal{G} \subset \mathcal{S}$ is a geometric predicate on
+the object configuration (e.g. the needle tip inside the ring). The episode
+terminates on entry into $\mathcal{G}$, so $J(\pi)$ is a discounted success
+rate and $V^{\pi}(s) \in [0,1]$ is (up to discounting) the probability that
+$\pi$ eventually solves the task from $s$. This is the regime in which
+credit assignment is hardest: no dense signal shapes the approach, and a
+value function only becomes informative through long, goal-reaching
+trajectories.
+
+\paragraph{Three ways to consume interaction data.}
+The methods we compare differ in what they fit with target-domain data and
+where the resulting object is used.
+\emph{(i) Model-free} methods fit a critic directly on collected transitions,
+$\min_{Q} \mathbb{E}_{\mathcal{D}} \big[ (Q(s,a) - r - \gamma
+Q^{-}(s', \pi(s')))^2 \big]$, and improve $\pi$ against it; under
+\eqref{eq:sparse} this requires enough interaction for reward information to
+propagate backwards along the horizon.
+\emph{(ii) Dyna}-style methods fit an approximate model $\hat{p}$ and use
+\emph{synthetic} rollouts from $\hat{p}$ to supply extra transitions to the
+same value/policy update, trading model bias for sample efficiency.
+\emph{(iii) Planning} methods use $\hat{p}$ at decision time: given a learned
+latent encoder $z = h_\phi(s)$, latent dynamics $z' = d_\theta(z,a)$, reward
+head $\hat{r}$, terminal value head $\hat{V}$, and a proposal policy
+$\hat{\pi}$, the executed action is the first element of
+\begin{equation}
+a_{0:H-1}^{\star} \;=\; \arg\max_{a_{0:H-1}}
+\;\; \underbrace{\sum_{t=0}^{H-1} \gamma^{t}\, \hat{r}(z_t, a_t)}_{\text{within horizon}}
+\;+\; \underbrace{\gamma^{H}\, \hat{V}(z_H)}_{\text{terminal bootstrap}},
+\qquad z_{t+1} = d_\theta(z_t, a_t),
+\label{eq:mppi}
+\end{equation}
+solved approximately by sampling-based optimization (MPPI/CEM) seeded from
+$\hat{\pi}$. Crucially, \eqref{eq:mppi} consumes the value function only
+through the \emph{ranking} it induces over the candidate terminal latents
+$\{z_H^{(i)}\}_i$ that the model itself reaches, whereas it consumes the
+dynamics $H$ times per candidate. Section~\ref{empirical} shows this
+asymmetry is what decides which component must be adapted.
+
+\subsection{Sim-to-real adaptation as a dynamics gap}
+\label{sec:setting}
+
+We now state precisely what the source and target domains share and what they
+do not. Four assumptions define the setting; the first two are constructive
+(they say how we build the gap), the last two are substantive (they say what we
+believe about it, and both are tested in Section~\ref{empirical}).
+
+\begin{assumption}[Shared task, shifted dynamics]
+\label{as:gap}
+The two domains differ \emph{only} in their transition kernels:
+\begin{equation}
+\mathcal{M}_s = (\mathcal{S}, \mathcal{A}, p_s, r, \gamma, \rho_0),
+\qquad
+\mathcal{M}_t = (\mathcal{S}, \mathcal{A}, p_t, r, \gamma, \rho_0),
+\qquad p_s \neq p_t .
+\end{equation}
+In particular the goal set $\mathcal{G}$, and hence the reward
+\eqref{eq:sparse}, is identical: \emph{what} must be achieved does not change,
+only \emph{how} the physics responds.
+\end{assumption}
+
+\begin{assumption}[Observable gap: no latent registration shift]
+\label{as:observable}
+The two domains share the same state space and the same observation map, and
+the shift is entirely in $p$; there is no unobserved pose, calibration or
+context variable. Both domains are therefore MDPs over the same
+$\mathcal{S}$, and the gap is $p_t(\cdot \mid s,a) \neq p_s(\cdot \mid s,a)$
+even under full observability.
+\end{assumption}
+
+Assumption~\ref{as:observable} is a deliberate narrowing of the usual
+sim-to-real setting, and it is what makes the empirical study in
+Section~\ref{empirical} interpretable. A large part of the sim-to-real
+literature manufactures the gap by perturbing object \emph{poses} while hiding
+the perturbation from the policy; that construction is really a POMDP, and
+methods can succeed there by inferring a latent variable rather than by
+correcting physics. We instead perturb only inertial, frictional, actuator and
+clearance properties (Section~\ref{empirical}), so that no amount of state
+estimation can close the gap and every method is forced to confront
+$p_t$ itself.
+
+\begin{assumption}[Localized gap]
+\label{as:local}
+Let $\Delta(s,a) = D_{\mathrm{TV}}\!\left(p_s(\cdot \mid s,a),\,
+p_t(\cdot \mid s,a)\right)$. The gap is concentrated on a small,
+contact-dependent subset of the state--action space: $\Delta(s,a) \approx 0$
+in free space and is large only during contact, so
+$\mathbb{E}_{d^{\pi}}[\Delta]$ is small while $\sup_{s,a} \Delta(s,a)$ is not.
+\end{assumption}
+
+Assumption~\ref{as:local} is the empirically dominant regime for manipulation:
+reaching and transport transfer almost perfectly, and the entire failure mass
+concentrates in the alignment/insertion phase. It has two consequences that
+organize the rest of the paper. First, a source-trained expert does not fail
+\emph{gracefully} --- a small average model gap produces a large closed-loop
+drop, because the affected transitions are exactly the ones on which task
+success is decided. Second, and less obviously, \emph{a model can only be
+repaired where it is exercised}: since $\Delta$ is supported on a thin region
+that is reached only by a competent policy, any adaptation objective of the
+form $\min_\theta \mathbb{E}_{(s,a) \sim \mu}\|d_\theta(h(s),a) - h(s')\|^2$
+is only useful when the sampling distribution $\mu$ matches the occupancy
+$d^{\pi_{\text{deploy}}}_{t}$ of the policy that will actually be
+deployed. We refer to this requirement as \emph{on-policy consistency}, and it
+is the design principle behind our method (Section~\ref{simopd}).
+
+\begin{assumption}[Preserved reachability / value transferability]
+\label{as:value}
+The goal remains reachable in the target from the support of $\rho_0$, and the
+shift does not create states that are recoverable in the source but terminally
+unrecoverable in the target. Consequently the source value function remains a
+valid \emph{ordering} of target states: for the candidate sets encountered in
+\eqref{eq:mppi}, $\arg\max$ under $V^{\pi_s}_{s}$ agrees with
+$\arg\max$ under $V^{\pi_t^\star}_{t}$ up to a residual smaller
+than the spread that planning must resolve.
+\end{assumption}
+
+Assumption~\ref{as:value} is stated explicitly because it is the hinge of our
+analysis rather than a technicality: it predicts that the value function need
+\emph{not} be adapted, a prediction we test directly in
+Section~\ref{empirical}. It is also falsifiable --- a shift that changes
+reachability (e.g. one that lets the fixture topple irrecoverably) violates it,
+and we return to this boundary in Section~\ref{lim}.
+
+\paragraph{Why the dynamics error, and not the value error, is the binding
+constraint.} Under Assumptions~\ref{as:gap}--\ref{as:value}, the two error
+sources in \eqref{eq:mppi} enter with very different multiplicities. A
+per-step latent dynamics error $\varepsilon_d$ compounds along the planning
+horizon, displacing the predicted terminal latent by $O(\sum_{t<H} L^{t}
+\varepsilon_d)$ for a locally Lipschitz $d_\theta$, and --- because the
+optimizer \emph{selects} the candidates that the model believes are best ---
+this displacement is adversarially, not randomly, distributed. A value error
+$\varepsilon_V$, in contrast, enters once, discounted by $\gamma^{H}$, and only
+through its \emph{variation across candidates}: adding any function that is
+constant over $\{z_H^{(i)}\}$ leaves the $\arg\max$ in \eqref{eq:mppi}
+unchanged. Planning is therefore first-order sensitive to $\varepsilon_d$ and
+only sensitive to the \emph{candidate-wise contrast} of $\varepsilon_V$, which
+Assumption~\ref{as:value} asserts is small. Sections~\ref{empirical} and
+\ref{simopd} give the empirical counterpart of this argument, including the
+regime where it breaks.
+
+\subsection{Adaptation under an asymmetric budget}
+
+The setting is defined as much by its budget asymmetry as by its dynamics gap.
+Source interaction is essentially free (it is a simulator), so we allow an
+unrestricted source phase; target interaction is the scarce resource.
+
+\begin{definition}[Adaptation budget]
+\label{def:budget}
+An adaptation method is given
+(i) unrestricted access to $\mathcal{M}_s$, from which it may obtain an expert
+policy $\pi_s$, its value function $V^{\pi_s}_{s}$, and arbitrary
+source rollouts;
+(ii) a small set of $n$ target demonstrations
+$\mathcal{D}_t = \{\tau^{(i)}\}_{i=1}^{n}$, $n \le 20$; and
+(iii) at most $N$ target environment transitions of online interaction.
+No target-domain reward shaping, no privileged access to $p_t$ or to its
+parameters, and no target expert are available.
+\end{definition}
+
+\begin{definition}[Adaptation problem]
+Given the budget of Definition~\ref{def:budget}, output a deployable policy
+$\pi$ maximizing $J_{t}(\pi)$. Methods are compared by
+(a) the target success rate at a fixed budget $N$, and (b) the budget $N$
+required to reach a fixed success level, i.e. their position on the
+success-versus-interaction curve rather than at a single point.
+\end{definition}
+
+Both axes matter and they order methods differently, which is the subject of
+Section~\ref{empirical}: methods that are strongest asymptotically are not the
+ones that move first, and the crossover point --- not the endpoint --- is what
+a sim-to-real practitioner actually operates at.
+
+\paragraph{Measuring the gap.}
+We report the magnitude of a dynamics gap by the \emph{zero-shot drop} of the
+frozen source expert, i.e. $\mathrm{gap}(\pi_s)$ of \eqref{eq:gapdef},
+evaluated under the same success predicate in both domains. This is the
+operationally meaningful measure --- it is exactly the performance the
+adaptation phase must recover --- and, unlike a divergence between transition
+kernels, it is comparable across tasks with different state
+parameterizations.
+
+\section{Empirical Studies of Adaptation to Dynamics Gap}
+\label{empirical}
+
+\subsection{Experimental setting}
+\label{sec:setup}
+
+\paragraph{Sim-to-sim as a controlled proxy.}
+We instantiate Assumptions~\ref{as:gap}--\ref{as:observable} in simulation, by
+holding the task, the asset and the success predicate fixed and perturbing only
+the physical parameters of the MuJoCo model. This buys three things that a
+physical sim-to-real study cannot provide, and all three are used in this
+paper: (i) the gap is a \emph{known, dialable} quantity, so we can trace
+dose--response curves rather than report a single transfer number;
+(ii) an \emph{oracle dynamics} ablation is available --- we can run the exact
+same planner with the true target simulator in place of the learned model,
+which isolates model error from every other source of failure; and
+(iii) evaluation is cheap enough to run hundreds of episodes per condition,
+which is a prerequisite for reading effects of the size we study.
+
+\paragraph{Source and target domains.}
+The source domain is the nominal simulator. The target domain applies a fixed
+perturbation to contact-phase physics: object mass and inertia, sliding
+friction of the manipulated object and of the fixture, gripper actuator
+stiffness, and the insertion clearance (the geometric aperture the held object
+must pass). Two properties of the construction are deliberate. First, the
+success predicate is defined by a fixed tolerance on the object pose and is
+\emph{not} re-read from the perturbed model, so shrinking the physical
+clearance adds a real obstacle without moving the goal --- the reward is
+invariant as required by Assumption~\ref{as:gap}. Second, no positional offset
+is applied to any object, so nothing about the shift is hidden from the state:
+the gap is a pure dynamics gap in the fully observed MDP
+(Assumption~\ref{as:observable}). We use three contact-rich manipulation tasks
+of increasing tolerance width [TASKS], and calibrate each target so that the
+frozen source expert drops from near-perfect source performance to a low but
+nonzero target success rate, which keeps the setting an adaptation problem
+rather than an exploration problem.
+
+\paragraph{Source-domain training.}
+In each task we train a source expert to near-saturation with a
+demonstration-regularized off-policy RL method, and take from it both the
+policy $\pi_s$ and its critic, from which the transferable value
+$V^{\pi_s}_{s}(s) = \min_j Q_j(s, \pi_s(s))$ is read. All
+adaptation methods start from this same source asset, so that comparisons
+isolate what is done with target data.
+
+\paragraph{Target budget control.}
+Every method receives the same budget (Definition~\ref{def:budget}): the same
+$n$ target demonstrations, collected once by a scripted/expert collector and
+shared verbatim across arms, and the same cap on target transitions. Curves
+are plotted against target transitions consumed, and model-free, Dyna and
+planning arms are compared at matched budgets.
+
+\paragraph{Evaluation protocol.}
+Because the effects we study are of the order of a few success-rate points, we
+fix the following protocol. All reported numbers use $\ge 300$ evaluation
+episodes with seeds held fixed across arms; headline numbers use independent
+re-evaluation of a saved checkpoint rather than the in-training evaluation,
+which is systematically optimistic; and comparisons across checkpoints are only
+made when the full environment configuration (shift parameters, initial-state
+distribution, success predicate, planner hyper-parameters) is verified
+identical. We report the noise floor of each comparison alongside the effect.

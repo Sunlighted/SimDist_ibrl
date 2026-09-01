@@ -1,0 +1,103 @@
+# IBRL on ThreePieceAssembly_D0 -- TARGET domain, prior = the frozen source expert.
+#
+# TARGET DEFINITION (chosen from a 16-config sweep of the source expert, 100
+# games each; see docs/tasks.md):
+#   base_hole_size_scale 0.96  -> hole 114.0 -> 109.4 mm, clearance 6.00 -> 3.72 mm/side
+#   base_friction_scale  2.0   -> base collision mu 1.0 -> 2.0 (insertion only)
+#   gripper_kp_scale     0.25  -> gripper stiffness at 25%
+# Source expert scores 0.990 under an identity shift and **0.420** here.
+#
+# Why this config and not a tighter one. Pure-insertion alternatives land in the
+# same band (hole.92+fric2 = 0.440, hole.92+fric3 = 0.350) but need a 1.44 mm/side
+# clearance, and findings §39 measured the floor at ~1.3 mm/side -- below it even
+# ORACLE dynamics fails. Building the target on a 0.14 mm margin would predetermine
+# SimDist's failure and make it unattributable (method vs window). 0.96 keeps a
+# 2.9x margin while still contributing real insertion difficulty (-0.10 alone).
+# It also gives the broadest PHASE COVERAGE (tasks §40e): hole+friction load
+# phase 1 (piece_1 seating, object<->base), while kp loads BOTH grasps
+# (piece_1 edge 0.034 vs piece_2 edge 0.040). A pure-insertion target would
+# leave phase 2's dynamics identical to source.
+#
+# solref/solimp are deliberately NOT shifted. TPA's success check is fragile --
+# z_correct is itself off by ~19 mm and survives only on the 20 mm window, a
+# 1.3 mm margin, with 6.8% frame flicker after first success. All three knobs
+# here are structurally incapable of moving it: solref/solimp pinned (static
+# rest height unchanged), hole walls thicken symmetrically (geom centres and the
+# base body pose unchanged), friction/kp touch no geometry.
+#
+# PRIOR: the frozen source expert's IBRL HYBRID, not a BC head.
+# source_agent_use_hybrid=1 is REQUIRED -- without it load_frozen_agent pins the
+# frozen source to act_method="rl" and the prior degrades to its bare RL head
+# (CLAUDE.md rule 8, bitten 4x). Verify in <save_dir>/train.log:
+#   [SGFT] prior = source HYBRID
+# There is no shaping knob to set: sgft_source_agent alone attaches the frozen
+# source as the prior (plain IBRL). Square's cfg comment mentions sgft_shaping=0
+# but no such field exists in MainConfig -- passing it makes pyrallis reject the cfg.
+#
+# preload keeps the FULL source demo set (982 survive the success filter), the
+# single change that made the source run work at all (10 demos -> 0.00 for 300k
+# steps). Caveat: those transitions were collected under SOURCE physics, so
+# their s' does not hold here; mix_rl_rate 0.5 means half of every critic batch
+# is online target data to correct it. If the run stalls at 0.00 this is the
+# first thing to revisit.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_target.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_target_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: ''
+preload_num_data: 1000
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 2000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "fixed"
+  base_hole_size_scale: 0.96
+  base_friction_scale: 2.0
+  gripper_kp_scale: 0.25
+eval_domain_shift:
+  mode: "fixed"
+  base_hole_size_scale: 0.96
+  base_friction_scale: 2.0
+  gripper_kp_scale: 0.25
+
+# ---- frozen source expert as the IBRL prior ----
+sgft_source_agent: exps/mimicgen/tpa_source_expert_frozen/model0.pt
+source_agent_use_hybrid: 1

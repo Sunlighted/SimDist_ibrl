@@ -245,6 +245,14 @@ if __name__ == "__main__":
                              "e.g. 'init_std=0.3,num_samples=256'. Applied AFTER "
                              "--original_mppi and BEFORE the planner is rebuilt, so "
                              "one knob can be swept without cloning the run dir.")
+    parser.add_argument("--dyn_heads", type=int, default=None,
+                        help="(--mode simdist) truncate the dynamics ensemble to "
+                             "this many heads AT EVAL TIME (head 0 first), from the "
+                             "SAME weights. Isolates plan-time ensemble averaging "
+                             "from 'the encoder was trained with N heads' -- see "
+                             "docs/findings.md 31, where 5 heads scored 0.970 and 1 "
+                             "head 0.120 off one checkpoint. Must be <= the ckpt's "
+                             "head count; applied BEFORE the planner is rebuilt.")
     parser.add_argument("--original_mppi", type=int, default=0,
                         help="(--mode simdist, implies --use_planner 1) rebuild the "
                              "MPPI planner with the ORIGINAL SimDist recipe "
@@ -431,6 +439,19 @@ if __name__ == "__main__":
                       f"min_std={p.min_std}, iters={p.iterations}, temp={p.temperature}, "
                       f"elites={p.num_elites}, base_policy_std={p.base_policy_std}, "
                       f"horizon={p.horizon} [kept])")
+            if args.dyn_heads is not None:
+                import torch.nn as _nn
+                _m = agent.model
+                _tot = _m.num_dynamics_heads()
+                assert 1 <= args.dyn_heads <= _tot, \
+                    f"--dyn_heads must be in [1,{_tot}] for this ckpt"
+                _m.dynamics_extra = _nn.ModuleList(
+                    list(_m.dynamics_extra)[: args.dyn_heads - 1])
+                if len(_m.dynamics_prior) > 0:   # keep priors aligned with kept heads
+                    _m.dynamics_prior = _nn.ModuleList(
+                        list(_m.dynamics_prior)[: args.dyn_heads])
+                print(f"[eval override] dynamics heads: {_tot} -> "
+                      f"{_m.num_dynamics_heads()}")
             if args.planner_set:
                 from rl.simdist_planner import MppiPlanner
                 for kv in args.planner_set.split(","):

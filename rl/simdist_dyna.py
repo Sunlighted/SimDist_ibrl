@@ -65,9 +65,31 @@ from rl.world_model import mlp
 class DynaConfig:
     # --- imagination ---
     rollout_length: int = 1          # pinned; see module docstring
-    rollout_batch: int = 400         # imagined transitions generated per round
-    synth_buffer_size: int = 100_000
+    # Imagined transitions generated per round. NOT arbitrary any more: the old
+    # 400 was ~1000x below MBPO's own rate (MBPO generates 100k model rollouts
+    # every 250 env steps = 400 per env step; 400 per 1000-step ROUND is 0.4 per
+    # env step). It also left the synthetic half of the batch starving --
+    # 1000 updates x 256 x (1-real_ratio) = 128,000 synthetic DRAWS per round
+    # against 400 fresh samples, i.e. 320:1.
+    # Chosen so the reuse factor matches MBPO's (~6x): with `synth_buffer_size`
+    # holding 5 rounds, 128,000 / (4000 x 5) = 6.4 draws per stored sample.
+    rollout_batch: int = 4_000
+    # Bug 3 fix. At the old 400/round x 100 rounds only 40k were ever written, so
+    # a 100k buffer NEVER wrapped: by the last round ~99% of the synthetic half of
+    # each batch came from a policy and a dynamics head up to 100 rounds old. MBPO
+    # keeps this buffer deliberately fresh for exactly that reason. 20k = the last
+    # 5 rounds at the new `rollout_batch`. Set 100_000 to restore the old
+    # behaviour.
+    synth_buffer_size: int = 20_000
     explore_std: float = 0.1         # action noise when imagining (policy is deterministic)
+    # Bug 2 fix. Real collection used to run the policy at stddev=0, so every
+    # REAL transition carried exactly a = pi(s): the critic was constrained at a
+    # single point per state and its shape everywhere else was free extrapolation
+    # -- which is precisely the direction the DPG step ascends. (The planning arms
+    # do not have this problem: MPPI's CEM sampling makes their collected actions
+    # naturally spread.) Standard Dyna/MBPO collects with a stochastic policy.
+    # 0.0 restores the pre-2026-08-31 behaviour.
+    collect_std: float = 0.1
     # --- optimisation ---
     real_ratio: float = 0.5          # fraction of each training batch drawn from REAL data
     batch_size: int = 256
@@ -79,15 +101,28 @@ class DynaConfig:
                                      # round at 3e-4, while q_mean stayed 0.67).
                                      # Same lesson as the residual arms
                                      # (CLAUDE.md 20/25 use actor_lr 1e-6..1e-5).
-    bc_coef: float = 0.1             # BC pull toward the 20 demos, so the policy
-                                     # cannot drift off demo support while chasing
-                                     # an imagined Q. 0 = pure DPG.
+    # NOT part of Dyna. A BC pull toward the 20 target demos is the TD3+BC
+    # (Fujimoto 2021) regulariser; Dyna (Sutton 1990) and MBPO both do plain RL on
+    # real + imagined data with no such term. It defaulted to 0.1 here, so every
+    # run before 2026-08-31 that was reported as "the Dyna baseline" was really
+    # Dyna + a weak BC anchor, and bc_coef=0 had never once been run.
+    # Default is now 0 = the faithful baseline. Set it >0 only to build the
+    # DIFFERENT arm "pretrained policy + Dyna finetuning with a TD3+BC anchor",
+    # and label it that way -- the actor here starts from a stage-2 BC fit, so
+    # that arm is legitimate, it is just not Dyna.
+    bc_coef: float = 0.0
     q_updates: int = 1000            # per round (matches the planning arms' dyn_update_steps)
     policy_update_freq: int = 2      # TD3-style delayed actor
     tau: float = 0.01                # Q target soft-update
     discount: float = 0.99
     num_q: int = 2                   # twin Q, min for the TD target
     q_init_steps: int = 500          # regression onto r_hat + gamma*V_hat(next)
+    # TD3 target-policy smoothing. The other two TD3 legs (twin Q, delayed actor)
+    # were already here; this one was missing, leaving the TD target read at a
+    # single action so a narrow Q spike propagates into y unopposed. 0 = off
+    # (the pre-2026-08-31 behaviour).
+    target_policy_noise: float = 0.1
+    target_noise_clip: float = 0.3
     clamp_q: int = 1                 # clamp the TD target to [0,1] (sparse 0/1 + end_on_success)
     # --- SGFT potential-based reward shaping (CLAUDE.md 10), default OFF ---
     # r' = r + sgft_coef * (gamma*V_hat(z') - V_hat(z)), with V_hat the FROZEN
@@ -125,18 +160,33 @@ class QHead(nn.Module):
 
 
 class FlatBuffer:
-    """Minimal (s, a, r, s', done) ring buffer on GPU.
+    """Minimal (z, a, r, z', done) ring buffer on GPU -- LATENTS, not states.
 
     Needed because `SequenceReplayBuffer` yields contiguous H-step segments, not
     the arbitrary (possibly model-generated) single transitions Dyna produces.
+
+    Why latents. This used to store states, so `imagine` had to `decode` the
+    latent it had just predicted and `update` had to `encode` it back. That round
+    trip is NOT the identity, and it is not small: measured on 4096 real target
+    states, ||encode(decode(z2)) - z2|| is 0.98x the size of the one-step latent
+    motion ||next(z,a) - z|| at stage 1, and 3.94x after 100k of stage-3 adapt
+    (the dynamics head is trained there while the DECODER stays frozen at its
+    stage-1 fit, so decode is asked about latents ever further from its training
+    distribution -- the corruption GROWS as the model improves). Every synthetic
+    next-state the critic ever saw was noise of the same magnitude as its signal.
+
+    Nothing needs the state: with `shared_encoder=1` the whole loop is latent-
+    native (`policy_from_latent`, `next`, `predict_reward`, `predict_value`, and
+    the Q head, which takes z anyway), and stage 3 FREEZES the encoder, so a real
+    state encoded once at insert time stays valid for the whole run.
     """
 
-    def __init__(self, capacity: int, obs_dim: int, action_dim: int, device="cuda"):
+    def __init__(self, capacity: int, z_dim: int, action_dim: int, device="cuda"):
         self.cap = capacity
-        self.s = torch.zeros(capacity, obs_dim, device=device)
+        self.z = torch.zeros(capacity, z_dim, device=device)
         self.a = torch.zeros(capacity, action_dim, device=device)
         self.r = torch.zeros(capacity, device=device)
-        self.s2 = torch.zeros(capacity, obs_dim, device=device)
+        self.z2 = torch.zeros(capacity, z_dim, device=device)
         self.d = torch.zeros(capacity, device=device)
         self.idx = 0
         self.full = False
@@ -144,24 +194,24 @@ class FlatBuffer:
     def __len__(self):
         return self.cap if self.full else self.idx
 
-    def add_batch(self, s, a, r, s2, d):
-        n = s.shape[0]
+    def add_batch(self, z, a, r, z2, d):
+        n = z.shape[0]
         assert n <= self.cap
         end = self.idx + n
         if end <= self.cap:
             sl = slice(self.idx, end)
-            self.s[sl], self.a[sl], self.r[sl], self.s2[sl], self.d[sl] = s, a, r, s2, d
+            self.z[sl], self.a[sl], self.r[sl], self.z2[sl], self.d[sl] = z, a, r, z2, d
         else:                                    # wrap
             k = self.cap - self.idx
-            self.add_batch(s[:k], a[:k], r[:k], s2[:k], d[:k])
-            self.add_batch(s[k:], a[k:], r[k:], s2[k:], d[k:])
+            self.add_batch(z[:k], a[:k], r[:k], z2[:k], d[:k])
+            self.add_batch(z[k:], a[k:], r[k:], z2[k:], d[k:])
             return
         self.idx = end % self.cap
         self.full = self.full or end >= self.cap
 
     def sample(self, n: int):
-        i = torch.randint(0, len(self), (n,), device=self.s.device)
-        return self.s[i], self.a[i], self.r[i], self.s2[i], self.d[i]
+        i = torch.randint(0, len(self), (n,), device=self.z.device)
+        return self.z[i], self.a[i], self.r[i], self.z2[i], self.d[i]
 
 
 class DynaTrainer:
@@ -220,27 +270,28 @@ class DynaTrainer:
 
     # --------------------------------------------------------- imagination
     @torch.no_grad()
-    def imagine(self, start_states: torch.Tensor, synth: FlatBuffer):
-        """Branch `rollout_length` imagined steps from real states.
+    def imagine(self, start_z: torch.Tensor, synth: FlatBuffer):
+        """Branch `rollout_length` imagined steps from real LATENTS.
 
-        The stored transition is in STATE space (decode(z)) so real and synthetic
-        data live in one buffer and the Q head re-encodes both the same way.
+        Entirely in latent space: the predicted `z2` is stored as-is. It used to
+        be `decode`d here and re-`encode`d in `update`, a round trip whose error
+        is 0.98x (stage 1) to 3.94x (stage 3) the one-step latent motion it was
+        meant to carry -- see the FlatBuffer docstring.
+
         Reward doubles as the terminal signal: Threading's reward is 0/1 and the
         episode ends exactly on success, so `done = r_hat > 0.5` is the model's
         own success prediction -- no separate done head is needed (nor available).
         """
-        s = start_states
+        z = start_z
         for _ in range(self.cfg.rollout_length):
-            z = self.agent.model.encode(s)
-            a = self.agent.model.policy_action(s)
+            a = self.agent.model.policy_from_latent(z)
             if self.cfg.explore_std > 0:
                 a = (a + torch.randn_like(a) * self.cfg.explore_std).clamp(-1, 1)
             r = self.agent.model.predict_reward(z, a).clamp(0.0, 1.0)
             z2 = self.agent.model.next(z, a)
-            s2 = self.agent.model.decode(z2)
             d = (r > 0.5).float()
-            synth.add_batch(s, a, r, s2, d)
-            s = s2
+            synth.add_batch(z, a, r, z2, d)
+            z = z2
             if d.mean() > 0.99:      # everything terminated; nothing left to roll
                 break
 
@@ -253,12 +304,18 @@ class DynaTrainer:
         parts = [real.sample(n_real)]
         if n_synth > 0 and len(synth) > 0:
             parts.append(synth.sample(n_synth))
-        s, a, r, s2, d = [torch.cat(x, 0) for x in zip(*parts)]
+        z, a, r, z2, d = [torch.cat(x, 0) for x in zip(*parts)]
 
-        z = self.agent.model.encode(s)
         with torch.no_grad():
-            z2 = self.agent.model.encode(s2)
-            a2 = self.agent.model.policy_action(s2)
+            a2 = self.agent.model.policy_from_latent(z2)
+            if cfg.target_policy_noise > 0:
+                # TD3's third leg. twin-Q (num_q) and the delayed actor
+                # (policy_update_freq) were already here; without smoothing the TD
+                # target is read at a SINGLE action, so a narrow spike in Q feeds
+                # straight into y and the DPG step climbs into it.
+                eps = (torch.randn_like(a2) * cfg.target_policy_noise
+                       ).clamp(-cfg.target_noise_clip, cfg.target_noise_clip)
+                a2 = (a2 + eps).clamp(-1, 1)
             r_eff, lo = r, 0.0
             if cfg.sgft_coef > 0:
                 # Potential Phi(z) = V_hat(z); on a terminal the next potential
@@ -280,11 +337,14 @@ class DynaTrainer:
 
         self._step += 1
         if self._step % cfg.policy_update_freq == 0:
-            # DPG: maximise Q(z, pi(s)). z is detached -- the policy must improve
+            # DPG: maximise Q(z, pi(z)). z is detached -- the policy must improve
             # the ACTION, not reshape the latent (the encoder is frozen anyway).
-            pi = self.agent.model.policy_action(s)
+            pi = self.agent.model.policy_from_latent(z)
             pi_loss = -self.q.mean_q(z.detach(), pi).mean()
             if cfg.bc_coef > 0 and demo is not None:
+                # demos arrive as raw states; the encoder is frozen in stage 3, so
+                # encoding them here is exact and matches how the buffer latents
+                # were produced.
                 ds, da = demo
                 bc = F.mse_loss(self.agent.model.policy_action(ds), da)
                 pi_loss = pi_loss + cfg.bc_coef * bc

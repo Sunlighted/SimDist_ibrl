@@ -31,6 +31,7 @@ from env.domain_shift import (
     apply_tripod_trap_shift,
     apply_square_peg_shift,
     apply_coffee_shift,
+    apply_three_piece_shift,
     mask_hole_offset_from_obs,
     apply_init_distribution,
 )
@@ -394,6 +395,13 @@ class PixelRobosuite:
                     pod_holder_friction_scale=cfg.pod_holder_friction_scale,
                     lid_damping_scale=cfg.lid_damping_scale,
                     lid_frictionloss=cfg.lid_frictionloss,
+                )
+            elif "base_wall_geom_ids" in self._bindings:  # ThreePieceAssembly
+                apply_three_piece_shift(
+                    self.env,
+                    self._bindings,
+                    base_hole_size_scale=cfg.base_hole_size_scale,
+                    base_friction_scale=cfg.base_friction_scale,
                 )
         self.env.sim.forward()
 

@@ -174,6 +174,24 @@ def main():
                          "fidelity test: V_hat regresses onto the very V_src this arm "
                          "otherwise uses, so a drop means distillation lost the LOCAL "
                          "candidate-ranking structure (which no offline MSE reports).")
+    ap.add_argument("--proposal_simdist_ckpt", default="",
+                    help="Take the PROPOSAL from this SimDist checkpoint's policy "
+                         "head instead of --weight's expert, leaving the env, the "
+                         "value and the planner alone. --weight still defines the "
+                         "environment (init_distribution, sigma, strict) and the "
+                         "default terminal value, so pass the SOURCE expert there. "
+                         "This is what makes the oracle arm comparable to the "
+                         "SimDist adapt runs, whose proposal is the stage-2 policy "
+                         "head rather than an expert.")
+    ap.add_argument("--simdist_base_rollout", type=int, default=0,
+                    help="With --proposal_simdist_ckpt: build the base candidate "
+                         "SEQUENCES the way SimDist's own planner does -- roll the "
+                         "policy closed-loop H steps through the LEARNED model "
+                         "(rl/simdist_planner.py::_policy_rollout) -- instead of "
+                         "holding one action for H steps. Only the SCORING rollout "
+                         "then differs between this arm and a SimDist adapt run, "
+                         "which is what isolates dynamics error. Default 0 keeps "
+                         "the held-action seed bit-for-bit.")
     ap.add_argument("--value_weight", default="",
                     help="Take the terminal value from THIS agent instead of the "
                          "source expert (proposal still comes from --weight). "
@@ -206,6 +224,20 @@ def main():
         f"= {tuple(round(np.degrees(float(v)), 1) for v in getattr(idc, 'nut_z_rot', ()))} deg")
     log(f"[setup] prior attached: {len(getattr(agent, 'bc_policies', []))} "
         f"| act_method={agent.cfg.act_method}")
+    # Planner settings were NOT logged before, so the eval_sw_* sweep logs do not
+    # record their own configuration -- and CLAUDE.md 40c/40d say these knobs move
+    # the score by tens of points and transfer across neither tasks nor
+    # oracle-vs-learned dynamics. Two numbers are only comparable if this line matches.
+    log(f"[setup] planner N={args.num_samples} (base {args.num_base}) H={args.horizon} "
+        f"iters={args.iterations} elites={args.num_elites} temp={args.temperature} "
+        f"init_std={args.init_std} min_std={args.min_std} momentum={args.momentum} "
+        f"base_policy_std={args.base_policy_std}"
+        + ("   [base seeds = SimDist closed-loop policy rollout]"
+           if args.simdist_base_rollout and args.proposal_simdist_ckpt
+           else "   [base candidates are IDENTICAL copies]" if args.base_policy_std == 0 else ""))
+    log(f"[setup] hand_init sigma={env_params.get('hand_init_perturb_joint_sigma')} "
+        f"| strict={getattr(env_params.get('strict_success'), 'enabled', False)} "
+        f"| ep_len={env_params.get('episode_length')}")
 
     main_env = PixelRobosuite(**env_params)
     ep_len = int(env_params.get("episode_length", 400))
@@ -236,6 +268,11 @@ def main():
         import train_simdist
         from rl.simdist_agent import SimDistAgent
         sdir = os.path.dirname(args.simdist_ckpt)
+        import yaml as _yaml0                      # adapt runs write an AdaptConfig
+        _r0 = _yaml0.safe_load(open(os.path.join(sdir, "cfg.yaml")))
+        if isinstance(_r0, dict) and _r0.get("stage1_ckpt"):
+            sdir = os.path.dirname(_r0["stage1_ckpt"])
+            log(f"[setup] value cfg follows stage1_ckpt -> {sdir}")
         scfg = _pyr.load(train_simdist.MainConfig,  # type: ignore
                          open(os.path.join(sdir, "cfg.yaml")))
         sd_agent = SimDistAgent(True, main_env.observation_shape, main_env.prop_shape,
@@ -246,7 +283,33 @@ def main():
             p.requires_grad_(False)
         wm = sd_agent.to("cuda").model
         log(f"[setup] VALUE = distilled V_hat from {args.simdist_ckpt} "
-            f"(proposal still the expert)")
+            f"(proposal from {'--proposal_simdist_ckpt' if args.proposal_simdist_ckpt else 'the expert'})")
+    prop_wm = None
+    if args.proposal_simdist_ckpt:
+        import pyrallis as _pyr2
+        import train_simdist as _ts2
+        from rl.simdist_agent import SimDistAgent as _SDA2
+        # A stage-3 adapt run writes an AdaptConfig, not the stage-1 MainConfig
+        # that describes the architecture (CLAUDE.md 24). Follow its stage1_ckpt
+        # back to the dir that does hold a MainConfig; a stage-1 dir is used as is.
+        pdir = os.path.dirname(args.proposal_simdist_ckpt)
+        import yaml as _yaml
+        _raw = _yaml.safe_load(open(os.path.join(pdir, "cfg.yaml")))
+        if isinstance(_raw, dict) and _raw.get("stage1_ckpt"):
+            pdir = os.path.dirname(_raw["stage1_ckpt"])
+            log(f"[setup] proposal cfg follows stage1_ckpt -> {pdir}")
+        pcfg = _pyr2.load(_ts2.MainConfig,  # type: ignore
+                          open(os.path.join(pdir, "cfg.yaml")))
+        p_agent = _SDA2(True, main_env.observation_shape, main_env.prop_shape,
+                        main_env.action_dim, pcfg.rl_camera, pcfg.simdist)
+        p_agent.load_state_dict(torch.load(args.proposal_simdist_ckpt))
+        p_agent.train(False)
+        for p_ in p_agent.parameters():
+            p_.requires_grad_(False)
+        prop_wm = p_agent.to("cuda").model
+        log(f"[setup] PROPOSAL = SimDist policy head from "
+            f"{args.proposal_simdist_ckpt} (env + value still from --weight)")
+
     if args.value_weight:
         value_agent, _ve, _vp = train_rl.load_model(args.value_weight, "cuda")
         value_agent.train(False)
@@ -254,6 +317,34 @@ def main():
             p.requires_grad_(False)
         log(f"[setup] VALUE from {args.value_weight} "
             f"(proposal still from {args.weight})")
+
+    def base_seq(state2d, num, H):
+        """[H, num, A] base candidate sequences.
+
+        SimDist seeds CEM with a closed-loop policy rollout through its own model
+        (decode the rolled latent, re-query the policy, step again); this script
+        historically held a single action for H steps, which with base_policy_std=0
+        makes all `num` base candidates identical. Matching the construction is
+        what makes an oracle-dynamics number comparable to a SimDist adapt run."""
+        if args.simdist_base_rollout and prop_wm is not None:
+            z = prop_wm.encode(state2d).expand(num, -1).clone()
+            shared = bool(getattr(prop_wm.cfg, "shared_encoder", 0))
+            acts = []
+            for _ in range(H):
+                a = (prop_wm.policy_from_latent(z) if shared
+                     else prop_wm.policy_action(prop_wm.decode(z)))
+                acts.append(a)
+                z = prop_wm.next(z, a)
+            return torch.stack(acts, dim=0)
+        return proposal_action(state2d).view(1, 1, -1).expand(H, num, -1).clone()
+
+    def proposal_action(state2d):                # [B, obs] -> [B, A]
+        """The action the planner seeds its base candidates with, and what the
+        `policy` arm reports bare. Routed through one function so the two can
+        never drift apart."""
+        if prop_wm is not None:
+            return prop_wm.policy_action(state2d)
+        return agent_action(agent, state2d)
 
     def value_fn(states):                       # [N, obs] -> [N]
         if wm is not None:
@@ -270,8 +361,7 @@ def main():
         # closed-loop expert rollout would need a probe env stepped outside the
         # pool; the held action is the same open-loop seed SimDist's policy
         # rollout provides, and CEM refines it over `iterations`.)
-        a0 = agent_action(agent, state.view(1, -1)).view(1, 1, A)
-        base = a0.expand(H, args.num_base, A).clone()
+        base = base_seq(state.view(1, -1), args.num_base, H)
         if args.base_policy_std > 0:
             base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
 
@@ -338,7 +428,7 @@ def main():
             for _t in range(ep_len):
                 state = obs["state"].to(dev)
                 if arm == "policy":
-                    act = agent_action(agent, state.view(1, -1)).view(-1)
+                    act = proposal_action(state.view(1, -1)).view(-1)
                 else:
                     sim_state = sim.get_state().flatten()
                     act = plan(state, sim_state)

@@ -65,9 +65,42 @@ class DynaWorkspace(AdaptWorkspace):
         obs_dim = self.eval_env.observation_shape[0]
         action_dim = self.eval_env.action_dim
         d = cfg.dyna
-        self.real_buf = FlatBuffer(1_000_000, obs_dim, action_dim, "cuda")
-        self.synth_buf = FlatBuffer(d.synth_buffer_size, obs_dim, action_dim, "cuda")
+        # Both buffers hold LATENTS now (see rl/simdist_dyna.FlatBuffer): the
+        # encoder is frozen for all of stage 3, so a real state encoded once at
+        # insert stays valid, and imagined transitions never leave latent space.
+        with torch.no_grad():
+            z_dim = self.agent.model.encode(
+                torch.zeros(1, obs_dim, device="cuda")).shape[-1]
+        # Sized to the run's own budget: a latent row is z_dim*2 floats, so the
+        # old hard-coded 1M would be ~4 GB at z=512. Collection adds exactly
+        # max_transitions rows over the run.
+        real_cap = max(cfg.max_transitions + cfg.adapt_interval, 10_000)
+        self.real_buf = FlatBuffer(real_cap, z_dim, action_dim, "cuda")
+        self.synth_buf = FlatBuffer(d.synth_buffer_size, z_dim, action_dim, "cuda")
         self.dyna = DynaTrainer(self.agent, d, obs_dim, action_dim, "cuda")
+
+    # ---------------------------------------------------------------- eval
+    def _eval_mppi(self, seed: int):
+        """Score the POLICY. Dyna has no planner -- there is no MPPI eval here.
+
+        The name is the parent's; `adapt()` calls it at every eval point. The
+        parent's version plans (MPPI is the deliverable for those arms) and its
+        no-coef branch hard-codes `use_planner=1`, which OVERWRITES the flag this
+        workspace sets in `__init__` for the duration of the eval and restores it
+        after. So `use_planner=0` only ever governed `_collect`, and every
+        `score/score` this arm logged before 2026-08-31 was the score of "current
+        policy used as an MPPI proposal" -- a quantity Dyna neither claims nor
+        deploys. Measured gap on the fixed smoke run: policy 0.25 / 0.35 against
+        MPPI 0.65 / 0.75 at the same two eval points.
+
+        Corroboration that the old numbers were the planner's: `dyna_h5` and
+        `dynens_h5` logged the SAME round-0 (0.274), possible only if both were
+        "same stage-2 policy + same stage-1 dynamics + same MPPI"; and the
+        `policy_lr=0` cell, whose policy is frozen bit-for-bit, still climbed
+        0.23 -> 0.4+, which only the adapting dynamics head can explain.
+        """
+        pol = self.eval(seed=seed, use_planner=0)
+        return pol, pol, {}
 
     # ------------------------------------------------------------- collect
     def _collect(self, n_transitions: int):
@@ -89,7 +122,13 @@ class DynaWorkspace(AdaptWorkspace):
         with utils.eval_mode(self.agent):
             while collected < n_transitions:
                 s_prev = self._obs["state"].clone()
-                action = self.agent.act(self._obs, eval_mode=True, stddev=0.0, cpu=True)
+                # eval_mode=False + stddev>0 => the policy head adds Gaussian noise
+                # and clamps to [-1,1] (rl/simdist_agent.py act()). Without it every
+                # real transition sits at exactly a=pi(s) and the critic has no
+                # action coverage to shape its gradient (see DynaConfig.collect_std).
+                _std = self.cfg.dyna.collect_std
+                action = self.agent.act(self._obs, eval_mode=(_std <= 0),
+                                        stddev=_std, cpu=True)
                 self._obs, reward, terminal, success, _ = self.eval_env.step(action)
                 self.adapt_replay.add(self._obs["state"], action, reward, terminal, success)
                 S.append(s_prev); A.append(action.float())
@@ -102,9 +141,12 @@ class DynaWorkspace(AdaptWorkspace):
                     self.adapt_replay.new_episode(self._obs["state"])
         pbar.close()
         dev = "cuda"
+        with torch.no_grad():
+            z = self.agent.model.encode(torch.stack(S).to(dev).float())
+            z2 = self.agent.model.encode(torch.stack(S2).to(dev).float())
         self.real_buf.add_batch(
-            torch.stack(S).to(dev).float(), torch.stack(A).to(dev).float(),
-            torch.tensor(R, device=dev).float(), torch.stack(S2).to(dev).float(),
+            z, torch.stack(A).to(dev).float(),
+            torch.tensor(R, device=dev).float(), z2,
             torch.tensor(D, device=dev).float())
 
     # --------------------------------------------------------------- learn
@@ -113,9 +155,9 @@ class DynaWorkspace(AdaptWorkspace):
             return
         self.agent.train()
         d = self.cfg.dyna
-        s, _, _, _, _ = self.real_buf.sample(d.rollout_batch)
+        z0, _, _, _, _ = self.real_buf.sample(d.rollout_batch)
         with torch.no_grad():
-            self.dyna.imagine(s, self.synth_buf)
+            self.dyna.imagine(z0, self.synth_buf)
         H = self.H
         for _ in range(d.q_updates):
             demo = None

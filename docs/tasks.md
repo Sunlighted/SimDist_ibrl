@@ -497,6 +497,11 @@ bias spread 0.121 vs perturb 0.024  ⇒ 84% 的偏差是逐状态常数偏移
 同一条教训的两个方向，离线指标与闭环**双向**脱钩。
 
 ### ⛔ 用 target 数据调 value：判死
+⚠️⚠️ **下面这张 2×2 已于 2026-08-28 被受控重测推翻，作废，见 §41b。** 它的两行跑在
+**不同的初始分布和不同的 σ** 上（π_src 行 σ=null/rotw1，π_tgt 行 σ=0.1/全 360°），
+干净口径下反对角根本不塌（0.925 / 0.940，z≈9 的**提升**）。本段其余关于在线迭代拟合的
+记录同样受影响：那些实验全部建在 σ=null 的 `square_ibrl_rotw1_seed1` 上，那里余量 ≤0.06
+而噪声地板 ±0.04 ⇒ **信噪比 1.3:1，判决无效**。
 2×2（oracle dynamics，50 局/格）：
 | | π_src (裸跑 0.24) | π_tgt (裸跑 0.96) |
 |---|---:|---:|
@@ -561,6 +566,119 @@ bias spread 0.121 vs perturb 0.024  ⇒ 84% 的偏差是逐状态常数偏移
 - [ ] §38 提醒：demo 用的是**已触顶**的 600k ckpt（标准 SimDist 做法）；snapshot 都在，
       想榨那 ~0.14 可换 `snapshot_200000/300000` 重采。
 - [ ] 全部单 seed（训练侧）。
+
+---
+
+### 41b. ★★ 受控重测：Square 的缺口是 **dynamics**，不是 value —— §41 的 2×2 作废（2026-08-28）
+
+#### 起因：`eval_square_oracle_mppi.py` 的环境来自 `--weight` 的 cfg
+`train_rl.load_model(args.weight)` 顺带带出 `env_params`，所以 **换 proposal 会静默换环境**。
+旧 2×2 因此在两个轴上同时被污染：
+
+| 行 | ckpt | σ | `eval_init_dist` |
+|---|---|---|---|
+| π_src | `square_ibrl_rotw1_seed1` | **null（=0）** | enabled，120–180° |
+| π_tgt | `square_ibrl_target_B_iter3_seed1` | 0.1 | **disabled，0–360°** |
+
+⇒ 旧的 `0.900 / 0.420 / 0.420 / 1.000` 全部作废。**新增的 `[setup] planner ... | hand_init sigma= | strict= | ep_len=`
+日志行就是为了这个** —— 两个数只有这两行一致才可比。
+
+#### 干净口径（全部：rotw1 120–180° · σ=0.1 · strict=**false** · oracle dynamics · 同一 planner
+`N=32 (base 10) H=3 iters=2 elites=8 temp=2.0 init_std=0.15 base_policy_std=0.0` · n=200/格）
+
+| 格 | proposal（裸跑） | value | **oracle MPPI** |
+|---|---|---|---:|
+| A | π_src (0.135) | V_src | **0.595 ± 0.035** |
+| B | π_src (0.135) | V_tgt@600k | **0.925 ± 0.019** |
+| E | π_tgt@300k (0.510) | V@300k（**自洽**） | **0.885 ± 0.023** |
+| F | π_tgt@300k (0.510) | V@600k（更强，**不自洽**） | **0.945 ± 0.016** |
+| C | π_tgt@600k (0.975) | V_src | **0.940 ± 0.017** |
+| D | π_tgt@600k (0.975) | V_tgt@600k | **0.985 ± 0.009** |
+
+资产：source = `square_ibrl_rotw1_sig01_snap_seed1`（σ=0.1、source 域、rotw1）；
+target = `square_ibrl_target_B_rotw1_sig01_seed1`（σ=0.1、target 域、rotw1，6 个 snapshot）。
+**弱 π_tgt = `snapshot_300000.pt`，独立 200 局 = 0.510**（训练中 50 局的 eval 在同一段
+给出 0.78/0.84/**0.50**/0.82/**0.58**，摆幅 0.34 ≈ 5×SE ⇒ 训练曲线不可用来标 snapshot 强度）。
+
+#### ★ 结论 1：反对角不塌，两个单换都是大幅**提升**
+`只换 value` **+0.330 (z=8.4)**、`只换 proposal` +0.345 (z=9.0)、`两个都换` +0.390 (z=10.9)。
+
+#### ★★ 结论 2：value 的效应是 **proposal-conditional**，不是主效应
+同样是"换成 target 训的 value"：
+
+| proposal 裸跑 | Δ | z |
+|---|---:|---:|
+| π_src **0.135** | **+0.330** | 8.4 |
+| SimDist stage-2 policy 头 **0.595** | **+0.015** | **0.67** |
+
+⇒ **那个 +0.33 是"proposal 太烂"的替身**：proposal 差时更好的 value 能把搜索从烂候选里拽出来；
+proposal 一旦经过 target BC，value 就没东西可补。这条把三处观测统一起来 ——
+Threading（proposal 本来就好 ⇒ oracle+冻结 V = 99.3%，value 不是瓶颈）、
+Square 弱 proposal（value 看着至关重要）、Square 真实系统（value 归零）。
+
+#### ★ 结论 3：F > E ⇒ 在 oracle dynamics 下"value 必须与延续策略自洽"**被证伪**
+同一个弱 proposal，配**更强但不属于它**的 value 反而更好 **+0.060 (z=2.2)**。
+⚠️ 这不推翻 findings §33，而是给它划边界：§33 的机制是"value 的特权来自补偿 dynamics 畸变"，
+**dynamics 完美时没有畸变要补，自洽性自然不值钱**。
+
+#### ★★★ 结论 4：完整拆账 —— dynamics ≫ proposal > value
+proposal 固定为 `sq_dynens_anch_d400000_seed2/latest.pt` 的 stage-2 policy 头（裸跑 0.595），
+`--simdist_base_rollout 1` 让 base 候选与 SimDist 一样是闭环 rollout ⇒ 两边只差
+"scoring 用真实 sim 还是学出来的模型"：
+
+| 项 | 值 / Δ | z |
+|---|---:|---:|
+| G2 value = source 专家 critic | 0.855 ± 0.025 | — |
+| **G1 value = 冻结蒸馏 V̂** | **0.940 ± 0.017** | — |
+| G3 value = target 专家 critic | 0.955 ± 0.015 | — |
+| **L_small** learned + **同一小预算** | **0.765 ± 0.030** | — |
+| **L_big** learned + adapt 原配方 (N=350/H=5/iters=3/elites=64) | **0.825 ± 0.027** | — |
+| **dynamics 误差（同预算）** G1−L_small | **+0.175** | **5.1** |
+| dynamics 误差（vs 原配方） G1−L_big | +0.115 | 3.6 |
+| 搜索预算 L_big−L_small | +0.060 | 1.5 (ns) |
+| **value** G3−G1 | **+0.015** | **0.67 (ns)** |
+| proposal → target 专家 D−G3 | +0.030 | 1.77 |
+| 任务残差 1−D | +0.015 | — |
+
+**⇒ 上界不是 0.94。** 0.94 = "现有 pipeline（stage-2 proposal + 冻结 V̂）+ 完美 dynamics + 小预算"；
+把 value 和 proposal 也换成 oracle 版本是 **0.985**，任务残差只有 0.015。
+**dynamics 是唯一有量级的一项（0.115–0.175），value 最小且测不出来** ⇒
+"加大数据量重训一个 target value"这条路的上限已经用最强形式测过了，就是 **+0.015**。
+
+#### 两条附带发现
+1. **蒸馏 V̂ 比 source 专家 critic 好 +0.085 (z=2.8)**。§41 记的"V̂ ≈ V_src 打平"是
+   σ=0 + 专家 proposal 的口径，换到 σ=0.1 + SimDist proposal 就不成立。⚠️ 这里 dynamics 是 oracle，
+   **不能再用"共适应补偿畸变"解释**，机制待查。
+2. **L_big 0.825 ≈ 训练中窗口均值 0.828** ⇒ 这条臂的 in-training eval **没有乐观偏差**
+   （与铁律 #14 记的 0.06–0.19 不同），图里的数字可以直接用。
+
+#### 口径修正（会影响已发布的图和 CLAUDE.md）
+- **Square 线上 `strict_success.enabled` 三边全是 `false`**（source 专家 / target 专家 / stage-1）。
+  strict 的判据字段是 `max_tripod_disp` / `max_needle_speed`，本来就是 Threading 专用。
+  ⇒ **把 Square 标成 "strict" 是错的**，速查表和三张图的图注都要改。
+- ⚠️ provenance：**anchor 臂没有 seed1、多一个 seed2**（demo 集 `s2`），plain/dynens 是 seed1（`s1`）。
+  10 seed 均值影响很小，但"arm for arm 同一个 demo 集"在那一格上不成立。配对比较要用 seed101–901。
+
+#### Where（新增，全部默认关、逐位兼容，已回归验证）
+`scripts/eval_square_oracle_mppi.py`：
+- `--proposal_simdist_ckpt` —— 用 SimDist 的 policy 头当 proposal（env/value 仍来自 `--weight`）。
+  自动顺着 cfg 里的 `stage1_ckpt` 找回 `MainConfig`（adapt run 写的是 `AdaptConfig`，见 §24）。
+- `--simdist_base_rollout 1` —— base 候选改用 SimDist 的闭环策略 rollout，而不是"一个动作按住 H 步"
+  （`base_policy_std=0` 时后者是 `num_base` 份逐位相同的复制品）。
+- `[setup]` 新增 planner 全参数 + `hand_init sigma` / `strict` / `ep_len` 三行。
+  ⚠️ 顺带修了一个自造的 bug：`bool(env_params['strict_success'])` 对**配置对象**恒为 True。
+`evaluate/eval.py` 本来就有 `--use_planner` / `--planner_set`（第 238–252 行），
+matched-budget 对照直接可跑；但 `--weight` 必须指向带 `MainConfig` 的目录
+（做法：把 stage-1 的 `cfg.yaml` 和 adapt 的权重放进一个临时目录，如 `exps/tmp/sq_matched_budget/`）。
+
+#### TODO
+- [ ] **P1/P2/P3 未完成**（plain / dyn-ens / dyn-ens+anchor 在 oracle 下的配对阶梯，seed101，
+      共用 demo 集 `square_sat_400000_s101`）—— 起了三格并发把 nvidia 驱动打死，见记忆
+      `gotcha-gpu-density-mppi-runs`。重跑要**串行**或把 `--probe_workers` 降到 6–8。
+      读数：`P3−P2` = anchor 在 dynamics 完美时还值不值钱；`P2−P1` = dynens 的收益里有多少不是 plan-time 平均。
+- [ ] G/L 系列只有 seed2 一个 ckpt，方法级结论需 ≥2 seed。
+- [ ] 结论 4 的"上界"仍受小预算限制：oracle 臂每个候选要一次真实 sim rollout，
+      复刻 N=350/H=5/iters=3 要 ~27× 算力（200 局约 40h）⇒ 0.940 多半被低估。
 
 ---
 
