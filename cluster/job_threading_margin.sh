@@ -100,7 +100,23 @@ if [ "$WANDB_MODE" = "online" ] && [ -z "$WANDB_API_KEY" ] \
 fi
 USE_WB=${USE_WB:-1}
 
-if [ -n "${SIF:-}" ]; then
+# Default to the container when the image is on disk. Requiring SIF to be
+# exported was a footgun: a submission that forgot `--export=ALL,SIF` fell
+# through to the venv branch and died 119 lines in with
+#   /home/<user>/venvs/ibrl/bin/activate: No such file or directory
+# -- after the scheduler had already spent the queue wait. Set SIF explicitly to
+# override the path, or USE_VENV=1 to force the module/venv route.
+if [ "${USE_VENV:-0}" != "1" ] && [ -z "${SIF:-}" ] && [ -f cluster/ibrl.sif ]; then
+    SIF=cluster/ibrl.sif
+    echo "[env] found cluster/ibrl.sif -- using the container (USE_VENV=1 to override)"
+fi
+if [ "${USE_VENV:-0}" != "1" ] && [ -n "${SIF:-}" ] && [ ! -f "$SIF" ]; then
+    echo "SIF=$SIF does not exist. Build it with cluster/build_sif.sh, or set"
+    echo "USE_VENV=1 to use the module/venv route instead."
+    exit 1
+fi
+
+if [ -n "${SIF:-}" ] && [ "${USE_VENV:-0}" != "1" ]; then
     module purge; module load apptainer
     R=$(realpath "$PWD")
     MG_ASSETS=$R/deps/mimicgen/mimicgen/models/robosuite/assets
@@ -116,7 +132,16 @@ if [ -n "${SIF:-}" ]; then
         $SIF python"
 else
     module purge; module load StdEnv/2023 gcc/12.3 python/3.10 cuda/12.2
-    source ${VENV:-$HOME/venvs/ibrl}/bin/activate
+    VENV=${VENV:-$HOME/venvs/ibrl}
+    # Fail here, with the reason, rather than letting `source` of a missing file
+    # print one line and carry on into a python that does not exist.
+    [ -f "$VENV/bin/activate" ] || {
+        echo "No venv at $VENV/bin/activate and no container image."
+        echo "Either build cluster/ibrl.sif (cluster/build_sif.sh), pass SIF=<path>,"
+        echo "or point VENV= at a real virtualenv."
+        exit 1
+    }
+    source "$VENV/bin/activate"
     export PYTHONPATH=$PWD:$PYTHONPATH
     PY="python"
 fi
