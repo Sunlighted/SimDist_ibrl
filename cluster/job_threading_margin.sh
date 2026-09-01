@@ -1,0 +1,219 @@
+#!/bin/bash
+#SBATCH --job-name=thr_margin
+#SBATCH --array=1-40
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=24G
+#SBATCH --time=12:00:00
+#SBATCH --output=cluster/logs/%x_%A_%a.out
+# ^ --account=def-<pi> at submit time:
+#       sbatch --account=def-<pi> cluster/job_threading_margin.sh
+#
+# Threading_D0, matched 100k-transition budget, into exps/simdist_threading_3arm
+# so these land in the SAME wandb project as the existing groups and overlay on
+# one chart. Four arms x 10 seeds.
+#
+# The question this batch asks: with the IBRL prior margin annealed 0.05 -> 0,
+# how does an actor that learns to ACT compare against the planner it is
+# deferring to -- when both are built on the SAME single-head dynamics?
+#
+#   plain_h5             plain SimDist MPPI, single dynamics head, horizon 5.
+#                        The planning reference. Deliverable IS the planner, so
+#                        score/score is the MPPI score; --eval_policy_only 1
+#                        logs the bare policy alongside as score/policy_only.
+#   dynaibrl_plain       Dyna + IBRL prior margin, annealed 0.05 -> 0 over 50k,
+#                        on the SAME single-head stage-1 as plain_h5.
+#   dynaibrl_plain_sgft  the same + SGFT shaping (--dyna.sgft_coef 1.0).
+#                        Differs from dynaibrl_plain in exactly one field.
+#   ibrl_m005anneal0     model-free IBRL, same 0.05 -> 0 margin schedule. No
+#                        world model anywhere -- the baseline that says how much
+#                        of the margin's value needs a model at all.
+#
+# ------------------------------------------------- why the plain dynamics head
+# The existing dynaibrl_* runs on the workstation all sit on the 5-head
+# dynens stage-1, so "Dyna+margin vs planning" was confounded with "ensemble vs
+# single head". Every arm here that uses a world model uses
+# threading_simdist_diversev2_h5_seed1 -- one head, horizon 5, same diverse_v2
+# source data as the ensemble. Ensemble effects are then a separate axis, not a
+# term inside this comparison.
+#
+# --------------------------------------------------------- the margin schedule
+# margin(t) anneals prior_margin_init -> prior_margin_final over
+# prior_margin_steps and then STAYS at final. Evidence for 0.05 as the init, from
+# the fixed-margin sweep in rl/simdist_dyna_ibrl.py:
+#     margin 0    -> 0.000   argmax decided by critic noise; ~5.8% action
+#                            deviation is enough to kill the episode
+#     margin 0.05 -> 0.775   best; the actor clears the bar occasionally
+#     margin 0.1  -> 0.632   bar too high, the actor essentially never acts
+# High early (survive an uncalibrated critic), zero late (let a good actor
+# through) is exactly what the schedule buys.
+#
+# ⚠️ steps=50000 on BOTH the dyna and the model-free arm, so the two see the same
+# schedule. That is NOT what ibrl_m005_seed1 did: it used steps=100000 with
+# init=final=0.05, i.e. a CONSTANT margin, no anneal at all. If you want the
+# model-free arm to match that run's schedule length instead, change
+# MARGIN_STEPS below to 100000 -- but change it in both arms or the comparison
+# reintroduces the confound this batch removes.
+#
+# ---------------------------------------------------------------- demo standard
+# All four arms use sat_160000 target demos (25 episodes, --target_num_data 20),
+# the standing standard. docs/demo-collection.md 38 measured +0.139 from this
+# switch alone, and dynens_h5 -> dynens_h5_slow (identical but for this path)
+# moved round-0 from 0.274 to 0.417.
+#
+# ==> This is why ibrl_m005anneal0 does NOT reuse exps/mimicgen/il_ft_target_
+#     seed*: those priors were fine-tuned on sat_400000, and only 6 of the 10
+#     seeds exist. Run cluster/job_threading_bc_s160.sh FIRST; it produces
+#     il_ft_target_s160_seed* for all 10 seeds on the correct demos.
+#
+# ==> Runs from this file are NOT comparable to the workstation dynaibrl_*,
+#     ibrl_m005_seed1, or any pre-2026-08-31 dyna_* run (sat_400000 demos, the
+#     dynens stage-1, and for dyna_* the four pre-fix defects documented in
+#     cluster/job_threading_dyna_plain.sh).
+set -e
+cd $SLURM_SUBMIT_DIR
+mkdir -p cluster/logs
+
+# MIG-partitioned H100s cannot initialise an EGL device display -- `import mujoco`
+# with MUJOCO_GL=egl dies at IMPORT time. osmesa lets the import succeed, and with
+# --state_only_no_render 1 no GL context is ever created, so nothing is rendered.
+export MUJOCO_GL=${MUJOCO_GL:-osmesa}
+# Compute nodes on fir have no internet, and `online` additionally deadlocks long
+# runs (a logging thread parks in __skb_wait_for_more_packets and freezes the whole
+# process). Default to offline; `wandb sync wandb/offline-run-*` from a login node
+# afterwards.
+export WANDB_MODE=${WANDB_MODE:-offline}
+# The key is NEVER hardcoded here -- this file is tracked by git. See
+# job_threading_dyna_plain.sh for the three supply routes and why the key is
+# forwarded via APPTAINERENV_* rather than `apptainer --env` (argv is world
+# readable in `ps`).
+WANDB_KEY_FILE=${WANDB_KEY_FILE:-$HOME/.config/wandb/key}
+if [ -z "${WANDB_API_KEY:-}" ] && [ -r "$WANDB_KEY_FILE" ]; then
+    WANDB_API_KEY=$(tr -d '[:space:]' < "$WANDB_KEY_FILE")
+fi
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export APPTAINERENV_WANDB_API_KEY="$WANDB_API_KEY"
+if [ "$WANDB_MODE" = "online" ] && [ -z "$WANDB_API_KEY" ] \
+   && ! grep -qs 'api\.wandb\.ai' "$HOME/.netrc"; then
+    echo "[wandb] no API key and no ~/.netrc entry -> falling back to WANDB_MODE=offline"
+    export WANDB_MODE=offline
+fi
+USE_WB=${USE_WB:-1}
+
+if [ -n "${SIF:-}" ]; then
+    module purge; module load apptainer
+    R=$(realpath "$PWD")
+    MG_ASSETS=$R/deps/mimicgen/mimicgen/models/robosuite/assets
+    MG_DEST=/usr/local/lib/python3.10/dist-packages/mimicgen/models/robosuite/assets
+    MG_BIND=""
+    [ -d "$MG_ASSETS" ] && MG_BIND="-B $MG_ASSETS:$MG_DEST"
+    PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp $MG_BIND --pwd $R \
+        --env PYTHONPATH=$R/.pylibs:$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
+        --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/.singularity.d/libs \
+        --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+        --env REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+        --env CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+        $SIF python"
+else
+    module purge; module load StdEnv/2023 gcc/12.3 python/3.10 cuda/12.2
+    source ${VENV:-$HOME/venvs/ibrl}/bin/activate
+    export PYTHONPATH=$PWD:$PYTHONPATH
+    PY="python"
+fi
+echo "[env] $PY"
+
+JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" cluster/jobs_threading_margin.txt)
+ARM=${JOB% *}; SEED=${JOB##* }
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
+
+# save_dir's PARENT is the wandb project and the run name is the group
+# (common_utils/py/run_cfg.py derives wb_exp/wb_run/wb_group from it as
+# read-only properties -- --wb_* are NOT CLI args and argparse rejects them).
+EXP_DIR=${EXP_DIR:-exps/simdist_threading_3arm}
+SUFFIX=${SUFFIX:-}                 # e.g. SUFFIX=_v2 if a name would collide
+OUT=$EXP_DIR/${ARM}${SUFFIX}_seed${SEED}
+DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
+
+# One head, horizon 5, diverse_v2 source. Shared by plain_h5 and both dyna arms
+# so the planner and the actors reason over the SAME model.
+STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
+# Target-domain BC prior for the model-free arm, on sat_160000 (see above).
+BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
+
+MARGIN_INIT=${MARGIN_INIT:-0.05}
+MARGIN_FINAL=${MARGIN_FINAL:-0.0}
+MARGIN_STEPS=${MARGIN_STEPS:-50000}
+
+for f in "$DEMOS" "$STAGE1_PLAIN"; do
+    [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_threading_margin.sh)"; exit 1; }
+done
+if [ "$ARM" = "ibrl_m005anneal0" ] && [ ! -f "$BC_PRIOR" ]; then
+    echo "MISSING $BC_PRIOR -- run cluster/job_threading_bc_s160.sh first"; exit 1
+fi
+
+case $ARM in
+  plain_h5)
+    # collect_disagree_coef stays 0: geometric disagreement needs >1 dynamics head,
+    # so the 0.5 the dynens arms use is undefined here. eval_disagree_coefs is left
+    # at its "" default for the same reason.
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.0 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_plain)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_plain_sgft)
+    # Differs from dynaibrl_plain in EXACTLY one field. Prior evidence on plain
+    # Dyna was a null (0.139 vs 0.124, n=10, ns) and was measured under the
+    # MPPI-proposal metric on the pre-fix implementation, so it says little here.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  ibrl_m005anneal0)
+    # train_rl.py, NOT train_ibrl_simdist.py. ibrl_m005_seed1's cfg.yaml matches
+    # train_rl.py on 55/55 top-level keys and train_ibrl_simdist.py on 34/55
+    # (bc_policy, preload_*, freeze_bc_replay and the perturb fields live only in
+    # train_rl.py) -- the model-free IBRL entry point is train_rl.py.
+    #
+    # Every flag below is one ibrl_m005_seed1 set away from train_rl.py's default,
+    # so this reproduces that run except for: the demo standard (sat_160000, and
+    # the matching s160 BC prior) and prior_margin_final 0.05 -> 0.0, which is the
+    # anneal this batch is about. prior_margin_steps is train_rl.py's own default
+    # of 100000, overridden here to $MARGIN_STEPS to match the dyna arms.
+    # No world model anywhere in this arm.
+    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+      --bc_policy $BC_PRIOR \
+      --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
+      --num_train_step 100000 --num_warm_up_episode 30 \
+      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
+      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
+      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
+      --train_hand_init_perturb_joint_sigma 0.1 \
+      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --prior_margin_init $MARGIN_INIT --prior_margin_final $MARGIN_FINAL \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  *) echo "unknown arm '$ARM'"; exit 1 ;;
+esac
+RC=$?
+# NOT `rc=$?` after a $(date) -- that reports date's exit code and silently turns
+# a truncated run into a green DONE.
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID arm=$ARM seed=$SEED rc=$RC"
+grep -q "^100000: score/score" $OUT/train.log 2>/dev/null \
+  || { echo "INCOMPLETE: $OUT never logged step 100000"; exit 1; }
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID DONE"
