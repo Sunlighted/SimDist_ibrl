@@ -69,24 +69,53 @@ done
 mkdir -p $OUTROOT
 PASS=0; FAIL=0
 
+# A bad flag dies in seconds, during pyrallis parsing or the first asset load.
+# Real training then runs until the timeout. So SURVIVAL TIME is the signal, not
+# log scraping: robosuite prints "Got error: No module named 'robosuite_task_zoo'"
+# on every import (a benign optional dependency) and mujoco's EGL context can
+# raise from its own __del__ at interpreter shutdown, long after training worked.
+# Both used to trip a keyword-matching check.
+ALIVE_SEC=${ALIVE_SEC:-60}
+
 run() {  # run <name> <cmd...>
     local name=$1; shift
     echo
     echo "======================================== $name"
+    local t0=$SECONDS
     timeout $TIMEOUT $@ > $OUTROOT/$name.log 2>&1
-    local rc=$?
-    if grep -qiE "unrecognized arguments|unexpected|Traceback \(most recent" $OUTROOT/$name.log; then
-        echo "  FAIL  the command did not parse / crashed:"
-        grep -iE "unrecognized arguments|unexpected|^\w*Error|FileNotFoundError" $OUTROOT/$name.log \
-            | head -4 | sed 's/^/        /'
+    local rc=$? elapsed=$((SECONDS-t0))
+
+    # Unambiguous flag errors, whenever they appear.
+    if grep -qiE "unrecognized arguments|error: unrecognized|is not a valid|got an unexpected keyword" $OUTROOT/$name.log; then
+        echo "  FAIL  the command line did not parse (${elapsed}s):"
+        grep -iE "unrecognized arguments|error: unrecognized|is not a valid|got an unexpected keyword" \
+            $OUTROOT/$name.log | head -3 | sed 's/^/        /'
+        echo "        full log: $OUTROOT/$name.log"
+        FAIL=$((FAIL+1)); return
+    fi
+
+    if [ $rc -eq 124 ]; then
+        echo "  PASS  ran ${elapsed}s and was still training when the timeout fired"
+        PASS=$((PASS+1))
+    elif [ $rc -eq 0 ]; then
+        echo "  PASS  completed in ${elapsed}s"
+        PASS=$((PASS+1))
+    elif [ $elapsed -lt $ALIVE_SEC ]; then
+        echo "  FAIL  died after only ${elapsed}s (rc=$rc) -- parse or asset problem:"
+        tail -12 $OUTROOT/$name.log | grep -vE "robosuite WARNING|ROBOMIMIC|macro file|task zoo|robosuite_task_zoo" \
+            | tail -5 | sed 's/^/        /'
         echo "        full log: $OUTROOT/$name.log"
         FAIL=$((FAIL+1))
-    elif [ $rc -eq 124 ] || [ $rc -eq 0 ]; then
-        echo "  PASS  parsed and reached training (rc=$rc)"
+    elif grep -qE "in __del__|egl_context\.py" $OUTROOT/$name.log; then
+        echo "  PASS  trained ${elapsed}s; the only traceback is a GL context teardown"
+        echo "        at interpreter shutdown -- harmless, and MUJOCO_GL=osmesa"
+        echo "        should prevent it entirely on the cluster."
         PASS=$((PASS+1))
     else
-        echo "  FAIL  rc=$rc, tail:"
-        tail -5 $OUTROOT/$name.log | sed 's/^/        /'
+        echo "  FAIL  trained ${elapsed}s then crashed (rc=$rc):"
+        tail -12 $OUTROOT/$name.log | grep -vE "robosuite WARNING|ROBOMIMIC|macro file|task zoo|robosuite_task_zoo" \
+            | tail -5 | sed 's/^/        /'
+        echo "        full log: $OUTROOT/$name.log"
         FAIL=$((FAIL+1))
     fi
 }
