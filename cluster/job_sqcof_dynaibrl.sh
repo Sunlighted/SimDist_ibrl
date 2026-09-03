@@ -1,0 +1,187 @@
+#!/bin/bash
+#SBATCH --job-name=sqcof_di
+#SBATCH --array=1-20
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=24G
+#SBATCH --time=14:00:00
+#SBATCH --output=cluster/logs/%x_%A_%a.out
+# ^ --account=def-<pi> at submit time:
+#       sbatch --account=def-<pi> cluster/job_sqcof_dynaibrl.sh
+#
+# Dyna-IBRL on Square_D0 (rotw1) and Coffee_D0 (G5x), mirroring the Threading
+# batch in cluster/job_threading_margin.sh so the three tasks are read the same
+# way. Four arms x 5 seeds per task; the default job list runs the two dynens
+# arms on both tasks (20 tasks).
+#
+#   sq_dynaibrl / cof_dynaibrl            margin annealed 0.05 -> 0 over 50k
+#   sq_dynaibrl_sgft / cof_dynaibrl_sgft  the same + SGFT shaping, but with a
+#                                         CONSTANT margin (SGFT_MARGIN, 0.01)
+#
+# ⚠️ Like the Threading batch, the SGFT arms differ from their plain counterpart
+# in TWO fields (sgft_coef AND the margin schedule): the annealed shaped arm was
+# measured to do badly, so the schedule was dropped for them. Read the SGFT arms
+# on absolute score, not as a controlled ablation.
+#
+# ------------------------------------------------------------ what is measured
+# Dyna-IBRL has NO planner. score/score is the IBRL hybrid -- argmax over
+# {RL actor, FROZEN stage-2 prior} using the critic, one forward pass per step,
+# no CEM and no dynamics rollout at deploy time. --eval_policy_only 1 logs the
+# frozen prior alongside as score/policy_only, which is the floor every arm has
+# to beat (it is constant within a run, since stage 3 never touches the prior).
+#
+# ------------------------------------------------------------------ the anchor
+# ANCHOR_COEF defaults to 0 (off), matching the Threading batch. Turn it on with
+#   ANCHOR_COEF=1.0 sbatch --export=ALL,ANCHOR_COEF ...
+# Coffee is the task where this is likely to matter: docs/tasks.md 40e measured
+# the stage-2 anchor as THE lever there (+0.40 on G5x, against +0.03 for stage-3
+# adapt), and Dyna-IBRL starts from exactly that stage-2 policy. Square's own
+# adapt arm uses the much smaller 0.1.
+#
+# The anchor reads a state pool, not the full source set: _build_bc_anchor draws
+# bc_anchor_episodes episodes and keeps 40000 states, so the 5.5 GB / 7.7 GB
+# originals were replaced with 4000-episode extracts (scripts/extract_anchor_pool.py),
+# 62 MB and 266 MB. Keeping 4000 > bc_anchor_episodes=2000 means each seed still
+# draws its own subset.
+#
+# ------------------------------------------------------------- demo / stage-1
+# Both tasks: sat_400000 target demos, 25 episodes, --target_num_data 20 (the
+# Threading口径). Two stage-1 checkpoints per task, 5-head and single-head at the
+# same horizon 5 and the same source data, so plain-vs-ensemble is not confounded
+# with horizon.
+set -e
+cd $SLURM_SUBMIT_DIR
+mkdir -p cluster/logs
+
+# MIG-partitioned H100s cannot initialise an EGL device display -- `import mujoco`
+# with MUJOCO_GL=egl dies at IMPORT time. osmesa lets the import succeed, and with
+# --state_only_no_render 1 no GL context is ever created.
+export MUJOCO_GL=${MUJOCO_GL:-osmesa}
+export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+USE_WB=${USE_WB:-1}
+
+# Default to the container when the image is on disk. Requiring SIF to be
+# exported was a footgun: a submission that forgot `--export=ALL,SIF` fell
+# through to the venv branch and died on
+#   /home/<user>/venvs/ibrl/bin/activate: No such file or directory
+# after the scheduler had already spent the queue wait.
+if [ "${USE_VENV:-0}" != "1" ] && [ -z "${SIF:-}" ] && [ -f cluster/ibrl.sif ]; then
+    SIF=cluster/ibrl.sif
+    echo "[env] found cluster/ibrl.sif -- using the container (USE_VENV=1 to override)"
+fi
+if [ "${USE_VENV:-0}" != "1" ] && [ -n "${SIF:-}" ] && [ ! -f "$SIF" ]; then
+    echo "SIF=$SIF does not exist. Build it with cluster/build_sif.sh, or set"
+    echo "USE_VENV=1 to use the module/venv route instead."
+    exit 1
+fi
+
+if [ -n "${SIF:-}" ] && [ "${USE_VENV:-0}" != "1" ]; then
+    module purge; module load apptainer
+    R=$(realpath "$PWD")
+    MG_ASSETS=$R/deps/mimicgen/mimicgen/models/robosuite/assets
+    MG_DEST=/usr/local/lib/python3.10/dist-packages/mimicgen/models/robosuite/assets
+    MG_BIND=""
+    [ -d "$MG_ASSETS" ] && MG_BIND="-B $MG_ASSETS:$MG_DEST"
+    # Every --env is load-bearing on fir; see job_square_baselines.sh for the
+    # diagnosis of each (glibc/libGL ordering, tensorboard/protobuf, CA bundle).
+    # ⚠️ Coffee NEEDS the MG_BIND: mimicgen installs non-editable in the image and
+    # ships no XML assets, so Coffee_D0 dies on coffee_pod.xml. Square escapes it
+    # because NutAssembly's assets come from robosuite itself.
+    PY="apptainer exec --nv -B $R:$R -B ${SLURM_TMPDIR:-/tmp}:/tmp $MG_BIND --pwd $R \
+        --env PYTHONPATH=$R/.pylibs:$R --env MUJOCO_GL=$MUJOCO_GL --env WANDB_MODE=$WANDB_MODE \
+        --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/.singularity.d/libs \
+        --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+        --env REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+        --env CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+        $SIF python"
+else
+    module purge; module load StdEnv/2023 gcc/12.3 python/3.10 cuda/12.2
+    VENV=${VENV:-$HOME/venvs/ibrl}
+    [ -f "$VENV/bin/activate" ] || {
+        echo "No venv at $VENV/bin/activate and no container image."
+        echo "Either build cluster/ibrl.sif (cluster/build_sif.sh), pass SIF=<path>,"
+        echo "or create the venv with cluster/cc_setup.sh on a LOGIN node."
+        exit 1
+    }
+    source "$VENV/bin/activate"
+    export PYTHONPATH=$PWD:$PYTHONPATH
+    PY="python"
+fi
+echo "[env] $PY"
+
+JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" cluster/jobs_sqcof_dynaibrl.txt)
+ARM=${JOB% *}; SEED=${JOB##* }
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
+
+MARGIN_INIT=${MARGIN_INIT:-0.05}
+MARGIN_FINAL=${MARGIN_FINAL:-0.0}
+MARGIN_STEPS=${MARGIN_STEPS:-50000}
+# Constant margin for the SGFT arms; init==final makes margin(t) constant while
+# still going through the schedule code path. 0.01 is the best constant measured
+# on Threading (single seed, 75-100k steady, policy-only): 0.01 -> 0.873,
+# 0.05 -> 0.775, anneal 0.05->0.01 -> ~0.88, anneal 0.05->0.00 -> ~0.855.
+SGFT_MARGIN=${SGFT_MARGIN:-0.01}
+ANCHOR_COEF=${ANCHOR_COEF:-0.0}
+
+case $ARM in
+  sq_*) TASK=square
+        EXP_DIR=${EXP_DIR:-exps/square_rotw1_6arm}
+        DEMOS=release/data/mimicgen/square_sat_400000_s${SEED}/dataset.hdf5
+        STAGE1_DYNENS=exps/mimicgen/square_simdist_rotw1_dynens_h5_seed1/latest.pt
+        STAGE1_PLAIN=exps/mimicgen/square_simdist_rotw1_h5_seed1/latest.pt
+        ANCHOR_PATH=release/data/mimicgen/square_anchor_pool_4k/dataset.hdf5 ;;
+  cof_*) TASK=coffee
+        EXP_DIR=${EXP_DIR:-exps/coffee_g5x_3arm}
+        DEMOS=release/data/mimicgen/coffee_g5x_sat400k_s${SEED}/dataset.hdf5
+        STAGE1_DYNENS=exps/mimicgen/coffee_simdist_diversev1_h5_seed1/latest.pt
+        STAGE1_PLAIN=exps/mimicgen/coffee_simdist_plain_h5_seed1/latest.pt
+        ANCHOR_PATH=release/data/mimicgen/coffee_anchor_pool_4k/dataset.hdf5 ;;
+  *) echo "unknown arm '$ARM' (expected sq_* or cof_*)"; exit 1 ;;
+esac
+OUT=$EXP_DIR/${ARM}${SUFFIX:-}_seed${SEED}
+
+for f in "$DEMOS"; do
+    [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_sqcof_dynaibrl.sh)"; exit 1; }
+done
+case $ARM in *_plain*) NEED=$STAGE1_PLAIN ;; *) NEED=$STAGE1_DYNENS ;; esac
+[ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; }
+if [ "$(echo "$ANCHOR_COEF > 0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+    [ -f "$ANCHOR_PATH" ] || { echo "MISSING anchor pool: $ANCHOR_PATH"; exit 1; }
+    ANCHOR_ARGS="--bc_anchor_coef $ANCHOR_COEF --bc_anchor_path $ANCHOR_PATH"
+else
+    ANCHOR_ARGS=""
+fi
+
+COMMON="--save_dir $OUT --seed $SEED --target_demo_path $DEMOS --target_num_data 20 \
+  --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+  --num_eval_episode 100 --num_eval_proc 10 \
+  --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+  --use_wb $USE_WB --state_only_no_render 1 $ANCHOR_ARGS"
+
+case $ARM in
+  sq_dynaibrl|cof_dynaibrl)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_sgft|cof_dynaibrl_sgft)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  sq_dynaibrl_plain|cof_dynaibrl_plain)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_plain_sgft|cof_dynaibrl_plain_sgft)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  *) echo "unknown arm '$ARM'"; exit 1 ;;
+esac
+RC=$?
+# NOT `rc=$?` after a $(date): that reports date's exit code and turns a truncated
+# run into a green DONE.
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID arm=$ARM seed=$SEED rc=$RC"
+grep -q "^100000: score/score" $OUT/train.log 2>/dev/null \
+  || { echo "INCOMPLETE: $OUT never logged step 100000"; exit 1; }
+echo "[$(date)] task $SLURM_ARRAY_TASK_ID DONE"
