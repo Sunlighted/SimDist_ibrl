@@ -23,8 +23,11 @@
 #                        logs the bare policy alongside as score/policy_only.
 #   dynaibrl_plain       Dyna + IBRL prior margin, annealed 0.05 -> 0 over 50k,
 #                        on the SAME single-head stage-1 as plain_h5.
-#   dynaibrl_plain_sgft  the same + SGFT shaping (--dyna.sgft_coef 1.0).
-#                        Differs from dynaibrl_plain in exactly one field.
+#   dynaibrl_plain_sgft  the same + SGFT shaping (--dyna.sgft_coef 1.0), but with
+#                        a CONSTANT margin (SGFT_MARGIN, default 0.01) instead of
+#                        the anneal -- the annealed shaped arm performed badly.
+#                        ⚠️ So it differs from dynaibrl_plain in TWO fields and is
+#                        NOT a controlled SGFT ablation; read it on absolute score.
 #   ibrl_m005anneal0     model-free IBRL, same 0.05 -> 0 margin schedule. No
 #                        world model anywhere -- the baseline that says how much
 #                        of the margin's value needs a model at all.
@@ -230,6 +233,14 @@ BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
 MARGIN_INIT=${MARGIN_INIT:-0.05}
 MARGIN_FINAL=${MARGIN_FINAL:-0.0}
 MARGIN_STEPS=${MARGIN_STEPS:-50000}
+# The SGFT arms run a CONSTANT margin instead of the schedule above: the annealed
+# 0.05 -> 0 version was measured to do badly with shaping on. init==final makes
+# margin(t) = max(final, init*(1-t/steps)) constant for every t, so the schedule
+# code path is exercised identically and only the value differs.
+# 0.01 is the best constant measured on the workstation (single seed, 75-100k
+# steady, policy-only): 0.01 -> 0.873, 0.05 -> 0.775, anneal 0.05->0.01 -> ~0.88,
+# anneal 0.05->0.00 -> ~0.855.
+SGFT_MARGIN=${SGFT_MARGIN:-0.01}
 
 for f in "$DEMOS" "$STAGE1_PLAIN"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_threading_margin.sh)"; exit 1; }
@@ -263,15 +274,23 @@ case $ARM in
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_sgft)
-    # Differs from dynaibrl_plain in EXACTLY one field. Prior evidence on plain
-    # Dyna was a null (0.139 vs 0.124, n=10, ns) and was measured under the
-    # MPPI-proposal metric on the pre-fix implementation, so it says little here.
+    # ⚠️ Differs from dynaibrl_plain in TWO fields: sgft_coef AND the margin
+    # schedule (constant SGFT_MARGIN here, annealed there). The annealed version
+    # of this arm performed badly, so the schedule was dropped for the shaped
+    # arms. Consequence: this pair no longer isolates SGFT -- read the sgft arms
+    # on their absolute score, not as a controlled ablation against the arm above.
+    # To restore the single-variable pair, run with SGFT_MARGIN unset and pass
+    # --dyna.prior_margin_{init,final,steps} from MARGIN_* as the other arms do.
+    #
+    # Prior evidence on plain Dyna was a null (0.139 vs 0.124, n=10, ns), measured
+    # under the MPPI-proposal metric on the pre-fix implementation, so it says
+    # little here.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_dynens)
@@ -287,13 +306,13 @@ case $ARM in
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_dynens_sgft)
-    # Differs from dynaibrl_dynens in EXACTLY one field.
+    # ⚠️ Differs from dynaibrl_dynens in TWO fields -- see dynaibrl_plain_sgft.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   ibrl_m005anneal0)
