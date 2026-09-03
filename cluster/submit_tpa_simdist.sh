@@ -61,6 +61,19 @@ if [ -f "$SAVE/resume.pt" ]; then
   echo "           delete it to start stage-1 from scratch."
 fi
 
+# Mirror the job's route auto-detection so the preflight reports what will
+# actually run (job_tpa_simdist.sh defaults to the container if the image exists).
+if [ "${USE_VENV:-0}" != "1" ] && [ -z "${SIF:-}" ] && [ -f cluster/ibrl.sif ]; then
+  echo "  route    container (cluster/ibrl.sif found; USE_VENV=1 to override)"
+elif [ -n "${SIF:-}" ] && [ "${USE_VENV:-0}" != "1" ]; then
+  chk "$SIF" "apptainer image"
+  echo "  route    container ($SIF)"
+else
+  echo "  route    module/venv (VENV=${VENV:-$HOME/venvs/ibrl})"
+  [ -f "${VENV:-$HOME/venvs/ibrl}/bin/activate" ] || {
+    echo "  MISSING  ${VENV:-$HOME/venvs/ibrl}/bin/activate  -- no venv on fir; build the .sif"; fail=1; }
+fi
+
 : "${ACCOUNT:?set ACCOUNT=def-<pi>}"
 [ "$fail" = 0 ] || { echo "preflight FAILED -- not submitting."; exit 1; }
 echo "preflight OK"
