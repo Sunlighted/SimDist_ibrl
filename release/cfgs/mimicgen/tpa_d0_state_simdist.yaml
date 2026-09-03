@@ -1,0 +1,148 @@
+# SimDist stage-1 (offline distillation) on ThreePieceAssembly_D0.
+#
+# DATA: release/data/mimicgen/tpa_d0_source_diverse_v1/dataset.hdf5
+#   99,750 traj / 70,237 success (70.4%) / ~40.4M transitions / 10.2 GB.
+#   Full recipe + 17 ckpt sha256 in that directory's PROVENANCE.md.
+#   Health-checked across all six collection batches (seeds 1-6): success
+#   0.665-0.715, len 395-448, V mean 0.345-0.365, zero exactly-0 values
+#   (the collapsed-value failure of simdist.md §17 is NOT present).
+#
+# WHAT IS DIFFERENT FROM Threading/Coffee/Square (do not copy those blindly):
+#
+# 1. episode_length 1000, not 400. All three earlier tasks run at 400; TPA's
+#    demos average 336 steps over 4 MimicGen subtasks. This also means the
+#    trajectory length distribution is strongly bimodal (success median 141,
+#    failures at exactly 1000, 30% of data).
+#
+# 2. seq_replay_max_episode 100000 must cover all 99,750 trajectories --
+#    silently truncating the replay would drop whole collection batches.
+#
+# 3. PLANNER HYPERPARAMETERS ARE UNCALIBRATED HERE. CLAUDE.md rule 9: they do
+#    not transport across tasks (§40c: one init_std value was worth 40 points)
+#    nor across oracle-vs-learned dynamics (§40d). The values below are Coffee's
+#    and are placeholders. `use_planner: 0` so the in-training eval scores the
+#    POLICY HEAD only and an unswept planner cannot contaminate the curve or
+#    TopkSaver's ranking. Before enabling the planner: sweep init_std and
+#    base_policy_std, and print std_i(gamma^H V)/V_level to compare against
+#    Threading's 0.0068 (findings §33).
+#
+# 4. No strict_success for this task (not wired); TPA's own success check is
+#    fragile (~1.3 mm margin, 6.8% frame flicker) -- see the target cfg header.
+#
+# EVAL = the TARGET domain (deployment metric), chosen in tpa_d0_state_ibrl_target.yaml
+# from a 16-config sweep: source expert scores 0.990 under identity and 0.420 here.
+#
+#   python train_simdist.py --config_path release/cfgs/mimicgen/tpa_d0_state_simdist.yaml \
+#       --save_dir exps/mimicgen/tpa_simdist_diversev1_h5_seed1
+#   (add --resume auto to continue a killed run: full state incl. Adam moments)
+
+task_name: ThreePieceAssembly_D0
+episode_length: 1000
+end_on_success: 1
+env_reward_scale: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+rl_camera: robot0_eye_in_hand
+image_size: 224
+rl_image_size: 96
+
+discount: 0.99
+seed: 1
+use_wb: 1
+save_dir: exps/mimicgen/tpa_simdist_diversev1_h5_seed1
+
+# frozen source expert: provides V_src labels for the value head (0.962 @ 500 games)
+source_agent: exps/mimicgen/tpa_source_expert_frozen/model0.pt
+source_replay_path: release/data/mimicgen/tpa_d0_source_diverse_v1/dataset.hdf5
+source_replay_num_data: -1
+seq_replay_max_episode: 100000
+policy_replay_path: ''
+policy_replay_num_data: -1
+
+# TPA has NO target demos yet (only the source diverse replay is collected), and
+# stage 2 lives in train_simdist_adapt.py anyway. This MUST be set explicitly:
+# the code default points at release/data/mimicgen/threading_d0_target_dynamics
+# (37-dim states vs TPA's 51), which loads silently and unchecked.
+target_demo_path: ''
+
+# BC the policy head on expert-flagged steps only (expert_flag = expert AND no
+# noise). Measured on this dataset: 36% of steps qualify, matching
+# p_expert 0.5 x success 0.71 x (1 - noise duty 0.29).
+bc_expert_only: 1
+
+distill_steps: 1000000
+batch_size: 256
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+eval_source: 1
+
+# offline distillation: no env interaction, so no exploration noise
+stddev_max: 0.0
+stddev_min: 0.0
+stddev_step: 200000
+num_warm_up_episode: 20
+
+simdist:
+  use_planner: 0            # see note 3 -- policy head only until planner is swept
+  finetune_dynamics: 1
+  finetune_policy: 1
+  finetune_steps: 0         # stage 2 lives in train_simdist_adapt.py
+  finetune_lr: 0.0003
+  world_model:
+    encoder_type: latent    # findings §30: plan in latent
+    latent_dim: 512
+    mlp_hidden_dim: 512
+    num_layer: 2
+    activation: mish
+    layer_norm: 1
+    simnorm_dim: 8
+    shared_encoder: 1
+    detach_pi: 1
+    discrete_heads: 1
+    num_bins: 101
+    vmin: -10.0
+    vmax: 10.0
+    horizon: 5
+    lr: 0.0003
+    enc_lr_scale: 0.3
+    grad_clip: 20.0
+    rho: 0.5
+    tau: 0.01
+    consistency_coef: 20.0
+    reward_coef: 0.1
+    value_coef: 0.1
+    policy_coef: 10.0
+    decoder_coef: 1.0
+    reward_pos_weight: 1.0
+    num_dynamics_heads: 5   # findings §31: 5 heads -> 0.962 on Threading; ~3 saturates
+  planner:
+    horizon: 5
+    num_samples: 512
+    num_elites: 64
+    iterations: 6
+    mixture_coef: 0.8
+    init_std: 0.5           # PLACEHOLDER (Coffee's) -- must be swept, see note 3
+    min_std: 0.05
+    temperature: 0.5
+    momentum: 0.1
+    discount: 0.99
+    base_policy_std: 0.0    # PLACEHOLDER -- sweep together with init_std
+    use_reward: 1
+    warm_start: 0
+    num_base_override: -1
+    seed_mean_from_policy: 0
+
+# SOURCE for the replay/training; TARGET for eval.
+train_domain_shift:
+  mode: none
+eval_domain_shift:
+  mode: fixed
+  base_hole_size_scale: 0.96   # hole 114.0 -> 109.4 mm, clearance 6.00 -> 3.72 mm/side
+  base_friction_scale: 2.0     # base collision mu 1.0 -> 2.0 (insertion only)
+  gripper_kp_scale: 0.25       # gripper stiffness at 25%
+train_hand_init_perturb_joint_sigma: null   # TPA trains at sigma=null ...
+eval_hand_init_perturb_joint_sigma: null    # ... though the replay was collected at 0.1

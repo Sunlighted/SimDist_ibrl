@@ -24,6 +24,7 @@ Run:
 """
 
 import os
+import random
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -134,6 +135,12 @@ class MainConfig(common_utils.RunConfig):
     mp_eval: int = 1
     # log
     save_dir: str = "exps/simdist/run1"
+    # Resume a killed run from <save_dir>/resume.pt ("auto") or an explicit path.
+    # "" = start from scratch. NOT the same as loading latest.pt: see save_resume().
+    resume: str = ""
+    # Only for a WEIGHTS-ONLY ckpt (latest.pt from a run that predates resume.pt):
+    # the step to continue counting from. Ignored for a real resume.pt.
+    resume_step: int = 0
     use_wb: int = 0
     state_only_no_render: int = 0
     # SOURCE (train) and TARGET (eval) domain shifts
@@ -188,6 +195,7 @@ class Workspace:
         self.global_step = 0
         self.global_episode = 0
         self.train_step = 0
+        self.finetune_step = 0
         self.H = cfg.simdist.world_model.horizon
         self._setup_env()
 
@@ -313,14 +321,32 @@ class Workspace:
             assert self.policy_replay.can_sample(self.H), (
                 f"no policy-expert episode of length >= horizon={self.H}")
 
-        # TARGET demos (stage-2 finetune)
+        # TARGET demos (stage-2 finetune ONLY -- stage 1 never touches this buffer).
+        # `target_demo_path` defaults to a THREADING path, so on any other task an
+        # unset cfg silently loads Threading demos: 37-dim states where TPA is 51,
+        # with nothing checking the width. Empty path = skip; finetune() errors if
+        # it is actually needed. (CLAUDE.md rule 13/17: non-empty code defaults
+        # that quietly swap the data out from under a run.)
         self.demo_replay = SequenceReplayBuffer(max_episodes=10000, device="cpu")
-        load_demos_to_sequence_buffer(
-            self.demo_replay, self.cfg.target_demo_path,
-            num_data=self.cfg.target_num_data, reward_scale=self.cfg.env_reward_scale,
-        )
-        assert self.demo_replay.can_sample(self.H), (
-            f"no TARGET demo episode of length >= horizon={self.H}")
+        if self.cfg.target_demo_path:
+            load_demos_to_sequence_buffer(
+                self.demo_replay, self.cfg.target_demo_path,
+                num_data=self.cfg.target_num_data, reward_scale=self.cfg.env_reward_scale,
+            )
+            assert self.demo_replay.can_sample(self.H), (
+                f"no TARGET demo episode of length >= horizon={self.H}")
+            if self.seq_replay.episodes:
+                src_dim = self.seq_replay.episodes[0]["state"].shape[-1]
+                demo_dim = self.demo_replay.episodes[0]["state"].shape[-1]
+                assert demo_dim == src_dim, (
+                    f"TARGET demo state dim {demo_dim} != source replay {src_dim}.\n"
+                    f"  target_demo_path: {self.cfg.target_demo_path}\n"
+                    f"  source_replay_path: {self.cfg.source_replay_path}\n"
+                    "These are different tasks -- set target_demo_path for THIS task "
+                    "(or '' if stage-2 runs elsewhere).")
+        else:
+            print("[demo-buffer] target_demo_path empty -- TARGET demos skipped "
+                  "(stage-1 does not use them; finetune_steps must stay 0)")
 
     def _maybe_set_state_normalization(self):
         """Raw-state world model (encoder_type='identity'): fit per-dim z-score
@@ -427,7 +453,7 @@ class Workspace:
         self._maybe_set_state_normalization()
         stopwatch = common_utils.Stopwatch()
         pbar = tqdm(total=self.cfg.distill_steps, desc="simdist distill (offline)",
-                    dynamic_ncols=True, mininterval=1.0)
+                    initial=self.global_step, dynamic_ncols=True, mininterval=1.0)
         while self.global_step < self.cfg.distill_steps:
             with stopwatch.time("train"):
                 sampled = self.seq_replay.sample(
@@ -461,6 +487,7 @@ class Workspace:
             wb_run_name=self.cfg.wb_run, wb_group_name=self.cfg.wb_group, config=self.cfg_dict,
         )
         self.saver = common_utils.TopkSaver(save_dir=self.work_dir, topk=1)
+        self.load_resume()
 
         if self.offline_source:
             self._train_offline()
@@ -474,7 +501,7 @@ class Workspace:
         obs, _ = self.train_env.reset()
         self.seq_replay.new_episode(obs["state"])
         pbar = tqdm(total=self.cfg.distill_steps, desc="simdist distill",
-                    dynamic_ncols=True, mininterval=1.0)
+                    initial=self.global_step, dynamic_ncols=True, mininterval=1.0)
         recent: list[float] = []
         while self.global_step < self.cfg.distill_steps:
             with stopwatch.time("act"):
@@ -519,19 +546,141 @@ class Workspace:
         if steps <= 0:
             print("finetune_steps<=0; skipping stage 2")
             return
+        if self.demo_replay.size() == 0:
+            raise RuntimeError(
+                f"finetune_steps={steps} but target_demo_path is empty -- stage 2 "
+                "has no TARGET demos to fit. Set target_demo_path for this task.")
         print(common_utils.wrap_ruler("stage 2: finetune dynamics+policy on TARGET demos"))
         stopwatch = common_utils.Stopwatch()
-        pbar = tqdm(total=steps, desc="simdist finetune", dynamic_ncols=True, mininterval=1.0)
-        for step in range(steps):
+        pbar = tqdm(total=steps, desc="simdist finetune", initial=self.finetune_step,
+                    dynamic_ncols=True, mininterval=1.0)
+        if self.finetune_step:
+            print(f"[resume] finetune continues at {self.finetune_step}/{steps}")
+        for step in range(self.finetune_step, steps):
             states, actions, rewards = self.demo_replay.sample(self.cfg.batch_size, self.H, "cuda")
             self.stat.append(self.agent.update_finetune(states, actions, rewards))
             self.global_step += 1
+            self.finetune_step = step + 1
             pbar.update(1)
             if (step + 1) % self.cfg.log_per_step == 0:
                 self.log_and_save(stopwatch, phase="finetune")
         pbar.close()
         # final eval + save
         self.log_and_save(stopwatch, phase="finetune")
+
+    # --------------------------------------------------------------- resume
+    def _resume_path(self) -> str:
+        if self.cfg.resume in ("auto", "1", "AUTO"):
+            return os.path.join(self.work_dir, "resume.pt")
+        return self.cfg.resume
+
+    def save_resume(self, phase: str = "distill"):
+        """Write FULL training state so a killed run continues instead of restarting.
+
+        TopkSaver's model0.pt/latest.pt hold WEIGHTS ONLY. Restarting from those is
+        not a resume: Adam's moments restart at zero and global_step rewinds to 0,
+        so the lr/stddev schedules replay and the run re-does work it already did.
+        Written atomically (tmp + os.replace) so a kill mid-write cannot leave a
+        truncated resume.pt -- the previous one stays valid.
+        """
+        state = {
+            "agent": self.agent.state_dict(),
+            "distill_opt": self.agent.distill_opt.state_dict(),
+            "finetune_opt": (self.agent.finetune_opt.state_dict()
+                             if self.agent.finetune_opt is not None else None),
+            "global_step": self.global_step,
+            "global_episode": self.global_episode,
+            "train_step": self.train_step,
+            "finetune_step": self.finetune_step,
+            "phase": phase,
+            "rng_torch": torch.get_rng_state(),
+            "rng_cuda": torch.cuda.get_rng_state_all(),
+            "rng_numpy": np.random.get_state(),
+            "rng_python": random.getstate(),
+            # provenance / sanity-check fields
+            "distill_steps": self.cfg.distill_steps,
+            "offline_source": bool(self.offline_source),
+            "source_replay_path": self.cfg.source_replay_path,
+        }
+        path = os.path.join(self.work_dir, "resume.pt")
+        tmp = path + ".tmp"
+        torch.save(state, tmp)
+        os.replace(tmp, path)
+
+    def load_resume(self) -> bool:
+        """Restore state written by save_resume(). Returns True if anything loaded."""
+        path = self._resume_path()
+        if not path:
+            return False
+        if not os.path.exists(path):
+            print(f"[resume] {path} not found -- starting from scratch")
+            return False
+        state = torch.load(path, map_location="cpu", weights_only=False)
+
+        if not (isinstance(state, dict) and "agent" in state):
+            # A TopkSaver latest.pt/model0.pt: weights only. Runs that died before
+            # save_resume() existed can still skip their completed steps, but this
+            # is a DEGRADED resume -- say so loudly rather than let it look exact.
+            self.agent.load_state_dict(state)
+            self.global_step = max(int(self.cfg.resume_step), 0)
+            self.train_step = self.global_step // max(self.cfg.update_freq, 1) \
+                if not self.offline_source else self.global_step
+            print(f"[resume] DEGRADED: {path} is a weights-only ckpt.")
+            print(f"[resume]   - weights restored; Adam moments restart at ZERO")
+            print(f"[resume]   - RNG stream not restored")
+            print(f"[resume]   - global_step set from --resume_step to {self.global_step}"
+                  + ("  <-- 0 means the schedules replay from the start; pass the "
+                     "step the dead run reached" if self.global_step == 0 else ""))
+            return True
+
+        # Refuse silently-wrong resumes rather than producing a run whose numbers
+        # cannot be compared to anything (CLAUDE.md rule 17: the env/data follow
+        # the ckpt, so a mismatched replay path is a different experiment).
+        if bool(state.get("offline_source")) != bool(self.offline_source):
+            raise RuntimeError(
+                f"[resume] offline_source mismatch: ckpt={state.get('offline_source')} "
+                f"vs cfg={bool(self.offline_source)}")
+        old_replay = state.get("source_replay_path", "")
+        if old_replay and old_replay != self.cfg.source_replay_path:
+            raise RuntimeError(
+                f"[resume] source_replay_path changed:\n  ckpt: {old_replay}\n"
+                f"  cfg : {self.cfg.source_replay_path}\n"
+                "Resuming onto different data is a different experiment; "
+                "point --source_replay_path back, or drop --resume.")
+
+        self.agent.load_state_dict(state["agent"])
+        self.agent.distill_opt.load_state_dict(state["distill_opt"])
+        if state.get("finetune_opt") is not None and self.agent.finetune_opt is not None:
+            self.agent.finetune_opt.load_state_dict(state["finetune_opt"])
+        self.global_step = int(state["global_step"])
+        self.global_episode = int(state["global_episode"])
+        self.train_step = int(state["train_step"])
+        self.finetune_step = int(state.get("finetune_step", 0))
+
+        # RNG: keep the stream going instead of replaying the same batches/seeds.
+        torch.set_rng_state(state["rng_torch"])
+        if torch.cuda.is_available() and state.get("rng_cuda"):
+            try:
+                torch.cuda.set_rng_state_all(state["rng_cuda"])
+            except Exception as e:   # device-count change -> not fatal
+                print(f"[resume] could not restore CUDA RNG ({e}); continuing")
+        np.random.set_state(state["rng_numpy"])
+        random.setstate(state["rng_python"])
+
+        old_total = state.get("distill_steps")
+        if old_total != self.cfg.distill_steps:
+            print(f"[resume] NOTE distill_steps changed {old_total} -> "
+                  f"{self.cfg.distill_steps}")
+        print(f"[resume] loaded {path}: phase={state.get('phase')} "
+              f"global_step={self.global_step} train_step={self.train_step} "
+              f"finetune_step={self.finetune_step} "
+              f"(distill_steps={self.cfg.distill_steps})")
+        if not self.offline_source:
+            print("[resume] WARNING online stage-1: seq_replay is NOT part of the "
+                  "resume state, so the on-policy replay restarts empty and "
+                  "warm_up() runs again. Only the offline arm "
+                  "(--source_replay_path) resumes exactly.")
+        return True
 
     def log_and_save(self, stopwatch, phase: str):
         elapsed = max(stopwatch.elapsed_time_since_reset, 1e-6)
@@ -558,6 +707,7 @@ class Workspace:
                 source_score = self.eval(seed=eval_seed, env_params=self._source_eval_params())
                 self.stat["score/source_score"].append(source_score)
         saved = self.saver.save(self.agent.state_dict(), eval_score, save_latest=True)
+        self.save_resume(phase=phase)
         self.stat.summary(self.global_step, reset=True)
         pol_str = f"  policy_score={policy_score:.3f}" if policy_score is not None else ""
         src_str = f"  source_score={source_score:.3f}" if source_score is not None else ""

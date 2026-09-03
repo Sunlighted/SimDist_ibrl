@@ -147,6 +147,61 @@ else
 fi
 echo "[env] $PY"
 
+# ------------------------------------------------------------------ preflight
+# A failed CUDA init used to surface ~300 lines into train_simdist_dyna_ibrl.py
+# as `RuntimeError: CUDA-capable device(s) is/are busy or unavailable` at the
+# first .to(device) -- after the queue wait and after the env/asset checks had
+# all passed, with nothing in the log to say WHICH device was refused. On a
+# MIG-partitioned node the usual causes are (a) the slice is held by another
+# process (compute mode is EXCLUSIVE_PROCESS on most CC nodes), (b) the job did
+# not actually get the slice CUDA_VISIBLE_DEVICES names, or (c) /dev/nvidia-caps
+# is not visible inside the container -- MIG needs it and --nv does not always
+# bind it. Which of the three it is, is only distinguishable from the values
+# below, so print them and then prove a context can be created BEFORE committing
+# 12 h of walltime.
+echo "[gpu] node=$(hostname)  job=${SLURM_JOB_ID:-?}  task=${SLURM_ARRAY_TASK_ID:-?}"
+echo "[gpu] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+echo "[gpu] SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-<unset>}  SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>}"
+nvidia-smi -L 2>&1 | sed 's/^/[gpu] /' || echo "[gpu] nvidia-smi -L failed on the host"
+ls /dev/nvidia-caps/ 2>/dev/null | tr '\n' ' ' | sed 's/^/[gpu] nvidia-caps: /'; echo
+# Retry rather than fail: the observed failure mode is "CUDA-capable device(s)
+# is/are busy or unavailable" raised at the FIRST .to(device), on a job whose
+# CUDA_VISIBLE_DEVICES, device_count and nvidia-caps all check out -- and it hits
+# some arms far more than others, which points at WHEN a task starts rather than
+# what it runs. The likely mechanism is slice hand-off: an array task inherits a
+# MIG slice whose previous occupant has not finished tearing its context down
+# (these train scripts end in os._exit(0), which skips CUDA teardown entirely),
+# so whoever is next in line on that slice sees it as busy for a few seconds.
+# Waiting is the whole fix; the alternative is losing a 12 h allocation to a race
+# that resolves itself in under a minute.
+for ATTEMPT in 1 2 3 4 5; do
+    # `|| PF=$?` is load-bearing twice over: `set -e` is on, so a bare failing
+    # command would abort the script here and the retry below would never run;
+    # and `|| true` would not do -- it makes $? always 0, so every attempt would
+    # look like a success.
+    PF=0
+    $PY - <<'PREFLIGHT' || PF=$?
+import sys, torch
+ok = torch.cuda.is_available()
+print(f"[gpu] torch {torch.__version__}  cuda_available={ok}  count={torch.cuda.device_count()}")
+if not ok:
+    sys.exit("no CUDA device visible inside the container")
+try:
+    torch.zeros(8, device="cuda").sum().item()          # forces context creation
+    print(f"[gpu] context OK on {torch.cuda.get_device_name(0)}")
+except Exception as e:
+    sys.exit(f"cannot create a CUDA context -- {type(e).__name__}: {e}")
+PREFLIGHT
+    if [ "$PF" -eq 0 ]; then break; fi
+    if [ $ATTEMPT -lt 5 ]; then
+        echo "[gpu] preflight attempt $ATTEMPT failed (rc=$PF); retrying in $((ATTEMPT*30))s"
+        sleep $((ATTEMPT * 30))
+    fi
+done
+[ $PF -eq 0 ] || { echo "[gpu] preflight failed 5x over ~5 min; the slice is not"; \
+                   echo "[gpu] transiently busy -- not starting the run"; exit $PF; }
+
+
 JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" cluster/jobs_threading_margin.txt)
 ARM=${JOB% *}; SEED=${JOB##* }
 echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
@@ -162,6 +217,13 @@ DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
 # One head, horizon 5, diverse_v2 source. Shared by plain_h5 and both dyna arms
 # so the planner and the actors reason over the SAME model.
 STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
+# 5-head ensemble, a SEPARATE distillation run -- not the same weights with more
+# heads. Its encoder, value head and policy head all differ, so an arm that swaps
+# this in swaps all four channels the world model feeds (representation, prior,
+# Q warm-start, imagined data) at once, not just the ensemble. Keep that in mind
+# when reading dynaibrl_plain against dynaibrl_dynens: the difference is "these
+# two stage-1s", not "ensemble averaging".
+STAGE1_DYNENS=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
 # Target-domain BC prior for the model-free arm, on sat_160000 (see above).
 BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
 
@@ -172,6 +234,9 @@ MARGIN_STEPS=${MARGIN_STEPS:-50000}
 for f in "$DEMOS" "$STAGE1_PLAIN"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_threading_margin.sh)"; exit 1; }
 done
+case $ARM in dynaibrl_dynens*)
+    [ -f "$STAGE1_DYNENS" ] || { echo "MISSING asset: $STAGE1_DYNENS"; exit 1; } ;;
+esac
 if [ "$ARM" = "ibrl_m005anneal0" ] && [ ! -f "$BC_PRIOR" ]; then
     echo "MISSING $BC_PRIOR -- run cluster/job_threading_bc_s160.sh first"; exit 1
 fi
@@ -202,6 +267,28 @@ case $ARM in
     # Dyna was a null (0.139 vs 0.124, n=10, ns) and was measured under the
     # MPPI-proposal metric on the pre-fix implementation, so it says little here.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_dynens)
+    # Same recipe as dynaibrl_plain, on the 5-head stage-1. This is what the
+    # workstation runs used (dynaibrl_m005anneal*, steady ~0.88); the plain arms
+    # in this batch are the deliberate single-head counterpart.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_dynens_sgft)
+    # Differs from dynaibrl_dynens in EXACTLY one field.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
