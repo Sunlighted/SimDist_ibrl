@@ -54,7 +54,8 @@ $R release/data/mimicgen/coffee_anchor_pool_4k  $T/release/data/mimicgen/
 
 echo "=== 4/4  job files ==="
 $R cluster/job_sqcof_dynaibrl.sh cluster/jobs_sqcof_dynaibrl.txt \
-   cluster/jobs_sqcof_dynaibrl_round2.txt \
+   cluster/jobs_sqcof_dynaibrl_round2.txt cluster/jobs_sqcof_dynaibrl_noanneal.txt \
+   cluster/make_joblist.py \
    cluster/README_sqcof_dynaibrl.md $T/cluster/
 
 echo

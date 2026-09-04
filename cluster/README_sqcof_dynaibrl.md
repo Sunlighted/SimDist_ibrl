@@ -29,6 +29,30 @@ before assuming the dynens Coffee arms exist.**
 | `jobs_sqcof_dynaibrl.txt` | 40 | arm-major, the two **dynens** arms × 2 tasks × 10 seeds |
 | `jobs_sqcof_dynaibrl_round2.txt` | 80 | **seed-major**, the four remaining arms × 2 tasks × 10 seeds |
 
+`jobs_sqcof_dynaibrl_noanneal.txt` (80 rows) is the "everything except the
+annealed arms" list — the four constant-margin arms (`_m001`, `_sgft`,
+`_plain_m001`, `_plain_sgft`) on both tasks.
+
+Do not pick arms by `--array` arithmetic; generate a list by name:
+
+```bash
+python3 cluster/make_joblist.py --seeds 10 \
+  --arms sq_dynaibrl_m001,sq_dynaibrl_sgft,sq_dynaibrl_plain_m001,sq_dynaibrl_plain_sgft,\
+cof_dynaibrl_m001,cof_dynaibrl_sgft,cof_dynaibrl_plain_m001,cof_dynaibrl_plain_sgft \
+  --out cluster/jobs_sqcof_dynaibrl_noanneal.txt --skip-done
+```
+
+It rejects unknown arm names, refuses to mix Threading arms with `sq_`/`cof_`
+ones (different job scripts), prints the exact `--array` to use, and with
+`--skip-done` drops rows whose `train.log` already reached step 100000. Run it on
+the cluster for `--skip-done` to see the real `exps/` tree.
+
+⚠️ Dropping the annealed arms costs you the `_m001` vs anneal comparison, i.e.
+the margin-schedule question. That is fine on Square, where `sq_dynaibrl` already
+ran 10 seeds — but on Coffee **nothing** annealed has ever run (see the `--array`
+bug above), so a no-anneal Coffee batch leaves `_m001` with only `score/policy_only`
+as a reference.
+
 Round 2 is seed-major on purpose: `--array=1-8` is a one-seed smoke across every
 arm, `1-40` is 5 seeds of everything, `1-80` is the full batch. An arm-major list
 can only be truncated to "some arms, all seeds", which is never what you want

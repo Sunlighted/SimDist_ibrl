@@ -49,6 +49,17 @@ JOBS=cluster/jobs_threading_margin_m001.txt \
 `--export=ALL,JOBS` is not optional — without it the job silently uses the
 default list.
 
+Both `_sgft` arms have already run, and the 0.05 → 0 schedule is not being
+re-spent, so `jobs_threading_margin_m001.txt` **is** the remaining work: the two
+constant-margin, shaping-off arms, 10 seeds each. Build any other subset by name
+with `cluster/make_joblist.py` rather than by `--array` arithmetic.
+
+⚠️ The `_sgft` numbers they will be read against were produced by an earlier
+submission. Before putting them on one chart, check `[EVAL ENV]` / `[setup]` in
+both `train.log`s agree on task, σ, `strict`, and `ep_len` (CLAUDE.md rule 19),
+and that the `_sgft` runs used the same `stage1_ckpt` (rule 17: the eval
+environment follows the checkpoint).
+
 `plain_h5`'s deliverable **is** the planner, so its `score/score` is the MPPI
 score and `--eval_policy_only 1` logs the bare policy alongside as
 `score/policy_only`. The Dyna arms have no planner at eval; their `score/score`

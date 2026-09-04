@@ -53,6 +53,7 @@ $R --include='model0.pt' --include='cfg.yaml' --exclude='*' \
 echo "=== 4/4  job files ==="
 $R cluster/job_threading_margin.sh cluster/jobs_threading_margin.txt \
    cluster/jobs_threading_margin_m001.txt \
+   cluster/make_joblist.py \
    cluster/job_threading_bc_s160.sh cluster/jobs_threading_bc_s160.txt \
    cluster/README_threading_margin.md $T/cluster/
 
