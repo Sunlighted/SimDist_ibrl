@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-08-21
+Last updated: 2026-09-04
 
 ---
 
@@ -15,8 +15,8 @@ Last updated: 2026-08-21
 
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
-| **`docs/findings.md`** | ~1400 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~1190 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)**。 |
+| **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
+| **`docs/simdist.md`** | ~1330 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定(不是 base 分数)+「锚向谁」是独立于 bc_loss 的渠道** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
 | **`docs/infra.md`** | ~410 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义。 |
@@ -49,6 +49,9 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
 2. **压低模型误差是唯一有效的方向**：dynamics ensemble（5 头平均，§31）把 0.88 推到
    **0.962**，是第一个在纯 model-based planning 内部越过 0.85 的东西；≈3 头饱和
    （剩下的是 bias 不是 variance）。**悲观（value 或几何分歧）全部无效**（§29/§31）。
+   ⚠️ **但这个增益与 stage-2 的 source anchor 强互补、不可加**（simdist §44 的 2×2）：
+   `anchor λ=0` 时 5 头集成只值 **+0.019**，λ=1 时值 +0.135；反过来 anchor 在 plain base 上
+   只值 +0.055、在 dynens 上值 +0.172（交互 t=4.2）。**报任何一边的增益都要写清另一边是开还是关。**
 3. **value 不要动**（§33）：MPPI 的候选区分信号只有 `std_i(γ^H V)=0.0068`（量程的
    1.4%），任何离线重拟合的残差都同量级 ⇒ elite 被改写 ⇒ 崩。约束是"value 必须与
    **延续策略**一致"，不是绝对准确（§41 在 oracle dynamics 上独立复现）。
@@ -168,11 +171,18 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   BC（adv_std 0.011 vs Q_std 0.258）⇒ 用 RWR**；margin 崩塌的真正归因。
 - **§42** ★ stage-2 的 policy 受**两个竞争条件**约束（靠近 π_src ⊗ target 成功率），
   `bc_anchor_coef=λ≈1` 在弱 base 上 **+0.164 (t=112.6)**、强 base 上测不到 ⇒ 交互 t=5.2。
+  ⚠️ 「只对弱 base 值钱」这个推广已被 **§44** 推翻（调节变量是 dynamics 误差，不是 base 分数）。
 - **§43** ★ **anchor 形式轴封闭**：现役 MSE **就是** KL（等协方差高斯下 W2/JS/Hellinger/χ² 全是
   同一标量的单调函数 ⇒ 换散度是空操作）。53 标定格 + 12 adapt run 证出**形式只通过一个渠道起作用**：
   `score ≈ 1.065 − 11.1·bc_loss`（R²=0.93，残差 sd 0.010 < seed 噪声）。度量必须是 Fisher（参数空间
   L2 付 3.4× 代价 ⇒ −0.277）；目标必须是 π_src（weight decay 结构性够不到）；**罚 vs 硬约束、尾部形状、
   偏差落在哪个相位全部无因果**。★ 尾部：Spearman 0.90 但干预后效应 0 —— 共线变量必须造臂分开。
+- **§44** ★★ anchor 的收益由 **dynamics 精度**定(plain +0.055 vs dynens +0.172,交互 t=4.2)
+  ⇒ §42「弱 base 增益大」的推广被推翻(两个 base 的 λ=0 分数几乎相同);**anchor 目标必须是
+  π_src 本身** —— 换成数据集记录的 action 在 `bc_loss` 匹配下仍掉 −0.081 (t=2.5) ⇒
+  `D_SRC` 是独立于 `bc_loss` 的第二条渠道(§43 只测了后者,因为它把前者标定固定了);
+  data-action 的 D_SRC 下界 0.151(靶点 6.3×,λ 拉 100× 不动)= 结构性不可达,与 F2 同型;
+  `policy_only` 0.42 → 0.56(π_src anchor) vs **0.23**(data anchor)。
 
 **`docs/demo-collection.md`**
 - **§35** 什么属性决定 adapt：成功率**无关**（ρ=+0.20）；4×4 交叉析因（policy 53% /

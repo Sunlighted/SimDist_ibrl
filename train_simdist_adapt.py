@@ -94,6 +94,46 @@ class AdaptConfig(common_utils.RunConfig):
     bc_anchor_sat: float = 0.0       # >0 => saturating; takes precedence over eps
     bc_l2init_coef: float = 0.0      # >0 => + coef * ||theta - theta_src||^2
     bc_weight_decay: float = 0.0     # >0 => Adam weight_decay on the policy head
+    # ---- (axis 2) WHAT the anchor pulls TOWARD (default 0 => legacy path) ----
+    # 0 = pi_src's own actions on the sampled SOURCE states (frozen before stage-2).
+    # 1 = the SOURCE DATASET's RECORDED actions at exactly those same states. Same
+    #     states, same lambda, only the regression target changes -- a clean single
+    #     variable separating two readings of why the anchor works:
+    #       (a) "stay self-consistent with the frozen distilled V^{pi_src}" => the
+    #           target must be pi_src ITSELF, or
+    #       (b) "just stay inside source-like behaviour"  => any source action does.
+    #     NOTE `bc_anchor_path` is an IBRL replay (exploration noise, ~61% success,
+    #     |a| mean 0.414 vs pi_src's 0.339), i.e. a NOISIER and WORSE target than
+    #     pi_src(s); the policy cannot fit it exactly, so at matched lambda this arm
+    #     sits at a DIFFERENT achieved distance. D_SRC is always reported against
+    #     pi_src(s) so both arms are calibrated on the SAME axis (docs/simdist.md 43).
+    bc_anchor_data_actions: int = 0
+    # ---- (axis 2) WHICH source states to anchor on (all default 0/off => legacy) ----
+    # 42's stated rationale was "pin only where the demos never went", but the code
+    # samples the source pool UNIFORMLY. These knobs re-weight the anchor's state
+    # distribution D by how FAR a source state is from the target-demo support, so a
+    # given pinning can (in principle) be bought at a LOWER `bc_loss` => push the
+    # (D_SRC, bc_loss) frontier OUTWARD instead of sliding along it (43's open axis).
+    #   bc_anchor_far_frac  >0 : keep only the far-most fraction of the pool (hard gate)
+    #   bc_anchor_far_power >0 : soft weight w ~ (far_score - min + eps)^power
+    # Both act ONLY on the training-time sampling distribution. `D_SRC` is still
+    # measured on the FULL uniform pool, so it keeps its 42/43 meaning and the arms
+    # stay calibratable against the F1 lambda frontier.
+    # bc_anchor_far_metric picks what "far" means -- these are NOT interchangeable
+    # (measured: Spearman = -0.58 between them), so they get separate arms:
+    #   "state" : per-dim-standardised L2 nearest-neighbour distance to a demo state.
+    #             ⚠️ Probe finding: the pool is ALREADY disjoint from the demo support
+    #             (0.00% of 40k points sit within 2x the demos' own median spacing;
+    #             nearest is 2.2x), so this metric has little left to gate on.
+    #   "ntk"   : -I(s), I(s) = mean_d |<grad_th pi(s), grad_th pi(s_d)>| over the last
+    #             linear layer (= <h(s),h(s_d)> * <tanh'(s),tanh'(s_d)>), i.e. how much
+    #             pinning s actually MOVES the policy on the demos -- the quantity that
+    #             causes the bc_loss degradation. ⚠️ Probe finding: near-uniform
+    #             (top-10% of states carry only 13.0% of total interference) and already
+    #             at 0.88x the demo-on-demo level, a LayerNorm consequence.
+    bc_anchor_far_frac: float = 0.0
+    bc_anchor_far_power: float = 0.0
+    bc_anchor_far_metric: str = "state"
     # Build the source pool + snapshot pi_src even when the anchor is OFF, purely to
     # report D_SRC (mean |pi_theta(s_src) - pi_src(s_src)|, the metric docs/simdist.md
     # §42 tabulates) at the end of stage-2. Needed to calibrate F2/F3 to F1's D_SRC.
@@ -436,25 +476,99 @@ class AdaptWorkspace:
         None) when the anchor is off. Called at the top of `bc_finetune`, where
         `self.agent.model.policy` is still exactly the stage-1 (pi_src) head."""
         if self.cfg.bc_anchor_coef <= 0 and not self.cfg.bc_measure_dsrc:
-            return None, None
+            return None, None, None, None
         import h5py
         rng = np.random.RandomState(self.cfg.seed)
+        want_data = bool(self.cfg.bc_anchor_data_actions)
         with h5py.File(self.cfg.bc_anchor_path, "r") as f:
             keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
             pick = rng.choice(len(keys), min(self.cfg.bc_anchor_episodes, len(keys)),
                               replace=False)
             S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
                                 for i in pick])
+            # (axis 2) the dataset's own actions at those states. In this dataset
+            # state and action arrays are the SAME length per episode (verified),
+            # so the concatenation is aligned index-for-index with S and the state
+            # pool is IDENTICAL to the legacy arm -- the target is the only change.
+            A = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["actions"])
+                                for i in pick]) if want_data else None
         if len(S) > self.cfg.bc_anchor_states:
-            S = S[rng.choice(len(S), self.cfg.bc_anchor_states, replace=False)]
+            j = rng.choice(len(S), self.cfg.bc_anchor_states, replace=False)
+            S = S[j]
+            if A is not None:
+                A = A[j]
         pool = torch.as_tensor(S, dtype=torch.float32, device="cuda")
         with torch.no_grad():
-            tgt = torch.cat([self.agent.model.policy_action(pool[i:i + 8192])
+            ref = torch.cat([self.agent.model.policy_action(pool[i:i + 8192])
                              for i in range(0, len(pool), 8192)])
-        print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source episodes "
-              f"-> {len(pool)} states | pi_src targets frozen "
-              f"(|a| mean {float(tgt.abs().mean()):.4f})")
-        return pool, tgt
+        if want_data:
+            assert A is not None and len(A) == len(S), "anchor state/action misaligned"
+            tgt = torch.as_tensor(A, dtype=torch.float32, device="cuda")
+            gap = float((tgt - ref).abs().mean())
+            print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source "
+                  f"episodes -> {len(pool)} states | DATASET-ACTION targets "
+                  f"(|a| mean {float(tgt.abs().mean()):.4f}; "
+                  f"pi_src |a| mean {float(ref.abs().mean()):.4f}; "
+                  f"mean|a_data - pi_src(s)| = {gap:.4f})")
+        else:
+            tgt = ref
+            print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source episodes "
+                  f"-> {len(pool)} states | pi_src targets frozen "
+                  f"(|a| mean {float(tgt.abs().mean()):.4f})")
+        # (axis 2) training-time sampling weights over the SAME pool. None => uniform.
+        w = self._anchor_far_weights(pool)
+        # `ref` is ALWAYS pi_src's actions => D_SRC keeps its docs/simdist.md 42/43
+        # meaning (distance to pi_src) no matter what the anchor regresses onto.
+        return pool, tgt, ref, w
+
+    def _anchor_far_weights(self, pool):
+        """(axis 2) Per-state sampling weights from "how far / how harmless this
+        source state is w.r.t. the TARGET demo support". Returns None when both
+        knobs are off (=> uniform sampling, legacy path bit-for-bit)."""
+        if self.cfg.bc_anchor_far_frac <= 0 and self.cfg.bc_anchor_far_power <= 0:
+            return None
+        demo = torch.cat([ep["state"] for ep in self.demo_replay.episodes]).to(
+            pool.device, torch.float32)
+        metric = self.cfg.bc_anchor_far_metric
+        with torch.no_grad():
+            if metric == "state":
+                sd = pool.std(0).clamp_min(1e-6)
+                A, B = pool / sd, demo / sd
+                far = torch.cat([torch.cdist(A[i:i + 2048], B).min(1).values
+                                 for i in range(0, len(A), 2048)])
+            elif metric == "ntk":
+                # last-layer NTK: grad_W pi(s) = diag(tanh'(u)) (x) h(s)
+                m = self.agent.model
+                trunk, head = m.policy[:-2], m.policy[-2]
+                def hf(x):
+                    z = m.encode(x) if m.cfg.shared_encoder else m.enc_pi(x)
+                    h = trunk(z)
+                    return h, 1.0 - torch.tanh(head(h)).pow(2)
+                Hd, Td = hf(demo)
+                out = []
+                for i in range(0, len(pool), 1024):
+                    Hs, Ts = hf(pool[i:i + 1024])
+                    out.append(((Hs @ Hd.T) * (Ts @ Td.T)).abs().mean(1))
+                far = -torch.cat(out)          # low interference == "far"
+            else:
+                raise ValueError(f"bad bc_anchor_far_metric {metric!r}")
+        w = torch.ones_like(far)
+        if self.cfg.bc_anchor_far_frac > 0:    # hard gate: keep the far-most fraction
+            k = max(1, int(round(self.cfg.bc_anchor_far_frac * len(far))))
+            thr = torch.topk(far, k).values.min()
+            w = (far >= thr).float()
+        if self.cfg.bc_anchor_far_power > 0:   # soft: w ~ (far - min + eps)^power
+            f = far - far.min() + 1e-6
+            w = w * (f / f.max()).pow(self.cfg.bc_anchor_far_power)
+        w = w.clamp_min(0)
+        assert float(w.sum()) > 0, "axis-2 weights collapsed to all-zero"
+        kept = int((w > 0).sum())
+        print(f"[anchor-axis2] metric={metric} frac={self.cfg.bc_anchor_far_frac} "
+              f"power={self.cfg.bc_anchor_far_power} | far score "
+              f"p0={float(far.min()):.3f} p50={float(far.median()):.3f} "
+              f"p100={float(far.max()):.3f} | {kept}/{len(far)} states get weight, "
+              f"effective sample size {float(w.sum()**2 / (w*w).sum()):.0f}")
+        return w
 
     def _build_dyn_anchor(self):
         """Snapshot (z, a) -> next_stage1(z, a) on SOURCE data BEFORE stage-3 moves
@@ -493,7 +607,7 @@ class AdaptWorkspace:
     def bc_finetune(self):
         print(common_utils.wrap_ruler("stage 2: TARGET policy-only BC (encoder frozen)"))
         self.agent.train()
-        anchor_pool, anchor_tgt = self._build_source_anchor()
+        anchor_pool, anchor_tgt, anchor_ref, anchor_w = self._build_source_anchor()
         pbar = tqdm(total=self.cfg.bc_steps, desc="policy BC", dynamic_ncols=True,
                     mininterval=1.0)
         for step in range(self.cfg.bc_steps):
@@ -501,8 +615,12 @@ class AdaptWorkspace:
                 self.cfg.bc_batch_size, self.H, "cuda")
             a_s = a_a = None
             if anchor_pool is not None and self.cfg.bc_anchor_coef > 0:
-                j = torch.randint(len(anchor_pool), (self.cfg.bc_anchor_batch,),
-                                  device=anchor_pool.device)
+                if anchor_w is None:
+                    j = torch.randint(len(anchor_pool), (self.cfg.bc_anchor_batch,),
+                                      device=anchor_pool.device)
+                else:   # (axis 2) re-weighted state distribution D
+                    j = torch.multinomial(anchor_w, self.cfg.bc_anchor_batch,
+                                          replacement=True)
                 a_s, a_a = anchor_pool[j], anchor_tgt[j]
             metrics = self.agent.update_bc_policy(
                 states, actions, lr=self.cfg.bc_lr,
@@ -526,13 +644,16 @@ class AdaptWorkspace:
             with torch.no_grad():
                 cur = torch.cat([self.agent.model.policy_action(anchor_pool[i:i + 8192])
                                  for i in range(0, len(anchor_pool), 8192)])
-                d = cur - anchor_tgt
+                d = cur - anchor_ref          # ALWAYS measured against pi_src
                 d_src = float(d.abs().mean())
                 d_l2 = float(d.norm(dim=-1).mean())
             print(f"[D_SRC] {d_src:.4f}  (L2mean {d_l2:.4f})  "
                   f"bc_loss {metrics['bc/policy_loss']:.5f}  "
                   f"| anchor={self.cfg.bc_anchor_coef} eps={self.cfg.bc_anchor_eps} "
-                  f"l2init={self.cfg.bc_l2init_coef} wd={self.cfg.bc_weight_decay}")
+                  f"l2init={self.cfg.bc_l2init_coef} wd={self.cfg.bc_weight_decay} "
+                  f"data_act={self.cfg.bc_anchor_data_actions} "
+                  f"far={self.cfg.bc_anchor_far_metric}/{self.cfg.bc_anchor_far_frac}/"
+                  f"{self.cfg.bc_anchor_far_power}")
             self.stat.append({"bc/D_SRC": d_src})
 
     # ------------------------------------ stage 3: TARGET dynamics adaptation

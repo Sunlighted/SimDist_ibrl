@@ -873,6 +873,21 @@ dynens 是 `adapt_value=0`(value 头全程冻结在 source 蒸馏的 V_src)。�
 ⚠️ **eval_oracle_dyn_mppi.py 的坑**:`AdaptWorkspace.__init__` 劫持 stdout;脚本 `log()` 走 **stderr**。跑它**不能 `2>/dev/null`**(结果全丢),要 `2>&1` 一起 captured。
 **⇒ 三条路(value-adapt / 悲观 / oracle)现在都有 300+ 局实证:只有把 learned dynamics 误差压准这一条能越过 0.96(oracle 极限 99.3%)。**
 
+### ★★ 2026-09-04 补: dynens 的增益与 stage-2 的 source anchor **强互补,不可加**(simdist §44)
+同一 harness(`sat_160000_s201` n=20、40k、20–40k 窗口、σ=0.1、`original_mppi`)下的 2×2:
+
+| stage-1 | anchor λ=0 | anchor λ=1 | Δ(anchor) |
+|---|---:|---:|---:|
+| plain(1 头) | 0.767 (n=5) | 0.822 (n=5) | +0.055 (t=2.2) |
+| **dynens(5 头)** | 0.786 (n=2) | **0.957** (n=3) | **+0.172** (t=15.6) |
+| Δ(ensemble) | **+0.019** | **+0.135** | 交互 **+0.116 (t=4.2)** |
+
+⇒ **λ=0 时 5 头集成几乎白给(+0.019)**;本节 headline 的 0.88 → 0.962 是**集成 × anchor 一起**
+才有的。反过来 anchor 的价值也由 dynamics 精度定(不是由 base 分数定,§42 那条推广已被推翻)。
+机制上两者咬在一起:anchor 保住 frozen 的蒸馏 V^{π_src},而"value 与延续策略自洽"只有在
+dynamics 误差不再主导时才 binding —— 与 §33 的限定语("dynamics 越准,换 value 的代价越小")
+是同一枚硬币的两面。**⇒ 报 dynens 增益时必须写清 anchor 那一格是开还是关。**
+
 ---
 
 ## 33. 为什么 value adapt 会让 SimDist 变差 —— 根因 = 排序信号只有 0.0068（2026-07-25~28）

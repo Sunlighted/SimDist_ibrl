@@ -292,9 +292,15 @@ success-versus-interaction curve rather than at a single point.
 \end{definition}
 
 Both axes matter and they order methods differently, which is the subject of
-Section~\ref{empirical}: methods that are strongest asymptotically are not the
-ones that move first, and the crossover point --- not the endpoint --- is what
-a sim-to-real practitioner actually operates at.
+Section~\ref{empirical}: the methods that are strongest asymptotically are not
+the ones that move first. We stress that the regime of interest is the
+\emph{pre-asymptotic} one. A sim-to-real practitioner operates at a budget
+fixed by how much target interaction is affordable, which in our setting is
+strictly less than what unassisted value learning needs; asymptotic performance
+under an unbounded budget is therefore not the objective, and we invoke it only
+as a diagnostic reference (Section~\ref{sec:mf-vs-mb}) to establish what a
+given target domain \emph{admits}, so that a method's plateau can be attributed
+either to the budget or to its own approximations.
 
 \paragraph{Measuring the gap.}
 We report the magnitude of a dynamics gap by the \emph{zero-shot drop} of the
@@ -366,3 +372,603 @@ which is systematically optimistic; and comparisons across checkpoints are only
 made when the full environment configuration (shift parameters, initial-state
 distribution, success predicate, planner hyper-parameters) is verified
 identical. We report the noise floor of each comparison alongside the effect.
+
+% ============================================================================
+% NOTE (preamble additions needed for the floats below):
+%   \usepackage{graphicx}
+%   \usepackage{booktabs}
+%   \usepackage{caption}      % for \captionof inside minipage
+%   \usepackage{subcaption}   % for \subcaptionbox / subfigure
+%   \usepackage{multirow}
+%   \usepackage{wrapfig}      % for the wrapfigure in Sec.~\ref{sec:what-to-adapt}
+%   \usepackage{xcolor}
+%   \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
+%   (\shortstack and \underline are kernel; no package needed)
+% ============================================================================
+
+% ---------------------------------------------------------------------------
+% TODO(global): task set. Threading_D0 / Coffee_D0 / Square_D0 are running;
+% ThreePieceAssembly (TPA) is being tuned. Every float below is written for
+% 4 tasks; if TPA does not land, delete the last column/panel and change
+% "four tasks" -> "three tasks" in the text. Search for [TPA] to find them.
+% TODO(global): every cell must carry the eval-episode count and be produced by
+% independent re-evaluation (not model0.pt / in-training eval), per Sec.~\ref{sec:setup}.
+% ---------------------------------------------------------------------------
+
+\subsection{Model-Free vs.\ Model-Based Adaptation: why do we need a world model?}
+\label{sec:mf-vs-mb}
+
+[TODO: Clarify the trade-offs between model-based and model-free methods.
+Model-based methods leverage a world model to generate additional data, yielding
+higher sample efficiency; they are, however, hindered by the difficulty of
+fitting an accurate model, and long-horizon rollouts in the latent space suffer
+from compounding error. Model-free methods are simpler and more direct;
+nevertheless, even off-policy algorithms need a large amount of interaction
+before the value function converges, which under a sparse terminal reward
+(Eq.~\ref{eq:sparse}) is precisely what a scarce target budget cannot buy.
+IMPORTANT FRAMING: the question of this subsection is \emph{not} which method
+wins with unlimited interaction. The budget is fixed by Def.~\ref{def:budget},
+and the operating point lies entirely inside it. Model-free RL is therefore not
+a competitor we lose to asymptotically; within the budget it is simply not yet
+functional, and we run it out of budget only as a \emph{diagnostic reference}
+that tells us what the target domain admits.]
+
+% ---------------------------------------------------------------------------
+% FLOAT 1 (Sec.~\ref{sec:mf-vs-mb}): table (left) + figure (right), one row.
+%   LEFT  = budget-to-threshold + matched-budget score  -> "inside the budget,
+%           only the model-based arm is functional at all"
+%   RIGHT = DIAGNOSTIC, deliberately run past the budget -> "the Dyna plateau is
+%           a model-error ceiling, not a data ceiling": something else reaches
+%           near-saturation on the same target, so the plateau is the model's
+%           fault and not the task's.
+% The two halves are the two axes of Def.~\ref{def:budget}: (b) then (a).
+% DO NOT frame the right half as "model-free eventually wins" -- an out-of-budget
+% score is not a result in this setting, and reading it as a competitor would
+% concede a comparison we never make. Its only job is attribution.
+% ---------------------------------------------------------------------------
+\begin{figure*}[t]
+\centering
+\begin{minipage}[t]{0.52\textwidth}
+  \centering
+  \captionof{table}{%
+    \textbf{Sample efficiency of model-based adaptation.} Target transitions
+    required to reach $30\%$ and $50\%$ success, and success rate at a matched
+    budget of $100$k target transitions. Arrows indicate whether lower or
+    higher is better; \texttt{---} means the threshold was never reached within
+    the budget. All entries are means over [TODO: $k$] seeds with
+    $\ge 300$ evaluation episodes; $\pm$ is the seed spread.
+    % TODO: also report the zero-shot score of the frozen source expert
+    % (Eq.~\ref{eq:gapdef}) as a "0 transitions" reference row -- it is the
+    % starting point every arm shares, and it makes the speedup readable.
+  }
+  \label{tab:mf-vs-mb-budget}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{llccc}
+  \toprule
+   &  & \multicolumn{2}{c}{Steps to threshold $\downarrow$} & SR @100k $\uparrow$ \\
+  \cmidrule(lr){3-4}\cmidrule(lr){5-5}
+  Task & Method & $30\%$ & $50\%$ & \\
+  \midrule
+  \multirow{2}{*}{Threading}
+    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
+    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
+  \midrule
+  \multirow{2}{*}{Coffee}
+    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
+    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
+  \midrule
+  \multirow{2}{*}{Square}
+    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
+    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
+  \midrule
+  \multirow{2}{*}{TPA~[TPA]}
+    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
+    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
+  \midrule
+  \multicolumn{2}{l}{\emph{Speedup to $50\%$ (geo.\ mean)}} & & \ph{$--\times$} & \\
+  \bottomrule
+  \end{tabular}}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.45\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figs/placeholder_mf_vs_mb_asymptote.pdf}
+  \caption{%
+    \textbf{The model-based plateau is a model-error ceiling, not a budget
+    ceiling.} \emph{Diagnostic, deliberately run outside the adaptation
+    budget.} Target success rate vs.\ target transitions on [TODO: 2
+    representative tasks, one panel each], continued to [TODO: $\sim$1M]
+    transitions --- roughly [TODO: $--\times$] the budget of
+    Def.~\ref{def:budget}. The shaded region on the left is the budget we
+    actually operate in; inside it the model-free arm has barely left the
+    zero-shot level, which is why it is not a viable adaptation method here.
+    Outside it, model-free IBRL nonetheless climbs to $\ph{0.--}$, while
+    Dyna-IBRL stops improving at $\ph{0.--}$ despite being given the same
+    extended interaction. The comparison is used for attribution only: since the
+    same target domain \emph{does} admit near-saturating performance, the
+    model-based plateau cannot be blamed on the task or on the amount of data,
+    and must be a property of the learned model --- which is what
+    Sections~\ref{sec:dyna-vs-plan} and \ref{sec:what-to-adapt} then localize.
+    Shaded band = seed spread; horizontal dashed line = frozen source expert
+    (zero-shot).
+    % TODO(fig): SHADE the budget region and label it "adaptation budget".
+    % The figure must read left-to-right as "in budget: nothing else works" ->
+    % "out of budget: the plateau is the model's fault". Do not annotate the
+    % crossover as an operating point: we always operate left of it.
+    % TODO(fig): x-axis log scale, otherwise the in-budget region collapses to
+    % a sliver and the early model-based advantage is invisible.
+    % TODO(fig): give BOTH arms the same extended budget on the right. If the
+    % Dyna arm is cut off at 100k the plateau claim is unsupported -- a curve
+    % that was never run cannot be shown to have stopped rising.
+    % TODO(fig): if the plateau is not flat, say so honestly -- do NOT crop the
+    % x-range to manufacture one. A slowly-rising Dyna curve still supports the
+    % efficiency claim on the left; it just weakens this attribution, in which
+    % case fall back to the horizon sweep below as the primary evidence.
+  }
+  \label{fig:mf-vs-mb-asymptote}
+\end{minipage}
+\end{figure*}
+
+[TODO: text for Table~\ref{tab:mf-vs-mb-budget}. Claim 1 --- \emph{under the
+budget, the world model is not an optimization, it is what makes adaptation
+possible at all}. Dyna-IBRL reaches $50\%$ in $\ph{--\times}$ fewer target
+transitions than model-free IBRL, and at the matched $100$k budget it leads by
+$\ph{+0.--}$ on average; on [TODO: which] tasks the model-free arm does not
+reach the threshold within the budget at all. Attribute this to amortization:
+each real transition is reused across many value updates through synthetic
+rollouts, which is exactly the cost a sparse terminal reward
+(Eq.~\ref{eq:sparse}) imposes on unassisted value learning. Phrase the takeaway
+in budget terms, not in ranking terms --- ``$N_{50}$ falls inside the affordable
+budget only for the model-based arm''.]
+
+[TODO: text for Fig.~\ref{fig:mf-vs-mb-asymptote}. Claim 2 --- \emph{attribution
+of the plateau}, stated explicitly as a diagnostic and not as a comparison.
+Given $\ph{--\times}$ the budget, model-free IBRL reaches $\ph{0.--}$ while
+Dyna-IBRL stops at $\ph{0.--}$ with the same extra interaction. Say plainly what
+this does and does not license: it does \emph{not} say model-free RL is the
+better adaptation method (at the budget of Def.~\ref{def:budget} it is not a
+method at all), it says the model-based plateau is not caused by the budget.
+Since the task, the target kernel and the success predicate are identical across
+the two arms, the residual must come from the approximations the model-based arm
+introduces --- and the rest of Section~\ref{empirical} is a search for which one.
+% TODO(writing): pre-empt the obvious referee question here in one sentence ---
+% "why not simply spend more target interaction?" -- by pointing back to the
+% budget asymmetry of Sec.~\ref{def:budget}: in the sim2real problem this proxy
+% stands in for, the right-hand side of this plot is not purchasable.]
+
+% TODO(analysis, optional but strong): decompose the Dyna plateau by rollout
+% horizon -- sweep the synthetic rollout length h and show the plateau height is
+% non-monotone in h (short h = no value propagation under sparse reward, long h =
+% compounding latent error). This is the bridge into Sec.~\ref{sec:dyna-vs-plan}
+% and it is cheap: it reuses the same world model.
+
+\subsection{Dyna vs.\ Planning: how should we use the world model for adaptation?}
+\label{sec:dyna-vs-plan}
+
+[TODO: Contrast Dyna with planning: planning significantly outperforms Dyna and
+is substantially less vulnerable to dynamics error. Data generated in the latent
+space by Dyna cannot be rolled out over long horizons without policy/model
+collapse; yet under a sparse terminal reward, long trajectories reaching all the
+way to the goal are exactly what value propagation needs. Dyna is thus squeezed
+from both sides, and its three-way objective (dynamics, value and policy
+optimized jointly) is notoriously hard to converge. Planning only has to keep
+the dynamics honest during adaptation (e.g.\ SimDist adapts the dynamics head
+alone), which is more direct, more tractable and more robust.]
+
+% ---------------------------------------------------------------------------
+% FLOAT 2 (Sec.~\ref{sec:dyna-vs-plan}): one wide figure, 3--4 panels,
+% one panel per task. Matched-budget adaptation curves.
+% ---------------------------------------------------------------------------
+\begin{figure*}[t]
+\centering
+\begin{subfigure}[t]{0.245\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_dvp_threading.pdf}
+  \caption{Threading}\label{fig:dvp-threading}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.245\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_dvp_coffee.pdf}
+  \caption{Coffee}\label{fig:dvp-coffee}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.245\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_dvp_square.pdf}
+  \caption{Square}\label{fig:dvp-square}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.245\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_dvp_tpa.pdf}
+  \caption{TPA~[TPA]}\label{fig:dvp-tpa}
+\end{subfigure}
+\caption{%
+  \textbf{At a matched target budget, planning adapts far better than Dyna.}
+  Target success rate vs.\ target transitions consumed (cap $100$k) for
+  Dyna-IBRL and planning-based adaptation (SimDist), both built on the
+  \emph{same} source-distilled world model and the same $n$ target
+  demonstrations, so the comparison isolates \emph{how} the model is used ---
+  as a data generator or as a decision-time simulator. Model-free IBRL at the
+  same budget and the frozen source expert are shown as references; the shaded
+  band is the seed spread and the grey band at the right edge marks the
+  evaluation noise floor.
+  % TODO(fig): the anchor number to reproduce here is the same-world-model
+  % contrast in docs/on-policy-adaptation.md (planning 0.813 vs Dyna 0.157).
+  % It MUST be the identical world-model checkpoint in both arms, otherwise the
+  % comparison silently becomes a model-quality comparison.
+  % TODO(fig): keep the in-budget model-free curve on the same axes -- it is the
+  % "what a budget buys without a world model" reference, consistent with the
+  % left half of Fig.~\ref{fig:mf-vs-mb-budget}. Do NOT extend it past the
+  % budget cap here; the out-of-budget continuation lives only in the diagnostic
+  % Fig.~\ref{fig:mf-vs-mb-asymptote}.
+  % TODO(fig): compare only steady-state segments; the slower arm shows
+  % transient peaks (methodology, Sec.~\ref{sec:setup}).
+}
+\label{fig:dyna-vs-planning}
+\end{figure*}
+
+[TODO: text for Fig.~\ref{fig:dyna-vs-planning}. Report the matched-budget
+margin (planning $\ph{0.--}$ vs.\ Dyna $\ph{0.--}$, averaged over tasks) and
+make the mechanism claim: with the same model, planning re-queries the model
+$H$ steps ahead from the \emph{current} state and never has to commit model
+error into learned parameters, while Dyna writes model error into the critic,
+where it is compounded by bootstrapping and cannot be undone by later real data.]
+
+[TODO: close the subsection with the honest limitation, so that
+Sec.~\ref{sec:what-to-adapt} has a reason to exist: planning is the best use of
+the budget, yet it saturates at $\ph{0.--}$ and additional target transitions
+inside a realistic budget do not move it. Measure that residual against what is
+\emph{achievable} on this target --- the oracle-dynamics planner and the target
+expert (Sec.~\ref{sec:what-to-adapt}) --- rather than against the out-of-budget
+model-free run, which is a diagnostic and not a target to catch. The remaining
+question is which component of the planner the residual lives in.]
+
+\subsection{What to adapt: value, dynamics, or policy?}
+\label{sec:what-to-adapt}
+
+[TODO: Frame the intuition and then refute it. One might suspect the ceiling of
+planning is set by the value function, since a source--target value gap
+demonstrably exists. Our experiments show the opposite: every attempt to adapt
+the value degrades performance. The reason is that a value function is harder to
+fit than a dynamics model --- and adapting it forfeits the very advantage of
+planning, because like Dyna and model-free RL it needs reward to propagate, and
+therefore needs a budget we do not have.]
+
+% ---------------------------------------------------------------------------
+% FLOAT 3 (Sec.~\ref{sec:what-to-adapt}, part A): "adapting the value breaks it"
+% Grouped bars, one group per task, five arms. Includes the *marginal* value
+% tweak so the refutation is not only about aggressive retraining.
+% ---------------------------------------------------------------------------
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/placeholder_value_adapt_bars.pdf}
+\caption{%
+  \textbf{Adapting the value function degrades planning, in every ordering and
+  at every strength.} Final target success rate for five adaptation schedules
+  under an identical target budget:
+  (i) \emph{dynamics only} (SimDist, ours);
+  (ii) \emph{joint} --- value and dynamics adapted simultaneously;
+  (iii) \emph{value $\rightarrow$ dynamics};
+  (iv) \emph{dynamics $\rightarrow$ value};
+  (v) \emph{marginal value} --- the value head nudged with a small
+  learning rate / few steps / small trust region [TODO: name the exact knob].
+  Dynamics-only is best on all [TODO: four] tasks; no ordering rescues value
+  adaptation, and the marginal variant merely interpolates towards the failure
+  rather than avoiding it. Error bars are the seed spread and the grey band is
+  the evaluation noise floor, so bars inside it are not distinguishable.
+  % TODO(fig): the mechanism number belongs in the caption or the text -- the
+  % candidate-discrimination signal available to the planner is
+  % std_i(gamma^H V) = 0.0068, i.e. 1.4% of the value range, so *any* offline
+  % refit residual is of the same order and rewrites the elite set.
+  % Cross-ref the first-order argument in Sec.~\ref{sec:setting}.
+  % TODO(fig): include the dose--response version as an inset or an appendix
+  % panel: sweep the value-adaptation strength and show the score decreases
+  % monotonically in it (Spearman = -1.000). Monotonicity is what turns
+  % "our value adaptation was badly tuned" into "the direction is wrong".
+  % TODO(fig): add ONE caveat arm if space allows -- the same sweep on a
+  % *more accurate* dynamics model, where the degradation shrinks by ~9x.
+  % That is the boundary of the claim: value can be touched only in proportion
+  % to how good the dynamics already is.
+}
+\label{fig:value-adapt-bars}
+\end{figure*}
+
+% ---------------------------------------------------------------------------
+% FLOAT 4 (Sec.~\ref{sec:what-to-adapt}, part B): the factorial that localizes
+% the bottleneck. dynamics {oracle, learned} x value {source-distilled, target}
+% x proposal {source policy, target BC (not fine-tuned)}.
+% Two claims come out of it: (1) dynamics accuracy dominates, (2) when the
+% dynamics is imperfect, the three components must be trained on ONE distribution.
+% ---------------------------------------------------------------------------
+\begin{table*}[t]
+\centering
+\caption{%
+  \textbf{Localizing the bottleneck: dynamics accuracy dominates, and value is
+  not the constraint.} Target success rate of the \emph{same} MPPI controller
+  (Eq.~\ref{eq:mppi}) as we independently swap its three inputs: the dynamics
+  (learned latent model vs.\ the true target simulator as an oracle), the
+  terminal value (source-distilled $\hat V$ vs.\ a value fit on target data),
+  and the proposal policy (frozen source expert $\pi_s$ vs.\ behaviour cloning
+  on the $n$ target demonstrations, \emph{without} any further fine-tuning).
+  [TODO: state the effect sizes as main effects: dynamics
+  $\ph{+0.--}$ ($z=\ph{--}$) $\gg$ proposal $\ph{+0.--}$ $>$ value
+  $\ph{+0.--}$ (n.s.).] All cells: [TODO: $\ge 300$] episodes, [TODO: $k$] seeds.
+  % TODO(tab): report effects BOTH additively and as "fraction of the remaining
+  % gap closed" (or log-odds). Near the ceiling an additive null is an
+  % arithmetic artefact, not evidence that the mechanism disappeared.
+  % TODO(tab): every row must be verified to share the identical env config
+  % (sigma, init distribution, success predicate, planner hyper-parameters);
+  % a mismatched pair here previously produced a wholly spurious conclusion.
+  % TODO(tab): planner hyper-parameters do not transfer across tasks nor across
+  % oracle/learned dynamics -- each row needs its own re-tuned init_std /
+  % base_policy_std, otherwise this table measures tuning, not mechanism.
+}
+\label{tab:factorial-bottleneck}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lllcccc}
+\toprule
+Dynamics & Value & Proposal & Threading & Coffee & Square & TPA~[TPA] \\
+\midrule
+Oracle  & source-distilled $\hat V$ & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & source-distilled $\hat V$ & target BC               & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & target-fit $V_t$          & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & target-fit $V_t$          & target BC               & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+\midrule
+Learned & source-distilled $\hat V$ & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & source-distilled $\hat V$ & target BC               & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & target-fit $V_t$          & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & target-fit $V_t$          & target BC               & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+\midrule
+\multicolumn{3}{l}{\emph{Main effect: dynamics (oracle $-$ learned)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\multicolumn{3}{l}{\emph{Main effect: value (target $-$ source)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\multicolumn{3}{l}{\emph{Main effect: proposal (target BC $-$ source $\pi_s$)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+[TODO: text for Table~\ref{tab:factorial-bottleneck}, claim A --- \emph{the
+value is not the bottleneck}. The top-left cell (oracle dynamics $+$
+source-distilled value $+$ source policy proposal) already reaches
+$\ph{0.--}$, i.e.\ near-saturation, \emph{without a single target-domain value
+update}. This is the direct empirical test of Assumption~\ref{as:value}: the
+source value ranks the candidate terminal latents well enough, and what the
+planner was missing was never the value.]
+
+[TODO: text, claim B --- \emph{dynamics accuracy is the binding constraint}.
+Holding value and proposal fixed, replacing the learned model with the oracle is
+worth $\ph{+0.--}$, an order of magnitude more than either other swap, and it
+alone accounts for the residual gap to model-free RL identified in
+Sec.~\ref{sec:dyna-vs-plan}. Tie back to the multiplicity argument in
+Sec.~\ref{sec:setting}: the dynamics is consumed $H$ times per candidate and
+its error is selected \emph{adversarially} by the optimizer, while the value is
+consumed once and only through candidate-wise contrast.]
+
+[TODO: text, claim C --- \emph{when the dynamics is imperfect, the three
+components must live on one distribution}. Read the interaction, not the main
+effects: the value swap is harmless (or helps) under the oracle but
+$\ph{--}$ under the learned model, and the effect of the proposal swap is
+conditional on which value is used. Formulate this as the on-policy-consistency
+statement of Sec.~\ref{sec:setting}: the model is only trustworthy on the
+occupancy it was fit on, so a proposal or a value that moves the search off that
+occupancy is punished in proportion to the model's error. This is the design
+principle carried into Sec.~\ref{simopd}. Also flag the falsified alternative:
+under an oracle the ``value must be self-consistent with the continuation
+policy'' story does not hold, so the constraint is a property of model error,
+not of value coherence per se.]
+
+% ---------------------------------------------------------------------------
+% FLOAT 5 (Sec.~\ref{sec:what-to-adapt}, part C): the policy/proposal axis.
+% Small single-column curve: adaptation with vs. without a target-anchored
+% proposal warm-up. Motivates the source-anchored fine-tuning in Sec.~\ref{simopd}.
+% ---------------------------------------------------------------------------
+% NOTE: wrapfigure must be issued at the START of the paragraph it wraps into,
+% must not be adjacent to another float / list / section break, and does not
+% survive a page break -- if it misbehaves at camera-ready, fall back to
+% \begin{figure}[t] ... \end{figure}. Width below is the wrap column; the
+% {r} places it on the right and {12} is the number of wrapped lines (retune
+% once the surrounding paragraph is written).
+\begin{wrapfigure}{r}{0.46\textwidth}
+\vspace{-\baselineskip}
+\centering
+\includegraphics[width=\linewidth]{figs/placeholder_policy_warmup.pdf}
+\caption{%
+  \textbf{The proposal policy must be warmed up on target data --- but anchored
+  to the source.} Target success rate over the course of adaptation, with the
+  planner's proposal (a) frozen at the source expert, (b) fine-tuned on the $n$
+  target demonstrations \emph{without} regularization, and (c) fine-tuned with a
+  source anchor [TODO: name the coefficient]. Warm-up decides the level the
+  whole adaptation starts from and converges to ($\ph{+0.--}$ for (c) over (a)),
+  while unregularized fine-tuning (b) destroys the proposal --- $\ph{--}$
+  demonstration transitions are re-visited for $\ph{--}$ effective epochs, so
+  the proposal leaves the region where the model and value are valid.
+  % TODO(fig): show ALL of (a),(b),(c) -- (b) is what makes the anchor a
+  % mechanism claim rather than a hyper-parameter. Note that the size of (b)'s
+  % damage is target-dependent (observed to vary by >20x across targets), so
+  % report per-task and do not average it away.
+  % TODO(fig): this panel is the empirical bridge to Sec.~\ref{simopd}: the
+  % anchor is what keeps the proposal on the occupancy the dynamics was fit on,
+  % i.e. it is the same on-policy-consistency principle as claim C above.
+  % TODO(fig): as a wrapfigure this panel is ~0.46\textwidth -- redraw it for
+  % that aspect ratio (taller than wide, legend inside the axes or dropped in
+  % favour of direct line labels, 3 curves max). Do not shrink the full-width
+  % version; the tick labels will be unreadable.
+  % TODO(fig): if the wrap still crowds the text, merge it as a 5th group of
+  % bars into Fig.~\ref{fig:value-adapt-bars}; keep it separate only if the
+  % *curve shape* (starting level vs. rate of improvement) is part of the
+  % argument -- which it is, since the claim is about where adaptation starts
+  % AND where it converges.
+}
+\label{fig:policy-warmup}
+\vspace{-\baselineskip}
+\end{wrapfigure}
+
+[TODO: text for Fig.~\ref{fig:policy-warmup} and the summary of the subsection.
+State the three conclusions in the order they were established: (1) do not adapt
+the value --- the planner consumes it only as a ranking and the available
+candidate-wise signal is smaller than any offline refit residual; (2) improving
+the dynamics accuracy is the one intervention that moves the ceiling; (3) while
+the dynamics remains imperfect, the dynamics, the value and the proposal must be
+trained and used on a single, shared occupancy, which is what the
+source-anchored proposal warm-up buys. These three points define the method in
+Sec.~\ref{simopd}.]
+
+\section{SimOPD: Sim-to-real On-policy Adaptation with Ensemble Dynamics}
+\label{simopd}
+
+[TODO: Next, we present our key improvements: 1. Dynamics ensemble with
+optimistic exploration and pessimistic planning. 2. Addressing the trade-off in
+target domain demonstration fine-tuning for the policy proposal: We observe that
+a prerequisite for MPPI to function effectively is that the policy proposal must
+be trained on the same distribution as the value function. However, the policy
+also requires target domain information to warm up and achieve superior
+performance. To balance this, we introduce a KL divergence regularizer alongside
+the behavioral cloning (BC) objective to constrain the fine-tuned policy from
+drifting too far from the original policy, which significantly enhances
+performance.]
+
+% ---------------------------------------------------------------------------
+% FLOAT 6 (Sec.~\ref{simopd}): MAIN RESULT.
+% One wide figure, one panel per task (4 manipulation + 1 IsaacLab locomotion).
+% Each panel: target success rate (or normalized return, for locomotion) vs.
+% target transitions consumed, x-axis capped at the budget of Def.~\ref{def:budget}.
+% Curves are grouped by FAMILY, and the families must be visually separable at a
+% glance -- that is the whole point of using curves instead of a table:
+%   model-free  -> cool colours, dotted
+%   Dyna        -> warm colours, dashed
+%   planning    -> solid, SimDist in a muted solid, SimOPD in the accent colour
+%                  and the only curve with a heavier line weight
+%   references  -> horizontal lines, no markers: frozen pi_s (grey dash-dot,
+%                  the y-intercept every arm starts from) and the
+%                  oracle-dynamics planner (black dotted, the achievable ceiling)
+%
+% WHY curves and not a final-score table: the claim of this paper is about the
+% *budget axis*, so the evidence should live on that axis. A curve shows three
+% things a single number cannot -- where an arm starts, how fast it moves, and
+% whether it has stopped moving by the cap. In particular the model-free arms'
+% flatness inside the budget is the argument of Sec.~\ref{sec:mf-vs-mb}, and it
+% is invisible in an endpoint table.
+%
+% TODO(fig): decide the arm list; keep it to <=7 curves per panel or the panels
+% become unreadable at column width. Proposed:
+%   [mf]  IBRL fine-tuned from pi_s          (strongest model-free arm we have)
+%   [mf]  residual RL on frozen pi_s         ("don't touch the expert" family)
+%   [mf]  RLPD / demo-mixed off-policy RL    (standard demo-regularized recipe)
+%   [dyna] Dyna-IBRL
+%   [plan] TD-MPC2-style online world model
+%   [plan] SimDist  (single dynamics head, no proposal anchor)  <- runner-up
+%   [ours] SimOPD
+% Two zero-online-interaction baselines (target BC on the n demos; a
+% domain-randomized source expert) have no curve -- draw them as extra
+% horizontal reference lines, or as points at x=0, and say which in the caption.
+% Referees WILL ask for the DR baseline, so do not drop it just because it is
+% not a curve.
+%
+% TODO(fig): every arm gets the SAME n demos (verbatim, same files) and the SAME
+% transition cap. Arms that cannot consume the online half of the budget must be
+% marked as such, not silently credited with it.
+% TODO(fig): x-axis STOPS at the budget cap. The out-of-budget model-free
+% continuation exists only in the diagnostic Fig.~\ref{fig:mf-vs-mb-asymptote};
+% mixing budgets inside the main result is the easiest way to lose the framing.
+% TODO(fig): shade +-1 seed spread; state n_seeds and eval episodes in the caption.
+% Do not plot in-training eval -- it is systematically optimistic; curves must be
+% built from periodic independent re-evaluation of saved checkpoints.
+% ---------------------------------------------------------------------------
+\begin{figure*}[t]
+\centering
+\begin{subfigure}[t]{0.195\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_main_threading.pdf}
+  \caption{Threading}\label{fig:main-threading}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.195\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_main_coffee.pdf}
+  \caption{Coffee}\label{fig:main-coffee}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.195\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_main_square.pdf}
+  \caption{Square}\label{fig:main-square}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.195\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_main_tpa.pdf}
+  \caption{ThreePieceAssembly~[TPA]}\label{fig:main-tpa}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.195\textwidth}
+  \includegraphics[width=\linewidth]{figs/placeholder_main_locomotion.pdf}
+  \caption{Locomotion (IsaacLab)}\label{fig:main-locomotion}
+\end{subfigure}
+% TODO(fig): put ONE shared legend above or below the row (e.g. a legend-only
+% subfigure spanning \textwidth), never five per-panel legends.
+\caption{%
+  \textbf{Main sim-to-sim result: adaptation under a matched target budget.}
+  Target performance vs.\ target transitions consumed, one panel per task; the
+  $x$-axis ends at the budget cap of Def.~\ref{def:budget} ([TODO: $100$k]
+  transitions). All arms start from the identical source assets and receive the
+  identical $n \le 20$ target demonstrations; none sees target reward shaping,
+  the target physics parameters, or a target expert. The grey dash-dotted line
+  is the frozen source expert (zero-shot), i.e.\ the level every curve starts
+  from, and the black dotted line is the same planner run with \emph{oracle}
+  target dynamics --- the ceiling attainable once model error is removed, shown
+  as a reference and not as a competitor. [TODO: the two zero-interaction
+  baselines, target BC and a domain-randomized source expert, appear as
+  additional horizontal lines.] Shading is $\pm 1$ seed spread over [TODO: $k$]
+  seeds; each point is an independent re-evaluation over [TODO: $\ge 300$]
+  episodes.
+  \textbf{SimOPD is the only arm that both starts high and keeps improving
+  within the budget}, reaching $\ph{0.--}$ on average and closing $\ph{--\%}$
+  of the reference gap; the model-free arms are still near their zero-shot level
+  when the budget runs out.
+  % TODO(fig): the locomotion panel is a DIFFERENT regime -- dense reward,
+  % periodic contact, no terminal goal predicate -- so Eq.~\eqref{eq:sparse}
+  % does not hold there. Say so in the caption in one clause and use it as a
+  % generality claim ("the ordering survives outside the sparse-reward
+  % contact-rich regime we analyzed"), NOT as another instance of the analysis.
+  % Its y-axis is normalized return, not success rate: label it separately and
+  % do not let a shared y-label imply the units are the same.
+  % TODO(fig): if the locomotion budget is not comparable in transitions
+  % (locomotion envs are massively parallel in IsaacLab), plot it against
+  % environment steps AND state the wall-clock/env-count in the caption, or the
+  % "matched budget" claim silently breaks on that panel.
+}
+\label{fig:main-sim2sim}
+\end{figure*}
+
+% TODO(float 6b, optional): a single summary panel -- "fraction of the reference
+% gap (pi_s -> oracle planner) closed at the budget", one grouped bar per task.
+% This is NOT decoration: several tasks sit near the ceiling, where an additive
+% delta understates the effect, and the curves alone will make the strongest
+% tasks look like null results. Either append it as a 6th panel of
+% Fig.~\ref{fig:main-sim2sim} or fold it into the ablation float below.
+
+[TODO: text for Fig.~\ref{fig:main-sim2sim}. Read it in three passes, in this
+order, so the figure does the argument rather than merely reporting it.
+\emph{(i) Families, not curves.} The three line styles are the three ways of
+consuming interaction data (Sec.~\ref{preliminary}), and inside the budget they
+are ordered: every planning curve lies above every Dyna curve, which lies above
+every model-free curve, on all [TODO: five] panels. The ordering, not the margin
+of any single arm, is the result.
+\emph{(ii) Shape, not endpoint.} Point out what only a curve can show: the
+model-free arms are still flat at the cap --- they have not begun to convert
+interaction into performance --- while the model-based arms have already spent
+their budget productively. This is the same statement as
+Sec.~\ref{sec:mf-vs-mb}, now made at the level of the final system.
+\emph{(iii) Ours vs.\ the runner-up and vs.\ the ceiling.} SimOPD improves on
+SimDist by $\ph{+0.--}$ averaged over tasks; attribute this to the two
+components and forward-reference the ablation. On [TODO: which] tasks the SimOPD
+curve enters the noise band of the oracle-dynamics reference before the cap ---
+i.e.\ the remaining model error has stopped costing anything, the strongest form
+the claim of Sec.~\ref{sec:what-to-adapt} can take. On [TODO: which] tasks a gap
+remains; say honestly what it is (tolerance-window width, or residual persistent
+model bias) rather than leaving it unremarked.]
+
+% TODO(float 7, ablation -- to be added once the method text is written):
+% component ablation of SimOPD, same panel layout as Fig.~\ref{fig:main-sim2sim}
+% but arms = { SimDist base, + ensemble only, + optimistic exploration only,
+% + pessimistic planning only, + anchored BC proposal only, full SimOPD }.
+% Curves again, for the same reason: the anchored-BC component acts on the
+% STARTING level and the ensemble on the SLOPE/ceiling, and an endpoint bar
+% chart cannot distinguish those two mechanisms. Keep it a separate float from
+% Fig.~\ref{fig:main-sim2sim}: the main figure answers "is it best", the
+% ablation answers "why", and merging them makes both unreadable.
+% Fewer tasks are acceptable here (2-3 panels) if space is tight -- but say
+% which and why, and do not silently pick the ones where it looks best.
+% Two things this ablation must control for, both of which have bitten us:
+%   - planner hyper-parameters do not transfer across arms; each row needs its
+%     own re-tuned init_std / base_policy_std or the ablation measures tuning.
+%   - the anchor coefficient's benefit is target-dependent (>20x spread across
+%     targets), so report per-task and never average it into one number.
