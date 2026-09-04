@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=thr_margin
-#SBATCH --array=1-40
+#SBATCH --array=1-60
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=24G
@@ -23,11 +23,16 @@
 #                        logs the bare policy alongside as score/policy_only.
 #   dynaibrl_plain       Dyna + IBRL prior margin, annealed 0.05 -> 0 over 50k,
 #                        on the SAME single-head stage-1 as plain_h5.
-#   dynaibrl_plain_sgft  the same + SGFT shaping (--dyna.sgft_coef 1.0), but with
-#                        a CONSTANT margin (SGFT_MARGIN, default 0.01) instead of
-#                        the anneal -- the annealed shaped arm performed badly.
-#                        ⚠️ So it differs from dynaibrl_plain in TWO fields and is
-#                        NOT a controlled SGFT ablation; read it on absolute score.
+#   dynaibrl_plain_m001  the same with margin(t) CONSTANT at SGFT_MARGIN (0.01)
+#                        instead of the anneal, shaping still off.
+#   dynaibrl_plain_sgft  constant margin + SGFT shaping (--dyna.sgft_coef 1.0).
+#                        The annealed shaped arm performed badly, so the schedule
+#                        was dropped for the shaped arms -- which is why this arm
+#                        differs from dynaibrl_plain in TWO fields. Read it
+#                        against dynaibrl_plain_m001 (one field: sgft_coef), NOT
+#                        against dynaibrl_plain.
+#   dynaibrl_dynens_m001 5-head counterpart of dynaibrl_plain_m001; the same
+#                        single-variable partner for dynaibrl_dynens_sgft.
 #   ibrl_m005anneal0     model-free IBRL, same 0.05 -> 0 margin schedule. No
 #                        world model anywhere -- the baseline that says how much
 #                        of the margin's value needs a model at all.
@@ -205,7 +210,15 @@ done
                    echo "[gpu] transiently busy -- not starting the run"; exit $PF; }
 
 
-JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" cluster/jobs_threading_margin.txt)
+# ⚠️ --array MUST match `wc -l < $JOBS`. It did not: the header said 1-40 while
+# the list held 60 lines, so every submission silently dropped rows 41-60 (both
+# dynaibrl_dynens arms).
+JOBS=${JOBS:-cluster/jobs_threading_margin.txt}
+[ -f "$JOBS" ] || { echo "no job list at JOBS=$JOBS"; exit 1; }
+echo "[jobs] $JOBS"
+JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$JOBS")
+[ -n "$JOB" ] || { echo "task $SLURM_ARRAY_TASK_ID is past the end of $JOBS \
+($(wc -l < "$JOBS") lines) -- --array is wider than the list"; exit 1; }
 ARM=${JOB% *}; SEED=${JOB##* }
 echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
 
@@ -273,6 +286,19 @@ case $ARM in
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_plain_m001)
+    # dynaibrl_plain with margin(t) CONSTANT at $SGFT_MARGIN instead of the
+    # 0.05 -> 0 anneal, shaping still off. Gives dynaibrl_plain_sgft the
+    # single-variable partner it never had (see its comment), and separately asks
+    # whether the constant is just the better schedule.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_sgft)
     # ⚠️ Differs from dynaibrl_plain in TWO fields: sgft_coef AND the margin
     # schedule (constant SGFT_MARGIN here, annealed there). The annealed version
@@ -303,6 +329,17 @@ case $ARM in
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_dynens_m001)
+    # The 5-head counterpart of dynaibrl_plain_m001; single-variable partner of
+    # dynaibrl_dynens_sgft.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_dynens_sgft)

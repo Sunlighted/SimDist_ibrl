@@ -138,6 +138,38 @@ class AdaptConfig(common_utils.RunConfig):
     # report D_SRC (mean |pi_theta(s_src) - pi_src(s_src)|, the metric docs/simdist.md
     # §42 tabulates) at the end of stage-2. Needed to calibrate F2/F3 to F1's D_SRC.
     bc_measure_dsrc: int = 0
+    # ---- D_SRC TARGETING: control the constrained quantity, not the multiplier ----
+    # lambda is a Lagrange multiplier and is therefore NOT portable: the lambda->D_SRC
+    # map is task-dependent, and across 5 targets (Threading/Square/Coffee x3) the
+    # fitted optimum spans 5.2x in lambda but only 1.5x in D_SRC. Measured cost of the
+    # portable rules, leave-one-target-out, on the gap-closing scale:
+    #     lambda = 1.0 (the old default) : mean 22.0 gap-points lost, and on Square it
+    #                                     scores BELOW no anchor at all (0.692 vs
+    #                                     0.759, matched 40-57k window)
+    #     lambda = 0.3                   : mean 48.7 / worst +26.9 / p25 27.5
+    #     held-out D_SRC = 0.05          : mean 52.0 / worst +22.2 / p25 49.3  <== best
+    # Setting `bc_anchor_target_dsrc = d > 0` makes lambda adaptive: a dual controller
+    # holds the HELD-OUT D_SRC at d, so one number transfers across tasks and
+    # `bc_anchor_coef` only seeds the search. 0.0 = OFF => fixed-lambda path unchanged.
+    bc_anchor_target_dsrc: float = 0.0
+    # Dual step on log lambda: log lam += gain * (log D_measured - log d). D_SRC is a
+    # power law in lambda with a strikingly stable exponent -- fitted -0.328 (sd 0.020)
+    # on all 5 targets -- so the Newton gain is 1/0.328 = 3.05; default is half that
+    # for stability.
+    bc_anchor_lam_gain: float = 1.5
+    bc_anchor_ctrl_every: int = 20    # controller period, in BC steps
+    bc_anchor_lam_min: float = 0.01
+    bc_anchor_lam_max: float = 30.0
+    # Fraction of stage-2 to run before the controller engages. D_SRC starts at 0 (the
+    # policy IS pi_src at step 0) and has to grow before the target is meaningful;
+    # acting on that transient just slams lambda into its floor.
+    bc_anchor_ctrl_warmup_frac: float = 0.1
+    # SOURCE episodes held out of the anchor loss and used ONLY to measure D_SRC. The
+    # anchor overfits its own pool: held-out D_SRC runs 13-18% HIGHER than the pool it
+    # trained on (Coffee, and the gap grows with lambda), and the 0.05 calibration above
+    # is on held-out states.
+    bc_anchor_holdout_episodes: int = 300
+    bc_anchor_holdout_states: int = 8000
     # stage 3: TARGET dynamics adaptation
     adapt_interval: int = 1000       # collect this many TARGET transitions per round
     max_transitions: int = 20000     # stop after this many collected (=> #rounds)
@@ -475,17 +507,27 @@ class AdaptWorkspace:
         touches the policy head. Returns (states, frozen pi_src actions) or (None,
         None) when the anchor is off. Called at the top of `bc_finetune`, where
         `self.agent.model.policy` is still exactly the stage-1 (pi_src) head."""
-        if self.cfg.bc_anchor_coef <= 0 and not self.cfg.bc_measure_dsrc:
+        if self.cfg.bc_anchor_coef <= 0 and not self.cfg.bc_measure_dsrc \
+                and self.cfg.bc_anchor_target_dsrc <= 0:
+            self._anchor_holdout = None
             return None, None, None, None
         import h5py
         rng = np.random.RandomState(self.cfg.seed)
         want_data = bool(self.cfg.bc_anchor_data_actions)
         with h5py.File(self.cfg.bc_anchor_path, "r") as f:
             keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
-            pick = rng.choice(len(keys), min(self.cfg.bc_anchor_episodes, len(keys)),
-                              replace=False)
+            # When the D_SRC controller is on, draw once and split: the held-out
+            # episodes are disjoint from the anchor's by construction. n_hold=0 keeps
+            # `pick` bit-identical to the legacy draw (same rng, same call, same size).
+            n_hold = (self.cfg.bc_anchor_holdout_episodes
+                      if self.cfg.bc_anchor_target_dsrc > 0 else 0)
+            n_take = min(self.cfg.bc_anchor_episodes + n_hold, len(keys))
+            take = rng.choice(len(keys), n_take, replace=False)
+            hold, pick = take[:n_hold], take[n_hold:]
             S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
                                 for i in pick])
+            S_hold = (np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
+                                      for i in hold]) if n_hold else None)
             # (axis 2) the dataset's own actions at those states. In this dataset
             # state and action arrays are the SAME length per episode (verified),
             # so the concatenation is aligned index-for-index with S and the state
@@ -515,6 +557,18 @@ class AdaptWorkspace:
             print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source episodes "
                   f"-> {len(pool)} states | pi_src targets frozen "
                   f"(|a| mean {float(tgt.abs().mean()):.4f})")
+        self._anchor_holdout = None
+        if S_hold is not None:
+            if len(S_hold) > self.cfg.bc_anchor_holdout_states:
+                S_hold = S_hold[rng.choice(len(S_hold),
+                                           self.cfg.bc_anchor_holdout_states,
+                                           replace=False)]
+            hp = torch.as_tensor(S_hold, dtype=torch.float32, device="cuda")
+            with torch.no_grad():
+                ht = self.agent.model.policy_action(hp)
+            self._anchor_holdout = (hp, ht)
+            print(f"[anchor] held-out D_SRC set: {len(hold)} disjoint source episodes "
+                  f"-> {len(hp)} states")
         # (axis 2) training-time sampling weights over the SAME pool. None => uniform.
         w = self._anchor_far_weights(pool)
         # `ref` is ALWAYS pi_src's actions => D_SRC keeps its docs/simdist.md 42/43
@@ -604,17 +658,50 @@ class AdaptWorkspace:
               f"episodes -> {len(z)} (z,a) pairs | stage-1 next() targets frozen")
         return z, a_t, tgt
 
+    def _dsrc(self, pool, ref) -> float:
+        """D_SRC = mean elementwise |pi_theta(s) - pi_src(s)| on `pool`."""
+        with torch.no_grad():
+            cur = torch.cat([self.agent.model.policy_action(pool[i:i + 8192])
+                             for i in range(0, len(pool), 8192)])
+        return float((cur - ref).abs().mean())
+
     def bc_finetune(self):
         print(common_utils.wrap_ruler("stage 2: TARGET policy-only BC (encoder frozen)"))
         self.agent.train()
         anchor_pool, anchor_tgt, anchor_ref, anchor_w = self._build_source_anchor()
+        # D_SRC targeting: lambda becomes a controlled variable. `lam` starts from
+        # bc_anchor_coef (a seed, not the setting) and a dual step on log lam holds the
+        # HELD-OUT D_SRC at bc_anchor_target_dsrc.
+        ctrl = (self.cfg.bc_anchor_target_dsrc > 0 and self._anchor_holdout is not None)
+        lam = self.cfg.bc_anchor_coef
+        if ctrl:
+            if lam <= 0:
+                lam = 0.3          # the best fixed-lambda rule = a sane starting point
+            warm = int(self.cfg.bc_anchor_ctrl_warmup_frac * self.cfg.bc_steps)
+            print(f"[anchor-ctrl] targeting held-out D_SRC = "
+                  f"{self.cfg.bc_anchor_target_dsrc:.4f} | lam0={lam} "
+                  f"gain={self.cfg.bc_anchor_lam_gain} every={self.cfg.bc_anchor_ctrl_every} "
+                  f"warmup={warm} steps | clip [{self.cfg.bc_anchor_lam_min}, "
+                  f"{self.cfg.bc_anchor_lam_max}]")
         pbar = tqdm(total=self.cfg.bc_steps, desc="policy BC", dynamic_ncols=True,
                     mininterval=1.0)
         for step in range(self.cfg.bc_steps):
+            if ctrl and step >= warm and step % self.cfg.bc_anchor_ctrl_every == 0:
+                d_now = self._dsrc(*self._anchor_holdout)
+                if d_now > 0:
+                    # log lam += gain * (log D - log D*) : D_SRC ~ lam^-0.328, so the
+                    # Newton gain is 1/0.328 = 3.05 and the default 1.5 is half of it.
+                    step_log = self.cfg.bc_anchor_lam_gain * float(
+                        np.log(d_now / self.cfg.bc_anchor_target_dsrc))
+                    step_log = float(np.clip(step_log, -0.5, 0.5))   # per-update cap
+                    lam = float(np.clip(lam * np.exp(step_log),
+                                        self.cfg.bc_anchor_lam_min,
+                                        self.cfg.bc_anchor_lam_max))
+                self.stat.append({"bc/lam": lam, "bc/D_SRC_holdout": d_now})
             states, actions, _ = self.demo_replay.sample(
                 self.cfg.bc_batch_size, self.H, "cuda")
             a_s = a_a = None
-            if anchor_pool is not None and self.cfg.bc_anchor_coef > 0:
+            if anchor_pool is not None and lam > 0:
                 if anchor_w is None:
                     j = torch.randint(len(anchor_pool), (self.cfg.bc_anchor_batch,),
                                       device=anchor_pool.device)
@@ -625,7 +712,7 @@ class AdaptWorkspace:
             metrics = self.agent.update_bc_policy(
                 states, actions, lr=self.cfg.bc_lr,
                 anchor_states=a_s, anchor_actions=a_a,
-                anchor_coef=self.cfg.bc_anchor_coef,
+                anchor_coef=lam,
                 anchor_eps=self.cfg.bc_anchor_eps,
                 anchor_sat=self.cfg.bc_anchor_sat,
                 l2init_coef=self.cfg.bc_l2init_coef,
@@ -647,9 +734,17 @@ class AdaptWorkspace:
                 d = cur - anchor_ref          # ALWAYS measured against pi_src
                 d_src = float(d.abs().mean())
                 d_l2 = float(d.norm(dim=-1).mean())
-            print(f"[D_SRC] {d_src:.4f}  (L2mean {d_l2:.4f})  "
+            hold_str = ""
+            if self._anchor_holdout is not None:
+                d_hold = self._dsrc(*self._anchor_holdout)
+                hold_str = (f" heldout_D_SRC {d_hold:.4f} "
+                            f"(+{100*(d_hold/max(d_src,1e-9)-1):.1f}% vs pool)")
+                self.stat.append({"bc/D_SRC_holdout": d_hold})
+            print(f"[D_SRC] {d_src:.4f}  (L2mean {d_l2:.4f}){hold_str}  "
                   f"bc_loss {metrics['bc/policy_loss']:.5f}  "
-                  f"| anchor={self.cfg.bc_anchor_coef} eps={self.cfg.bc_anchor_eps} "
+                  f"| anchor={self.cfg.bc_anchor_coef}->lam={lam:.4g} "
+                  f"target_dsrc={self.cfg.bc_anchor_target_dsrc} "
+                  f"eps={self.cfg.bc_anchor_eps} "
                   f"l2init={self.cfg.bc_l2init_coef} wd={self.cfg.bc_weight_decay} "
                   f"data_act={self.cfg.bc_anchor_data_actions} "
                   f"far={self.cfg.bc_anchor_far_metric}/{self.cfg.bc_anchor_far_frac}/"

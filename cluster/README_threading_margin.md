@@ -1,4 +1,4 @@
-# Threading_D0 — margin batch (4 arms × 10 seeds)
+# Threading_D0 — margin batch
 
 Everything lands in `exps/simdist_threading_3arm`, i.e. the same wandb project as
 the existing groups, so these overlay on one chart.
@@ -15,8 +15,39 @@ the **same single-head dynamics**?
 |---|---|---|---|
 | `plain_h5` | `train_simdist_adapt.py` | single head, h=5 | plain SimDist MPPI. The planning reference. |
 | `dynaibrl_plain` | `train_simdist_dyna_ibrl.py` | single head, h=5 | Dyna + IBRL margin 0.05 → 0 over 50k |
-| `dynaibrl_plain_sgft` | `train_simdist_dyna_ibrl.py` | single head, h=5 | the same + `--dyna.sgft_coef 1.0`, one field apart |
+| `dynaibrl_plain_m001` | `train_simdist_dyna_ibrl.py` | single head, h=5 | the same with margin **constant** at `SGFT_MARGIN` (0.01) |
+| `dynaibrl_plain_sgft` | `train_simdist_dyna_ibrl.py` | single head, h=5 | constant margin + `--dyna.sgft_coef 1.0` |
 | `ibrl_m005anneal0` | `train_rl.py` | none | model-free IBRL, same margin schedule |
+| `dynaibrl_dynens` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain`, on the ensemble stage-1 |
+| `dynaibrl_dynens_m001` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_m001`, on the ensemble stage-1 |
+| `dynaibrl_dynens_sgft` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_sgft`, on the ensemble stage-1 |
+
+⚠️ `dynaibrl_plain_sgft` was described here as "one field apart" from
+`dynaibrl_plain`. It is not: it differs in `sgft_coef` **and** the margin schedule
+(constant vs annealed), because the annealed shaped arm was measured to do badly
+and the schedule was dropped for the shaped arms only. The `_m001` arms were
+added to close that: read `_sgft` against `_m001` (one field, `sgft_coef`) and
+`_m001` against the annealed arm (one field, the schedule).
+
+## ⚠️ `--array=1-40` silently dropped rows 41-60
+
+`jobs_threading_margin.txt` holds **60** lines while the `#SBATCH` header said
+`1-40`, so a plain `sbatch` never ran either `dynaibrl_dynens` arm. The header is
+now `1-60` and the job aborts if `--array` runs past the end of `$JOBS`.
+
+## Job lists
+
+`$JOBS` selects the list (default `cluster/jobs_threading_margin.txt`, 60 lines,
+arm-major). The constant-margin arms live in a separate seed-major list:
+
+```bash
+JOBS=cluster/jobs_threading_margin_m001.txt \
+  sbatch --account=def-<pi> --array=1-20 --export=ALL,JOBS \
+  cluster/job_threading_margin.sh      # 2 arms x 10 seeds; --array=1-2 smokes both
+```
+
+`--export=ALL,JOBS` is not optional — without it the job silently uses the
+default list.
 
 `plain_h5`'s deliverable **is** the planner, so its `score/score` is the MPPI
 score and `--eval_policy_only 1` logs the bare policy alongside as

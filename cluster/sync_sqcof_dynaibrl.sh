@@ -54,11 +54,18 @@ $R release/data/mimicgen/coffee_anchor_pool_4k  $T/release/data/mimicgen/
 
 echo "=== 4/4  job files ==="
 $R cluster/job_sqcof_dynaibrl.sh cluster/jobs_sqcof_dynaibrl.txt \
+   cluster/jobs_sqcof_dynaibrl_round2.txt \
    cluster/README_sqcof_dynaibrl.md $T/cluster/
 
 echo
 echo "Done. On the cluster:"
-echo "  sbatch --account=def-<pi> cluster/job_sqcof_dynaibrl.sh"
+echo "  # round 1 -- the two dynens arms, 2 tasks x 10 seeds. --array is REQUIRED:"
+echo "  # the header used to say 1-20 against a 40-line list and dropped all cof_*."
+echo "  sbatch --account=def-<pi> --array=1-40 cluster/job_sqcof_dynaibrl.sh"
+echo "  # round 2 -- plain arms + constant-margin (_m001) arms, seed-major:"
+echo "  JOBS=cluster/jobs_sqcof_dynaibrl_round2.txt \\"
+echo "    sbatch --account=def-<pi> --array=1-80 --export=ALL,JOBS \\"
+echo "    cluster/job_sqcof_dynaibrl.sh"
 echo "  # with the stage-2 anchor on (recommended for Coffee, see the README):"
 echo "  ANCHOR_COEF=1.0 sbatch --account=def-<pi> --export=ALL,ANCHOR_COEF \\"
 echo "      cluster/job_sqcof_dynaibrl.sh"

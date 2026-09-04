@@ -1,16 +1,63 @@
 # Square_D0 + Coffee_D0: Dyna-IBRL
 
-20 array tasks = 2 tasks × 2 arms × 5 seeds, 100k target transitions each,
-mirroring `cluster/job_threading_margin.sh` so the three tasks read the same way.
+100k target transitions per run, mirroring `cluster/job_threading_margin.sh` so
+the three tasks read the same way. Six arms per task; which ones run is decided
+by `$JOBS` + `--array`, not by the job file.
 
-| arm | stage-1 | margin |
-|---|---|---|
-| `sq_dynaibrl` / `cof_dynaibrl` | 5-head dynens, h=5 | annealed 0.05 → 0 over 50k |
-| `sq_dynaibrl_sgft` / `cof_dynaibrl_sgft` | same | **constant** `SGFT_MARGIN` (0.01) + `sgft_coef 1.0` |
+| arm (`sq_` / `cof_` prefix) | stage-1 | margin(t) | `sgft_coef` |
+|---|---|---|---|
+| `*_dynaibrl` | 5-head dynens, h=5 | annealed 0.05 → 0 over 50k | 0 |
+| `*_dynaibrl_m001` | same | **constant** `SGFT_MARGIN` (0.01) | 0 |
+| `*_dynaibrl_sgft` | same | constant `SGFT_MARGIN` | **1.0** |
+| `*_dynaibrl_plain` | single head, h=5 | annealed 0.05 → 0 | 0 |
+| `*_dynaibrl_plain_m001` | same | constant `SGFT_MARGIN` | 0 |
+| `*_dynaibrl_plain_sgft` | same | constant `SGFT_MARGIN` | **1.0** |
 
-Two more arms are defined but not in the default job list — `*_dynaibrl_plain`
-and `*_dynaibrl_plain_sgft`, on the single-head stage-1. Add lines to
-`jobs_sqcof_dynaibrl.txt` and widen `--array` to run them.
+## ⚠️ The old `--array=1-20` silently dropped every `cof_*` run
+
+`jobs_sqcof_dynaibrl.txt` holds **40** lines (2 tasks × 2 arms × 10 seeds, arm-major)
+while the `#SBATCH` header said `1-20` — so a plain `sbatch` ran only rows 1-20,
+i.e. both Square arms at 10 seeds and **no Coffee at all**. The header is now
+`1-40`, matching the list, and the job aborts with a message if `--array` runs
+past the end of `$JOBS`. **Check `squeue`/`exps/coffee_g5x_3arm`
+before assuming the dynens Coffee arms exist.**
+
+## Job lists
+
+| list | lines | layout |
+|---|---:|---|
+| `jobs_sqcof_dynaibrl.txt` | 40 | arm-major, the two **dynens** arms × 2 tasks × 10 seeds |
+| `jobs_sqcof_dynaibrl_round2.txt` | 80 | **seed-major**, the four remaining arms × 2 tasks × 10 seeds |
+
+Round 2 is seed-major on purpose: `--array=1-8` is a one-seed smoke across every
+arm, `1-40` is 5 seeds of everything, `1-80` is the full batch. An arm-major list
+can only be truncated to "some arms, all seeds", which is never what you want
+when you are deciding how much compute to spend.
+
+```bash
+JOBS=cluster/jobs_sqcof_dynaibrl_round2.txt \
+  sbatch --account=def-<pi> --array=1-80 --export=ALL,JOBS cluster/job_sqcof_dynaibrl.sh
+```
+
+`--export=ALL,JOBS` is not optional — without it the job falls back to the
+round-1 list and reruns work you already have.
+
+## The `_m001` arms fix the SGFT confound
+
+`*_sgft` differs from `*_dynaibrl` in **two** fields (`sgft_coef` *and* constant
+vs annealed margin), because the annealed shaped arm was measured to do badly and
+the schedule was dropped for the shaped arms only. `*_m001` is that same constant
+margin with shaping **off**, so:
+
+- `_sgft` vs `_m001` → one field (`sgft_coef`). This is the SGFT ablation.
+- `_m001` vs `_dynaibrl` → one field (the schedule). This is the margin question.
+- `_sgft` vs `_dynaibrl` → still two fields. Do not read it as either.
+
+`SGFT_MARGIN=0.01` came from a Threading fixed-margin sweep at **one seed**
+(policy-only, 75–100k steady): `0.01 → 0.873`, `0.05 → 0.775`, anneal
+`0.05→0.01 → ~0.88`, anneal `0.05→0.00 → ~0.855`. The 0.873-vs-0.855 gap is
+0.018 — well under the noise floor CLAUDE.md rule 1 sets, and never replicated on
+a fresh seed. The `_m001` arms are the first honest measurement of it.
 
 ## What the score means
 
@@ -28,18 +75,6 @@ an arm that does not clear it has learned nothing. On Threading the gap reached
 the same directories (`sq_dynens_anch_*`, `cof_dynens_anch_*`) — those are MPPI
 scores, i.e. what a planner achieves. Comparing them is meaningful ("same budget,
 does the policy match the planner?") but they are different quantities.
-
-## The SGFT arms are not a controlled ablation
-
-They differ from their plain counterpart in **two** fields: `sgft_coef` **and**
-the margin schedule (constant vs annealed). The annealed shaped arm was measured
-to do badly, so the schedule was dropped for the shaped arms. Read them on
-absolute score. To restore the single-variable pair, run the SGFT arms with
-`SGFT_MARGIN` matching the annealed schedule instead.
-
-`SGFT_MARGIN=0.01` is the best constant measured on Threading (single seed,
-75–100k steady, policy-only): `0.01 → 0.873`, `0.05 → 0.775`, anneal
-`0.05→0.01 → ~0.88`, anneal `0.05→0.00 → ~0.855`.
 
 ## The anchor: off by default, but Coffee probably wants it
 
@@ -79,8 +114,12 @@ CC_HOST=<host> CC_USER=<user> CC_ROOT='~/scratch/ibrl' \
 # 2. env: cluster/README.md step 3. The job now defaults to the container when
 #    cluster/ibrl.sif exists, and fails fast if neither env is present.
 
-# 3. submit
-sbatch --account=def-<pi> cluster/job_sqcof_dynaibrl.sh
+# 3. submit -- round 1 (dynens arms) if they are not already done
+sbatch --account=def-<pi> --array=1-40 cluster/job_sqcof_dynaibrl.sh
+
+#    round 2 (plain arms + the constant-margin arms)
+JOBS=cluster/jobs_sqcof_dynaibrl_round2.txt \
+  sbatch --account=def-<pi> --array=1-80 --export=ALL,JOBS cluster/job_sqcof_dynaibrl.sh
 ```
 
 Per task: 1 GPU, 12 CPUs, 24 GB, **14 h**. Longer than the Threading batch

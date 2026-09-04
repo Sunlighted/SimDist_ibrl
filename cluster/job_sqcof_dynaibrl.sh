@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sqcof_di
-#SBATCH --array=1-20
+#SBATCH --array=1-40
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=24G
@@ -11,17 +11,25 @@
 #
 # Dyna-IBRL on Square_D0 (rotw1) and Coffee_D0 (G5x), mirroring the Threading
 # batch in cluster/job_threading_margin.sh so the three tasks are read the same
-# way. Four arms x 5 seeds per task; the default job list runs the two dynens
-# arms on both tasks (20 tasks).
+# way. SIX arms per task = {5-head dynens, single-head plain} x {annealed margin,
+# constant 0.01, constant 0.01 + SGFT}. Which of them actually run is decided by
+# $JOBS + --array, NOT by this file.
 #
-#   sq_dynaibrl / cof_dynaibrl            margin annealed 0.05 -> 0 over 50k
-#   sq_dynaibrl_sgft / cof_dynaibrl_sgft  the same + SGFT shaping, but with a
-#                                         CONSTANT margin (SGFT_MARGIN, 0.01)
+#   arm                          stage-1   margin(t)              sgft_coef
+#   *_dynaibrl                   dynens    0.05 -> 0 over 50k     0
+#   *_dynaibrl_m001              dynens    const $SGFT_MARGIN     0
+#   *_dynaibrl_sgft              dynens    const $SGFT_MARGIN     1.0
+#   *_dynaibrl_plain             plain     0.05 -> 0 over 50k     0
+#   *_dynaibrl_plain_m001        plain     const $SGFT_MARGIN     0
+#   *_dynaibrl_plain_sgft        plain     const $SGFT_MARGIN     1.0
 #
-# ⚠️ Like the Threading batch, the SGFT arms differ from their plain counterpart
-# in TWO fields (sgft_coef AND the margin schedule): the annealed shaped arm was
-# measured to do badly, so the schedule was dropped for them. Read the SGFT arms
-# on absolute score, not as a controlled ablation.
+# The two _m001 arms were added to FIX the confound below. Before them, a _sgft
+# arm differed from its non-shaped counterpart in TWO fields (sgft_coef AND the
+# margin schedule), because the annealed shaped arm had been measured to do badly
+# and the schedule was quietly dropped for the shaped arms only. _sgft vs _m001
+# is now a single-variable pair; _m001 vs the annealed arm is the other single
+# variable. ⚠️ _sgft read against the ANNEALED arm is still two fields -- the
+# comparison you want is _sgft vs _m001.
 #
 # ------------------------------------------------------------ what is measured
 # Dyna-IBRL has NO planner. score/score is the IBRL hybrid -- argmax over
@@ -110,8 +118,15 @@ else
 fi
 echo "[env] $PY"
 
-JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" cluster/jobs_sqcof_dynaibrl.txt)
+# ⚠️ --array MUST match `wc -l < $JOBS`. It did not: the header said 1-20 while
+# the list held 40 lines, so every submission silently dropped the 20 cof_* rows.
+JOBS=${JOBS:-cluster/jobs_sqcof_dynaibrl.txt}
+[ -f "$JOBS" ] || { echo "no job list at JOBS=$JOBS"; exit 1; }
+JOB=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$JOBS")
+[ -n "$JOB" ] || { echo "task $SLURM_ARRAY_TASK_ID is past the end of $JOBS \
+($(wc -l < "$JOBS") lines) -- --array is wider than the list"; exit 1; }
 ARM=${JOB% *}; SEED=${JOB##* }
+echo "[jobs] $JOBS"
 echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
 
 MARGIN_INIT=${MARGIN_INIT:-0.05}
@@ -164,6 +179,19 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_m001|cof_dynaibrl_m001)
+    # Identical to the arm above except margin(t): CONSTANT $SGFT_MARGIN instead
+    # of the 0.05 -> 0 anneal. sgft_coef stays 0.
+    #
+    # This is what gives the *_sgft arms a controlled partner at last: against
+    # THIS arm they differ in sgft_coef and nothing else. It also asks the
+    # separate question of whether the constant is simply the better schedule --
+    # Threading's fixed-margin sweep (single seed, policy-only, 75-100k steady)
+    # put 0.01 -> 0.873 above anneal-to-0 -> ~0.855, which is inside that sweep's
+    # noise and was never replicated on a fresh seed (CLAUDE.md rules 1 and 3).
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_sgft|cof_dynaibrl_sgft)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
@@ -171,6 +199,12 @@ case $ARM in
   sq_dynaibrl_plain|cof_dynaibrl_plain)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_plain_m001|cof_dynaibrl_plain_m001)
+    # Single-head counterpart of *_dynaibrl_m001, and the single-variable partner
+    # of *_dynaibrl_plain_sgft.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_plain_sgft|cof_dynaibrl_plain_sgft)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \

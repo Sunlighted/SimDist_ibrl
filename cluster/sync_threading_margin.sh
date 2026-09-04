@@ -28,14 +28,21 @@ for S in $SEEDS; do
   $R release/data/mimicgen/threading_d0_sat_160000_s$S $T/release/data/mimicgen/
 done
 
-echo "=== 2/4  stage-1 world model: SINGLE head, horizon 5 (16 MB) ==="
+echo "=== 2/4  stage-1 world models: single head AND 5-head dynens ==="
 # cfg.yaml must come along: the adapt scripts read env_params out of it, and
 # CLAUDE.md rule 17 -- the eval environment follows the checkpoint.
-# Only the single-head model. The 5-head dynens checkpoint is deliberately NOT
-# synced: this batch holds the dynamics fixed across plain_h5 and both dyna arms
-# so that "planner vs actor" is not confounded with "ensemble vs single head".
+#
+# The dynens checkpoint used to be deliberately excluded, back when the batch was
+# four single-head arms and the point was to hold dynamics fixed. jobs_threading_
+# margin.txt has since grown dynaibrl_dynens{,_m001,_sgft}, which cannot run
+# without it -- the job died on "MISSING asset". Ensemble is a separate axis of
+# the batch now, not a confound inside one comparison: read plain-vs-dynens as
+# "these two stage-1s", since swapping the checkpoint swaps all four channels the
+# world model feeds (representation, prior, Q warm-start, imagined data) at once.
 $R --include='latest.pt' --include='cfg.yaml' --exclude='*' \
    exps/mimicgen/threading_simdist_diversev2_h5_seed1 $T/exps/mimicgen/
+$R --include='latest.pt' --include='cfg.yaml' --exclude='*' \
+   exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1 $T/exps/mimicgen/
 
 echo "=== 3/4  source BC policy the s160 priors fine-tune from (3 MB) ==="
 # job_threading_bc_s160.sh starts every seed from this one checkpoint, exactly as
@@ -45,6 +52,7 @@ $R --include='model0.pt' --include='cfg.yaml' --exclude='*' \
 
 echo "=== 4/4  job files ==="
 $R cluster/job_threading_margin.sh cluster/jobs_threading_margin.txt \
+   cluster/jobs_threading_margin_m001.txt \
    cluster/job_threading_bc_s160.sh cluster/jobs_threading_bc_s160.txt \
    cluster/README_threading_margin.md $T/cluster/
 
