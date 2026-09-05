@@ -94,6 +94,7 @@ done
 $PY train_bc.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
   --dataset.path $DEMOS --dataset.num_data 20 --dataset.use_state 1 \
   --load_model $SRC_BC \
+  --state_policy.hidden_dim 1024 --state_policy.dropout 0.0 \
   --num_epoch 60 --epoch_len 100 --lr 1e-4 --batch_size 256 --grad_clip 5.0 \
   --eval_period 50 --num_eval_episode 50 --eval_hand_init_perturb_joint_sigma 0.1 \
   --use_wb ${USE_WB:-0}

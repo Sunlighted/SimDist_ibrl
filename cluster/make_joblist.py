@@ -31,7 +31,8 @@ def exp_dir(arm: str) -> str:
 # "unknown arm", so it is checked up front.
 SQCOF = [f"{t}_dynaibrl{s}" for t in ("sq", "cof")
          for s in ("", "_m001", "_sgft", "_plain", "_plain_m001", "_plain_sgft")]
-THREADING = ["plain_h5", "ibrl_m005anneal0",
+SQCOF += ["sq_ibrl_m001", "cof_ibrl_m001"]   # model-free, no world model
+THREADING = ["plain_h5", "ibrl_m005anneal0", "ibrl_m001",
              "dynaibrl_plain", "dynaibrl_plain_m001", "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m001", "dynaibrl_dynens_sgft"]
 KNOWN = set(SQCOF) | set(THREADING)

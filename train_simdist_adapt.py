@@ -131,6 +131,50 @@ class AdaptConfig(common_utils.RunConfig):
     #             causes the bc_loss degradation. ⚠️ Probe finding: near-uniform
     #             (top-10% of states carry only 13.0% of total interference) and already
     #             at 0.88x the demo-on-demo level, a LayerNorm consequence.
+    # ---- (axis 2, cont.) SUBSET the anchor pool by DATA PROVENANCE ----
+    # `bc_anchor_path` (source diverse_v2) is an IBRL training replay: only 20.9% of
+    # its steps are expert (`expert_flags==1`), only 29.7% come from successful
+    # episodes. stage-1's policy BC runs with `bc_expert_only=1`, i.e. pi_src is the
+    # BC of exactly the EXPERT steps -- those steps are pi_src's own training target.
+    # Measured MAE / systematic offset to pi_src(s), by subset:
+    #   ALL 0.282/0.170 | expert==0 0.324/0.203 | expert==1 0.124/0.042
+    #   success 0.095/0.035 | expert AND success 0.072/0.0247
+    # The last matches the pi_src anchor's own working point (D_SRC 0.025) => the first
+    # external action source that can reach the same proximity at all (44's data-action
+    # arm had a HARD FLOOR of 0.151 = the behaviour-policy offset). Anchoring on the RAW
+    # expert actions may also bypass part of stage-1's distillation residual -- that
+    # 0.0247 IS the residual on this subset.
+    # Both default 0 => legacy path bit-for-bit. Subsetting changes the STATE pool too,
+    # so always pair an arm with its pi_src-target twin to separate the two variables.
+    # NOTE the held-out D_SRC pool is deliberately NOT subset: D_SRC keeps its uniform
+    # full-pool meaning so every arm stays comparable (and the controller comparable).
+    # ---- anchor target = a FUNCTION other than pi_src (default "" => off) ----
+    # 44/44c conclusion: the target must be (a) defined on the WHOLE state space and
+    # (b) close to source-expert quality. Data can only ever buy one of the two --
+    # the full pool covers but is dirty (sysdev 0.170), the expert subset is clean
+    # but leaves coverage holes (radius p90 7.8 vs 0.016). pi_src is special only
+    # because it is a FUNCTION: coverage radius 0 at source-expert-distilled quality.
+    # That framing predicts a STRONGER function should beat pi_src -- and the rival
+    # explanation (42: the anchor exists to keep the policy consistent with the FROZEN
+    # distilled V = V^{pi_src}) predicts the opposite. First arm where the two
+    # mechanisms disagree in SIGN, so it decides between them.
+    #   "prior" : the source agent's BC prior head -- exactly what pi_src was distilled
+    #             from (`bc_expert_only=1` keeps only the steps where the prior acted),
+    #             i.e. the FUNCTION version of the 44c expert-subset arm.
+    #   "ibrl"  : the source expert's actual max-Q hybrid policy (its strongest form).
+    #   "rl"    : the bare RL actor (what load_frozen_agent gives by default, iron
+    #             rule #8) -- a control, NOT what pi_src was distilled from.
+    bc_anchor_source_agent: str = ""
+    bc_anchor_source_mode: str = "prior"
+    # The prior is a rectified-flow ACTION-CHUNKING policy (action_horizon=8): each
+    # query re-plans a chunk and returns its step 0, while the recorded data holds
+    # "step k of a chunk planned k steps ago". Measured: two independent draws differ
+    # by only 0.030, but the query sits 0.275 from pi_src -- i.e. the gap is the
+    # chunk-phase mismatch, NOT sampling noise (averaging 16 draws moves it 0.001).
+    # >1 averages K draws anyway, to strip what little stochasticity there is.
+    bc_anchor_source_samples: int = 1
+    bc_anchor_expert_only: int = 0
+    bc_anchor_success_only: int = 0
     bc_anchor_far_frac: float = 0.0
     bc_anchor_far_power: float = 0.0
     bc_anchor_far_metric: str = "state"
@@ -524,16 +568,45 @@ class AdaptWorkspace:
             n_take = min(self.cfg.bc_anchor_episodes + n_hold, len(keys))
             take = rng.choice(len(keys), n_take, replace=False)
             hold, pick = take[:n_hold], take[n_hold:]
-            S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
-                                for i in pick])
+            # held-out pool: ALWAYS the full uniform draw (never provenance-subset),
+            # so D_SRC keeps one fixed meaning across every arm.
             S_hold = (np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
                                       for i in hold]) if n_hold else None)
-            # (axis 2) the dataset's own actions at those states. In this dataset
-            # state and action arrays are the SAME length per episode (verified),
-            # so the concatenation is aligned index-for-index with S and the state
-            # pool is IDENTICAL to the legacy arm -- the target is the only change.
-            A = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["actions"])
-                                for i in pick]) if want_data else None
+            sub = bool(self.cfg.bc_anchor_expert_only or self.cfg.bc_anchor_success_only)
+            if not sub:
+                S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
+                                    for i in pick])
+                # (axis 2) the dataset's own actions at those states. In this dataset
+                # state and action arrays are the SAME length per episode (verified),
+                # so the concatenation is aligned index-for-index with S and the state
+                # pool is IDENTICAL to the legacy arm -- the target is the only change.
+                A = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["actions"])
+                                    for i in pick]) if want_data else None
+            else:
+                Ss, As, n_tot = [], [], 0
+                for i in pick:
+                    g = f[f"data/{keys[i]}"]
+                    st = np.asarray(g["obs"]["state"], dtype=np.float32)
+                    ac = np.asarray(g["actions"], dtype=np.float32)
+                    n = min(len(st), len(ac)); n_tot += n
+                    st, ac = st[:n], ac[:n]
+                    if self.cfg.bc_anchor_success_only and not bool(
+                            g.attrs.get("success", False)):
+                        continue
+                    keep = np.ones(n, bool)
+                    if self.cfg.bc_anchor_expert_only:
+                        assert "expert_flags" in g, \
+                            f"{self.cfg.bc_anchor_path} has no expert_flags"
+                        keep &= np.asarray(g["expert_flags"])[:n].astype(bool)
+                    if keep.any():
+                        Ss.append(st[keep]); As.append(ac[keep])
+                assert Ss, "anchor provenance subset is empty"
+                S = np.concatenate(Ss)
+                A = np.concatenate(As) if want_data else None
+                print(f"[anchor-subset] expert_only={self.cfg.bc_anchor_expert_only} "
+                      f"success_only={self.cfg.bc_anchor_success_only} | "
+                      f"{len(S)}/{n_tot} transitions kept "
+                      f"({100 * len(S) / max(1, n_tot):.1f}%)")
         if len(S) > self.cfg.bc_anchor_states:
             j = rng.choice(len(S), self.cfg.bc_anchor_states, replace=False)
             S = S[j]
@@ -543,7 +616,15 @@ class AdaptWorkspace:
         with torch.no_grad():
             ref = torch.cat([self.agent.model.policy_action(pool[i:i + 8192])
                              for i in range(0, len(pool), 8192)])
-        if want_data:
+        if self.cfg.bc_anchor_source_agent:
+            tgt = self._source_agent_actions(pool)
+            gap = float((tgt - ref).abs().mean())
+            print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source episodes "
+                  f"-> {len(pool)} states | SOURCE-AGENT ({self.cfg.bc_anchor_source_mode}) "
+                  f"targets (|a| mean {float(tgt.abs().mean()):.4f}; "
+                  f"pi_src |a| mean {float(ref.abs().mean()):.4f}; "
+                  f"mean|a_src - pi_src(s)| = {gap:.4f})")
+        elif want_data:
             assert A is not None and len(A) == len(S), "anchor state/action misaligned"
             tgt = torch.as_tensor(A, dtype=torch.float32, device="cuda")
             gap = float((tgt - ref).abs().mean())
@@ -574,6 +655,39 @@ class AdaptWorkspace:
         # `ref` is ALWAYS pi_src's actions => D_SRC keeps its docs/simdist.md 42/43
         # meaning (distance to pi_src) no matter what the anchor regresses onto.
         return pool, tgt, ref, w
+
+    def _source_agent_actions(self, pool):
+        """Query the frozen SOURCE expert on the anchor states. Unlike pi_src (the
+        distilled head) this is the expert itself, so it carries no distillation
+        residual -- the point of the arm."""
+        from train_rl import load_frozen_agent, attach_ibrl_prior
+        mode = self.cfg.bc_anchor_source_mode
+        assert mode in ("prior", "ibrl", "rl"), mode
+        sa = load_frozen_agent(self.cfg.bc_anchor_source_agent, self.eval_env,
+                               self.base_cfg, "cuda")
+        if mode in ("prior", "ibrl"):
+            # iron rule #8: load_frozen_agent DROPS the prior and pins act_method="rl".
+            desc = attach_ibrl_prior(sa, self.cfg.bc_anchor_source_agent,
+                                     self.eval_env, "cuda")
+            assert desc, f"{self.cfg.bc_anchor_source_agent} declares no BC prior"
+            print(f"[anchor-src] mode={mode} | prior = {desc}")
+        out = []
+        with torch.no_grad(), utils.eval_mode(sa):
+            for i in range(0, len(pool), 8192):
+                ob = {"state": pool[i:i + 8192]}
+                K = max(1, self.cfg.bc_anchor_source_samples)
+                acc = None
+                for _ in range(K):
+                    if mode == "prior":
+                        a = sa.bc_policies[0].act(ob, cpu=False)
+                    elif mode == "ibrl":
+                        with sa.override_act_method("ibrl"):
+                            a = sa.act(ob, eval_mode=True, stddev=0.0, cpu=False)
+                    else:
+                        a = sa.act(ob, eval_mode=True, stddev=0.0, cpu=False)
+                    acc = a.float() if acc is None else acc + a.float()
+                out.append(acc / K)
+        return torch.cat(out)
 
     def _anchor_far_weights(self, pool):
         """(axis 2) Per-state sampling weights from "how far / how harmless this

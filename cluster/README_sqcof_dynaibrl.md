@@ -83,6 +83,57 @@ margin with shaping **off**, so:
 0.018 — well under the noise floor CLAUDE.md rule 1 sets, and never replicated on
 a fresh seed. The `_m001` arms are the first honest measurement of it.
 
+## The model-free arms (`sq_ibrl_m001` / `cof_ibrl_m001`)
+
+`train_rl.py`, no world model anywhere, same 100k budget, same 20 target demos,
+same constant margin as the `_m001` dyna arms. They answer "how much of the
+margin's value needs a model at all?" — the Square/Coffee counterparts of
+Threading's `ibrl_m001`.
+
+⚠️ Against any dyna arm this is **two** differences, not one: no world model
+*and* a different prior (target-domain BC here, the frozen stage-2 distilled
+policy there). It bounds the model's contribution; it does not isolate it.
+
+**Prerequisites** (neither exists on the cluster until you ship it):
+
+| asset | how |
+|---|---|
+| `exps/mimicgen/{square_il_ft_target_rotw1,coffee_il_ft_target_g5x}_seed*` | `bash scripts/train_target_bc_priors.sh` on the workstation |
+| `release/cfgs/mimicgen/{square_rotw1,coffee_g5x}_ibrl_m001.yaml` | `python3 scripts/make_ibrl_m001_cfg.py` (already generated, committed) |
+
+```bash
+bash scripts/train_target_bc_priors.sh          # 3 tasks x 10 seeds, round-robin over GPUs
+bash cluster/pack_ibrl_priors.sh                # -> ibrl_m001_priors.tar.gz (~260 MB)
+# scp, then AT THE REPO ROOT on the cluster: tar xzf ibrl_m001_priors.tar.gz
+JOBS=cluster/jobs_sqcof_ibrl_m001.txt \
+  sbatch --account=def-<pi> --array=1-20 --export=ALL,JOBS cluster/job_sqcof_dynaibrl.sh
+```
+
+The priors ship **with their `cfg.yaml`** — `train_rl.py` rebuilds the BC prior
+from `dirname(bc_policy)/cfg.yaml`, so a tarball of bare `.pt` files fails at
+load time, after the queue wait.
+
+### ⚠️ Coffee has two incompatible "targets" in the tree
+
+`scripts/make_ibrl_m001_cfg.py` copies the env from the **stage-1 cfg**, because
+that is where the dyna arms get their eval env
+(`train_simdist_adapt.py:398`) and two numbers are only comparable if the env
+matches (rule 19). On Coffee that choice is not cosmetic —
+`coffee_simdist_*_h5_seed1` and `coffee_ibrl_target_G5x_seed1` disagree on four
+shift knobs:
+
+| knob | stage-1 (used) | target expert |
+|---|---:|---:|
+| `friction_scale` | 0.5 | 0.2 |
+| `lid_damping_scale` | 50.0 | 5.0 |
+| `mass_scale` | 3.0 | 8.0 |
+| `pod_holder_friction_scale` | 2.0 | 5.0 |
+
+So the Coffee dyna arms — and now the ibrl arm — run on the **stage-1** target,
+which is not the one `coffee_ibrl_target_G5x_seed1` was trained and scored on.
+Square has no such disagreement. Worth settling before any Coffee number is
+compared against a `docs/tasks.md` §40 figure.
+
 ## What the score means
 
 Dyna-IBRL has **no planner**. `score/score` is the IBRL hybrid: `argmax` over

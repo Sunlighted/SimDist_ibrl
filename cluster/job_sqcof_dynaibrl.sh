@@ -17,11 +17,11 @@
 #
 #   arm                          stage-1   margin(t)              sgft_coef
 #   *_dynaibrl                   dynens    0.05 -> 0 over 50k     0
-#   *_dynaibrl_m001              dynens    const $SGFT_MARGIN     0
-#   *_dynaibrl_sgft              dynens    const $SGFT_MARGIN     1.0
+#   *_dynaibrl_m001              dynens    const $CONST_MARGIN     0
+#   *_dynaibrl_sgft              dynens    const $CONST_MARGIN     1.0
 #   *_dynaibrl_plain             plain     0.05 -> 0 over 50k     0
-#   *_dynaibrl_plain_m001        plain     const $SGFT_MARGIN     0
-#   *_dynaibrl_plain_sgft        plain     const $SGFT_MARGIN     1.0
+#   *_dynaibrl_plain_m001        plain     const $CONST_MARGIN     0
+#   *_dynaibrl_plain_sgft        plain     const $CONST_MARGIN     1.0
 #
 # The two _m001 arms were added to FIX the confound below. Before them, a _sgft
 # arm differed from its non-shaped counterpart in TWO fields (sgft_coef AND the
@@ -136,19 +136,25 @@ MARGIN_STEPS=${MARGIN_STEPS:-50000}
 # still going through the schedule code path. 0.01 is the best constant measured
 # on Threading (single seed, 75-100k steady, policy-only): 0.01 -> 0.873,
 # 0.05 -> 0.775, anneal 0.05->0.01 -> ~0.88, anneal 0.05->0.00 -> ~0.855.
-SGFT_MARGIN=${SGFT_MARGIN:-0.01}
+# Renamed from SGFT_MARGIN: the constant is used by the shaped arms and the
+# unshaped _m001 arms alike. The old name is still accepted as input.
+CONST_MARGIN=${CONST_MARGIN:-${SGFT_MARGIN:-0.01}}
 ANCHOR_COEF=${ANCHOR_COEF:-0.0}
 
 case $ARM in
   sq_*) TASK=square
         EXP_DIR=${EXP_DIR:-exps/square_rotw1_6arm}
         DEMOS=release/data/mimicgen/square_sat_400000_s${SEED}/dataset.hdf5
+        IBRL_CFG=release/cfgs/mimicgen/square_rotw1_ibrl_m001.yaml
+        BC_PRIOR=exps/mimicgen/square_il_ft_target_rotw1_seed${SEED}/model0.pt
         STAGE1_DYNENS=exps/mimicgen/square_simdist_rotw1_dynens_h5_seed1/latest.pt
         STAGE1_PLAIN=exps/mimicgen/square_simdist_rotw1_h5_seed1/latest.pt
         ANCHOR_PATH=release/data/mimicgen/square_anchor_pool_4k/dataset.hdf5 ;;
   cof_*) TASK=coffee
         EXP_DIR=${EXP_DIR:-exps/coffee_g5x_3arm}
         DEMOS=release/data/mimicgen/coffee_g5x_sat400k_s${SEED}/dataset.hdf5
+        IBRL_CFG=release/cfgs/mimicgen/coffee_g5x_ibrl_m001.yaml
+        BC_PRIOR=exps/mimicgen/coffee_il_ft_target_g5x_seed${SEED}/model0.pt
         STAGE1_DYNENS=exps/mimicgen/coffee_simdist_diversev1_h5_seed1/latest.pt
         STAGE1_PLAIN=exps/mimicgen/coffee_simdist_plain_h5_seed1/latest.pt
         ANCHOR_PATH=release/data/mimicgen/coffee_anchor_pool_4k/dataset.hdf5 ;;
@@ -159,8 +165,19 @@ OUT=$EXP_DIR/${ARM}${SUFFIX:-}_seed${SEED}
 for f in "$DEMOS"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_sqcof_dynaibrl.sh)"; exit 1; }
 done
-case $ARM in *_plain*) NEED=$STAGE1_PLAIN ;; *) NEED=$STAGE1_DYNENS ;; esac
-[ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; }
+case $ARM in
+  *_ibrl_m001)
+    # No world model in this arm at all -- it needs the BC prior and the cfg
+    # instead. The prior is trained on the workstation and shipped in the tarball
+    # (scripts/train_target_bc_priors.sh + cluster/pack_ibrl_priors.sh).
+    for f in "$BC_PRIOR" "$IBRL_CFG"; do
+        [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
+    done ;;
+  *_plain*) NEED=$STAGE1_PLAIN
+    [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
+  *) NEED=$STAGE1_DYNENS
+    [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
+esac
 if [ "$(echo "$ANCHOR_COEF > 0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
     [ -f "$ANCHOR_PATH" ] || { echo "MISSING anchor pool: $ANCHOR_PATH"; exit 1; }
     ANCHOR_ARGS="--bc_anchor_coef $ANCHOR_COEF --bc_anchor_path $ANCHOR_PATH"
@@ -180,7 +197,7 @@ case $ARM in
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_m001|cof_dynaibrl_m001)
-    # Identical to the arm above except margin(t): CONSTANT $SGFT_MARGIN instead
+    # Identical to the arm above except margin(t): CONSTANT $CONST_MARGIN instead
     # of the 0.05 -> 0 anneal. sgft_coef stays 0.
     #
     # This is what gives the *_sgft arms a controlled partner at last: against
@@ -190,11 +207,11 @@ case $ARM in
     # put 0.01 -> 0.873 above anneal-to-0 -> ~0.855, which is inside that sweep's
     # noise and was never replicated on a fresh seed (CLAUDE.md rules 1 and 3).
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_sgft|cof_dynaibrl_sgft)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
   sq_dynaibrl_plain|cof_dynaibrl_plain)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
@@ -204,12 +221,31 @@ case $ARM in
     # Single-head counterpart of *_dynaibrl_m001, and the single-variable partner
     # of *_dynaibrl_plain_sgft.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_plain_sgft|cof_dynaibrl_plain_sgft)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  sq_ibrl_m001|cof_ibrl_m001)
+    # Model-free IBRL at the same constant margin as the _m001 dyna arms, same
+    # 100k budget, same 20 target demos. No world model, so no stage-1 ckpt.
+    #
+    # The env comes from $IBRL_CFG, generated by scripts/make_ibrl_m001_cfg.py
+    # from the STAGE-1 cfg -- the same source of truth the dyna arms' eval env
+    # comes from (train_simdist_adapt.py:398). Regenerate it rather than editing
+    # it by hand, and re-read its ⚠️ about Coffee.
+    #
+    # ⚠️ TWO differences from any dyna arm, not one: no world model AND a
+    # different prior (target-domain BC here; the frozen stage-2 distilled policy
+    # there). It bounds how much of the margin's value needs a model; it does not
+    # isolate the model.
+    $PY train_rl.py --config_path $IBRL_CFG \
+      --save_dir $OUT --seed $SEED \
+      --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
+      --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   *) echo "unknown arm '$ARM'"; exit 1 ;;
 esac
 RC=$?

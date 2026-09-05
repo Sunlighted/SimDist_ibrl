@@ -23,7 +23,7 @@
 #                        logs the bare policy alongside as score/policy_only.
 #   dynaibrl_plain       Dyna + IBRL prior margin, annealed 0.05 -> 0 over 50k,
 #                        on the SAME single-head stage-1 as plain_h5.
-#   dynaibrl_plain_m001  the same with margin(t) CONSTANT at SGFT_MARGIN (0.01)
+#   dynaibrl_plain_m001  the same with margin(t) CONSTANT at CONST_MARGIN (0.01)
 #                        instead of the anneal, shaping still off.
 #   dynaibrl_plain_sgft  constant margin + SGFT shaping (--dyna.sgft_coef 1.0).
 #                        The annealed shaped arm performed badly, so the schedule
@@ -36,6 +36,8 @@
 #   ibrl_m005anneal0     model-free IBRL, same 0.05 -> 0 margin schedule. No
 #                        world model anywhere -- the baseline that says how much
 #                        of the margin's value needs a model at all.
+#   ibrl_m001            the same at the CONSTANT margin the _m001 dyna arms use,
+#                        so the model-free reference exists at both settings.
 #
 # ------------------------------------------------- why the plain dynamics head
 # The existing dynaibrl_* runs on the workstation all sit on the 5-head
@@ -253,7 +255,10 @@ MARGIN_STEPS=${MARGIN_STEPS:-50000}
 # 0.01 is the best constant measured on the workstation (single seed, 75-100k
 # steady, policy-only): 0.01 -> 0.873, 0.05 -> 0.775, anneal 0.05->0.01 -> ~0.88,
 # anneal 0.05->0.00 -> ~0.855.
-SGFT_MARGIN=${SGFT_MARGIN:-0.01}
+# Renamed from SGFT_MARGIN, which is no longer accurate: the constant is used by
+# the shaped arms, the _m001 arms and the model-free ibrl_m001 alike. The old
+# name is still accepted so existing submissions keep working.
+CONST_MARGIN=${CONST_MARGIN:-${SGFT_MARGIN:-0.01}}
 
 for f in "$DEMOS" "$STAGE1_PLAIN"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_threading_margin.sh)"; exit 1; }
@@ -261,7 +266,8 @@ done
 case $ARM in dynaibrl_dynens*)
     [ -f "$STAGE1_DYNENS" ] || { echo "MISSING asset: $STAGE1_DYNENS"; exit 1; } ;;
 esac
-if [ "$ARM" = "ibrl_m005anneal0" ] && [ ! -f "$BC_PRIOR" ]; then
+case $ARM in ibrl_*) NEED_BC=1 ;; *) NEED_BC=0 ;; esac
+if [ "$NEED_BC" = 1 ] && [ ! -f "$BC_PRIOR" ]; then
     echo "MISSING $BC_PRIOR -- run cluster/job_threading_bc_s160.sh first"; exit 1
 fi
 
@@ -287,7 +293,7 @@ case $ARM in
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_m001)
-    # dynaibrl_plain with margin(t) CONSTANT at $SGFT_MARGIN instead of the
+    # dynaibrl_plain with margin(t) CONSTANT at $CONST_MARGIN instead of the
     # 0.05 -> 0 anneal, shaping still off. Gives dynaibrl_plain_sgft the
     # single-variable partner it never had (see its comment), and separately asks
     # whether the constant is just the better schedule.
@@ -296,16 +302,16 @@ case $ARM in
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_sgft)
     # ⚠️ Differs from dynaibrl_plain in TWO fields: sgft_coef AND the margin
-    # schedule (constant SGFT_MARGIN here, annealed there). The annealed version
+    # schedule (constant CONST_MARGIN here, annealed there). The annealed version
     # of this arm performed badly, so the schedule was dropped for the shaped
     # arms. Consequence: this pair no longer isolates SGFT -- read the sgft arms
     # on their absolute score, not as a controlled ablation against the arm above.
-    # To restore the single-variable pair, run with SGFT_MARGIN unset and pass
+    # To restore the single-variable pair, run with CONST_MARGIN unset and pass
     # --dyna.prior_margin_{init,final,steps} from MARGIN_* as the other arms do.
     #
     # Prior evidence on plain Dyna was a null (0.139 vs 0.124, n=10, ns), measured
@@ -316,7 +322,7 @@ case $ARM in
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_dynens)
@@ -339,7 +345,7 @@ case $ARM in
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_dynens_sgft)
@@ -349,7 +355,7 @@ case $ARM in
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
-      --dyna.prior_margin_init $SGFT_MARGIN --dyna.prior_margin_final $SGFT_MARGIN \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   ibrl_m005anneal0)
@@ -374,6 +380,27 @@ case $ARM in
       --train_hand_init_perturb_joint_sigma 0.1 \
       --eval_hand_init_perturb_joint_sigma 0.1 \
       --prior_margin_init $MARGIN_INIT --prior_margin_final $MARGIN_FINAL \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  ibrl_m001)
+    # ibrl_m005anneal0 with margin(t) CONSTANT at $CONST_MARGIN instead of the
+    # 0.05 -> 0 anneal -- the model-free partner of dynaibrl_*_m001, so the whole
+    # batch sits at one margin and "does the margin's value need a world model?"
+    # is asked at the setting the dyna arms actually run at.
+    #
+    # ⚠️ Still TWO differences from any dyna arm, not one: no world model AND a
+    # different prior (target-BC here, the frozen stage-2 distilled policy there).
+    # It bounds how much of the effect needs a model; it does not isolate it.
+    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+      --bc_policy $BC_PRIOR \
+      --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
+      --num_train_step 100000 --num_warm_up_episode 30 \
+      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
+      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
+      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
+      --train_hand_init_perturb_joint_sigma 0.1 \
+      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   *) echo "unknown arm '$ARM'"; exit 1 ;;

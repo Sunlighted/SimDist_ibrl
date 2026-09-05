@@ -16,7 +16,7 @@ Last updated: 2026-09-04
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~1330 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定(不是 base 分数)+「锚向谁」是独立于 bc_loss 的渠道** |
+| **`docs/simdist.md`** | ~1470 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
 | **`docs/infra.md`** | ~410 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义。 |
@@ -179,10 +179,25 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   偏差落在哪个相位全部无因果**。★ 尾部：Spearman 0.90 但干预后效应 0 —— 共线变量必须造臂分开。
 - **§44** ★★ anchor 的收益由 **dynamics 精度**定(plain +0.055 vs dynens +0.172,交互 t=4.2)
   ⇒ §42「弱 base 增益大」的推广被推翻(两个 base 的 λ=0 分数几乎相同);**anchor 目标必须是
-  π_src 本身** —— 换成数据集记录的 action 在 `bc_loss` 匹配下仍掉 −0.081 (t=2.5) ⇒
-  `D_SRC` 是独立于 `bc_loss` 的第二条渠道(§43 只测了后者,因为它把前者标定固定了);
-  data-action 的 D_SRC 下界 0.151(靶点 6.3×,λ 拉 100× 不动)= 结构性不可达,与 F2 同型;
-  `policy_only` 0.42 → 0.56(π_src anchor) vs **0.23**(data anchor)。
+  π_src 本身** —— 换成数据集记录的 action 掉 0.08–0.17,其 D_SRC 下界 0.151(靶点 6.3×,
+  λ 拉 100× 不动)= 结构性不可达,与 F2 同型。
+  ★★ **唯一的充分统计量是 `policy_only`(proposal 质量):5 个机制不同的臂上 R²=0.982、
+  残差 sd 0.010 < 各臂 seed sd;`D_SRC` R²=0.51、`bc_loss` R²=0.08(⇒ §43 那条 bc_loss 定律
+  和本节初稿的"D_SRC 第二渠道"都是共线代理,已修正)。** ⚠️ 只用它解释臂间差异,别用它选参数
+  (seed 层面 ρ=−0.50)。交互项分解:79% 来自 planner 的**转换率**(Δscore/Δp:plain 0.42 vs
+  dynens 0.90),21% 来自 proposal 抬得更多 ⇒ findings §36 的定量版。
+- **§44b** ★ **轴②(在哪些状态上锚)封闭**:按离 demo 支撑集的距离 / NTK 干扰加权,
+  3 形式 × 2 度量 × 4 λ = 11 个标定格 **0/11 外移前沿**(全部内移 5.4–22.8%,单调剂量-响应),
+  3 seed 闭环 **+0.021 (ns)**。两个前置诊断就预测到了:pool 本来 99.6% 在 demo 支撑集外
+  (§42 的原文理由早已自动满足)、NTK 干扰几乎均匀(top10% 只携带 13%,LayerNorm 所致)。
+  ⚠️ 但预注册预测(0.73)**反向失败** —— 正是这个负结果逼出了上面 `policy_only` 那个正结论。
+- **§44c** ★ 轴②的第二条路径(按 **provenance** 筛 anchor pool)同样封闭,且给出**分解**:
+  π_src **就是** `expert_flags==1` 步的 BC(`bc_expert_only=1`)⇒ 筛 expert∧success 把动作源的
+  不可约偏移从 0.170 降到 **0.0247**(§44 那个硬下界消失了),但三臂 40k 实测
+  **动作质量 +0.028 (ns)、状态覆盖 −0.123、净 −0.095** ⇒ **想要更好的动作标签就得放弃状态
+  覆盖,二者不可兼得**(全空间上的 expert 动作回归 = π_src 本身)。
+  ⚠️ 连带:`policy_only` 定律加这三臂后 R² **0.982 → 0.752**(残差 sd 0.0335)⇒ 跨机制会漂,
+  只能当解释变量。**两次预注册预测连续失败(错 0.113 / 排序反转)⇒ ±0.1 内一律跑满 stage-3。**
 
 **`docs/demo-collection.md`**
 - **§35** 什么属性决定 adapt：成功率**无关**（ρ=+0.20）；4×4 交叉析因（policy 53% /

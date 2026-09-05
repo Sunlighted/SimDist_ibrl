@@ -1,0 +1,213 @@
+add_bc_loss: 0
+batch_size: 256
+bc_policy: PLACEHOLDER
+discount: 0.99
+end_on_success: 1
+env_reward_scale: 1
+episode_length: 400
+eval_domain_shift: &id001
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 1.0
+  gripper_kp_scale: 0.3
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  lid_damping_scale: 1.0
+  lid_frictionloss: 0.0
+  mask_hole_offset_in_obs: false
+  mass_scale: 1.0
+  mode: fixed
+  needle_size_scale: 1.0
+  nut_size_scale: 1.0
+  peg_friction_scale: 2.0
+  peg_size_scale: 1.2
+  pod_holder_friction_scale: 1.0
+  pod_holder_size_scale: 1.0
+  ring_friction_scale: 1.0
+  ring_size_scale: 1.0
+  solimp_scale: 1.0
+  solref_scale: 1.0
+  tripod_com_height_scale: 1.0
+  tripod_mass_scale: 1.0
+eval_hand_init_perturb: null
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_init_dist: &id002
+  enabled: true
+  needle_x:
+  - -0.2
+  - 0.05
+  needle_y:
+  - 0.15
+  - 0.25
+  needle_z_rot:
+  - -3.665191429188092
+  - 0.5235987755982988
+  nut_z_rot:
+  - 2.0943951023931953
+  - 3.141592653589793
+  tripod_x:
+  - -0.1
+  - 0.15
+  tripod_y:
+  - -0.2
+  - -0.1
+  tripod_z_rot:
+  - 0.5235987755982988
+  - 2.6179938779914944
+freeze_actor_during_margin: 0
+freeze_actor_margin_thresh: 0.15
+freeze_bc_replay: 1
+image_size: 224
+load_policy_only: 1
+load_pretrained_agent: ''
+log_per_step: 1000
+mix_rl_rate: 0.5
+mp_eval: 1
+nstep: 3
+num_critic_update: 5
+num_eval_episode: 100
+num_train_step: 100000
+num_warm_up_episode: 60
+obs_stack: 1
+preload_datapath: PLACEHOLDER
+preload_num_data: 20
+pretrain_epoch_len: 10000
+pretrain_num_epoch: 0
+pretrain_only: 1
+prior_margin_final: 0.01
+prior_margin_init: 0.01
+prior_margin_steps: 50000
+prop_stack: 1
+q_agent:
+  act_method: ibrl
+  actor:
+    dropout: 0
+    feature_dim: 128
+    hidden_dim: 1024
+    max_action_norm: -1
+    orth: 1
+    spatial_emb: 0
+  bc_loss_coef: 0.1
+  bc_loss_dynamic: 0
+  bootstrap_method: ibrl
+  clamp_q_target: 0
+  critic:
+    drop: 0
+    feature_dim: 128
+    fuse_patch: 1
+    hidden_dim: 1024
+    norm_weight: 0
+    orth: 1
+    spatial_emb: 0
+  critic_target_tau: 0.01
+  device: cuda
+  enc_type: vit
+  ibrl_eps_greedy: 1.0
+  lr: 0.0001
+  q_target_max: 1.0
+  q_target_min: 0.0
+  resnet:
+    downsample: default
+    norm_layer: gnn
+    shallow: 0
+    stem: default
+  resnet96:
+    shallow: 0
+    use_1x1: 0
+  sgft_coef: 1.0
+  sgft_potential: 1
+  sgft_shaping: 0
+  soft_ibrl_beta: 10
+  state_actor:
+    dropout: 0.0
+    fourier_include_raw: 1
+    fourier_l: 0
+    fourier_normalize: 1
+    hidden_dim: 1024
+    layer_norm: 0
+    num_layer: 3
+    orth: 0
+  state_critic:
+    append_action: 0
+    dropout: 0.0
+    fourier_include_raw: 1
+    fourier_l: 0
+    fourier_normalize: 1
+    hidden_dim: 1024
+    layer_norm: 1
+    num_k: 2
+    num_layer: 3
+    num_q: 5
+    orth: 0
+  stddev_clip: 0.3
+  use_prop: 0
+  vit:
+    depth: 3
+    embed_dim: 128
+    embed_norm: 0
+    embed_style: embed1
+    num_heads: 4
+    patch_size: 8
+    stride: -1
+replay_buffer_size: 1000
+rl_camera: robot0_eye_in_hand
+rl_image_size: 96
+save_dir: exps/PLACEHOLDER
+save_per_success: -1
+save_replay_buffer: ''
+seed: 1
+sgft_source_agent: ''
+snapshot_period: 100000
+source_agent_use_hybrid: 1
+state_stack: 1
+stddev_max: 0.1
+stddev_min: 0.1
+stddev_step: 500000
+strict_success:
+  dwell_steps: 3
+  enabled: false
+  max_needle_speed: 0.0
+  max_tripod_disp: 0.04
+task_name: Square_D0
+train_domain_shift: *id001
+train_hand_init_perturb: null
+train_hand_init_perturb_joint_sigma: 0.1
+train_init_dist: *id002
+update_freq: 2
+use_state: 1
+use_wb: 1

@@ -17,7 +17,8 @@ the **same single-head dynamics**?
 | `dynaibrl_plain` | `train_simdist_dyna_ibrl.py` | single head, h=5 | Dyna + IBRL margin 0.05 → 0 over 50k |
 | `dynaibrl_plain_m001` | `train_simdist_dyna_ibrl.py` | single head, h=5 | the same with margin **constant** at `SGFT_MARGIN` (0.01) |
 | `dynaibrl_plain_sgft` | `train_simdist_dyna_ibrl.py` | single head, h=5 | constant margin + `--dyna.sgft_coef 1.0` |
-| `ibrl_m005anneal0` | `train_rl.py` | none | model-free IBRL, same margin schedule |
+| `ibrl_m005anneal0` | `train_rl.py` | none | model-free IBRL, margin 0.05 → 0 |
+| `ibrl_m001` | `train_rl.py` | none | model-free IBRL at the **constant** margin the `_m001` arms use |
 | `dynaibrl_dynens` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain`, on the ensemble stage-1 |
 | `dynaibrl_dynens_m001` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_m001`, on the ensemble stage-1 |
 | `dynaibrl_dynens_sgft` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_sgft`, on the ensemble stage-1 |
@@ -51,7 +52,8 @@ default list.
 
 Both `_sgft` arms have already run, and the 0.05 → 0 schedule is not being
 re-spent, so `jobs_threading_margin_m001.txt` **is** the remaining work: the two
-constant-margin, shaping-off arms, 10 seeds each. Build any other subset by name
+constant-margin dyna arms plus the model-free `ibrl_m001`, 10 seeds each
+(30 rows, seed-major → `--array=1-30`, or `1-3` to smoke all three). Build any other subset by name
 with `cluster/make_joblist.py` rather than by `--array` arithmetic.
 
 ⚠️ The `_sgft` numbers they will be read against were produced by an earlier
@@ -78,6 +80,22 @@ comparison.
 the standing standard since `docs/demo-collection.md` 38 measured **+0.139** from
 this switch alone; `dynens_h5 → dynens_h5_slow`, identical but for this path,
 moved round-0 from 0.274 to 0.417.
+
+## What `ibrl_m001` does and does not isolate
+
+It differs from `ibrl_m005anneal0` in exactly one field (the schedule), so the
+margin question is clean on the model-free side. Against any **dyna** arm it is
+still **two** differences: no world model *and* a different prior (target-domain
+BC here; the frozen stage-2 distilled policy there). It bounds how much of the
+margin's value needs a model; it does not isolate the model.
+
+`CONST_MARGIN` (was `SGFT_MARGIN`, old name still accepted) is the one knob
+feeding every constant-margin arm — shaped, unshaped and model-free — so they
+cannot drift apart:
+
+```bash
+CONST_MARGIN=0.02 JOBS=... sbatch --export=ALL,JOBS,CONST_MARGIN ...
+```
 
 ## The margin schedule
 

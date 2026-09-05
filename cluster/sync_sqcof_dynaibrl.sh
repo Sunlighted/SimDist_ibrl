@@ -52,9 +52,14 @@ echo "=== 3/4  bc_anchor state pools (72 MB + 222 MB) ==="
 $R release/data/mimicgen/square_anchor_pool_4k  $T/release/data/mimicgen/
 $R release/data/mimicgen/coffee_anchor_pool_4k  $T/release/data/mimicgen/
 
+echo "=== ibrl_m001 configs (the BC priors ship separately, see cluster/pack_ibrl_priors.sh) ==="
+$R release/cfgs/mimicgen/square_rotw1_ibrl_m001.yaml \
+   release/cfgs/mimicgen/coffee_g5x_ibrl_m001.yaml $T/release/cfgs/mimicgen/
+
 echo "=== 4/4  job files ==="
 $R cluster/job_sqcof_dynaibrl.sh cluster/jobs_sqcof_dynaibrl.txt \
    cluster/jobs_sqcof_dynaibrl_round2.txt cluster/jobs_sqcof_dynaibrl_noanneal.txt \
+   cluster/jobs_sqcof_ibrl_m001.txt cluster/make_joblist.py \
    cluster/make_joblist.py \
    cluster/README_sqcof_dynaibrl.md $T/cluster/
 
