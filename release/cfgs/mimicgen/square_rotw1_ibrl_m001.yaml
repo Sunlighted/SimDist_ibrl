@@ -1,6 +1,7 @@
 add_bc_loss: 0
 batch_size: 256
 bc_policy: PLACEHOLDER
+count_warmup_transitions: 1
 discount: 0.99
 end_on_success: 1
 env_reward_scale: 1
@@ -102,7 +103,7 @@ nstep: 3
 num_critic_update: 5
 num_eval_episode: 100
 num_train_step: 100000
-num_warm_up_episode: 60
+num_warm_up_episode: 30
 obs_stack: 1
 preload_datapath: PLACEHOLDER
 preload_num_data: 20

@@ -1,6 +1,7 @@
 add_bc_loss: 0
 batch_size: 256
 bc_policy: PLACEHOLDER
+count_warmup_transitions: 1
 discount: 0.99
 end_on_success: 1
 env_reward_scale: 1
@@ -41,22 +42,22 @@ eval_domain_shift: &id001
   dr_solref_range:
   - 0.7
   - 1.5
-  friction_scale: 0.5
+  friction_scale: 0.2
   gripper_kp_scale: 0.3
   hole_offset:
   - 0.0
   - 0.0
   - 0.0
-  lid_damping_scale: 50.0
+  lid_damping_scale: 5.0
   lid_frictionloss: 0.0
   mask_hole_offset_in_obs: false
-  mass_scale: 3.0
+  mass_scale: 8.0
   mode: fixed
   needle_size_scale: 1.0
   nut_size_scale: 1.0
   peg_friction_scale: 1.0
   peg_size_scale: 1.0
-  pod_holder_friction_scale: 2.0
+  pod_holder_friction_scale: 5.0
   pod_holder_size_scale: 1.0
   ring_friction_scale: 1.0
   ring_size_scale: 1.0
@@ -102,7 +103,7 @@ nstep: 3
 num_critic_update: 5
 num_eval_episode: 100
 num_train_step: 100000
-num_warm_up_episode: 60
+num_warm_up_episode: 30
 obs_stack: 1
 preload_datapath: PLACEHOLDER
 preload_num_data: 20

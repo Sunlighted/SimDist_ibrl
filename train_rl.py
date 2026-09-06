@@ -246,6 +246,15 @@ class MainConfig(common_utils.RunConfig):
     # others
     env_reward_scale: float = 1
     num_warm_up_episode: int = 50
+    # Count the transitions collected during warm_up() toward global_step, so
+    # num_train_step is a TOTAL target-interaction budget rather than "budget
+    # after an unbilled warm-up". Without this a model-free arm silently gets
+    # num_warm_up_episode extra episodes of target interaction that the Dyna arms
+    # (whose max_transitions counts every collected transition) are charged for.
+    # The warm-up rollouts are real target steps; the preloaded demos are not
+    # counted here because the Dyna arms do not count their preload either.
+    # 0 restores the old behaviour for reproducing pre-2026-09-06 runs.
+    count_warmup_transitions: int = 1
     num_eval_episode: int = 10
     save_per_success: int = -1
     mp_eval: int = 0  # eval with multiprocess
@@ -328,6 +337,21 @@ class MainConfig(common_utils.RunConfig):
 
         if self.save_replay_buffer in ["none", "None"]:
             self.save_replay_buffer = ""
+
+        # A bc_policy is consumed ONLY by _act_ibrl (act_method "ibrl"/"ibrl_soft")
+        # and value(use_ibrl=True). With act_method="rl" the prior is loaded,
+        # printed, and never consulted -- the run is plain RL wearing an IBRL name,
+        # and prior_margin becomes dead code. That failure is silent and has now
+        # cost five debugging sessions (CLAUDE.md rule 8), most recently two arms
+        # differing only in prior_margin coming out byte-identical. Fail loudly.
+        if self.bc_policy and self.q_agent.act_method == "rl":
+            raise ValueError(
+                "bc_policy is set but q_agent.act_method='rl' (the QAgentConfig "
+                "default), so the prior would never enter the max-Q argmax and "
+                "prior_margin would do nothing.\n"
+                "Pass --q_agent.act_method ibrl (or ibrl_soft) for IBRL, or drop "
+                "--bc_policy if plain RL is what you want."
+            )
 
         assert not (self.load_policy_only and self.load_critic_only), (
             "load_policy_only and load_critic_only are mutually exclusive: the "
@@ -654,6 +678,7 @@ class Workspace:
         self.replay.new_episode(obs)
         total_reward = 0
         num_episode = 0
+        num_transition = 0
         target = self.cfg.num_warm_up_episode
         pbar = tqdm(total=target, initial=self.replay.size(),
                     desc="warm-up", dynamic_ncols=True)
@@ -673,6 +698,7 @@ class Workspace:
             obs, reward, terminal, success, image_obs = self.train_env.step(action)
             reply = {"action": action}
             self.replay.add(obs, reply, reward, terminal, success, image_obs)
+            num_transition += 1
 
             if terminal:
                 num_episode += 1
@@ -689,6 +715,15 @@ class Workspace:
         pbar.close()
         print(f"Warm up done. #episode: {self.replay.size()}")
         print(f"#episode from warmup: {num_episode}, #reward: {total_reward}")
+        print(f"#transition from warmup: {num_transition}")
+        if self.cfg.count_warmup_transitions:
+            # Bill the warm-up against the interaction budget. This also shifts
+            # every global_step-driven schedule (stddev, prior_margin) forward by
+            # the same amount, which is the point: they should be functions of
+            # target interaction spent, not of gradient steps taken.
+            self.global_step += num_transition
+            print(f"[budget] warm-up billed to global_step -> {self.global_step}"
+                  f"/{self.cfg.num_train_step}")
 
     def _maybe_fit_fourier_stats(self):
         """If the state critic/actor use Fourier (PE) encoding, fit per-dim

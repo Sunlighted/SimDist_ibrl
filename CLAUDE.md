@@ -19,7 +19,7 @@ Last updated: 2026-09-04
 | **`docs/simdist.md`** | ~1470 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
-| **`docs/infra.md`** | ~410 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义。 |
+| **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）**。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
 | `docs/flow_qc_ug.md` | ~110 | （早于本次拆分就存在）flow actor + Q-chunking + UG 的在线 model-free RL 方案书 —— "不再修 SimDist、改把 policy 做强"那条支线。 |
@@ -115,6 +115,14 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     （13.9% vs 14.3%，log-odds +0.18 vs +0.16）⇒ 那个 null 是**算术必然**，不是证据。
     与 §42 强 base 那格同型（那次是 CI 覆盖 0 被读成"无效"）。**要证机制消失，必须先造出余量**
     （例：oracle 上削弱 planner 让基线掉到 ~0.75，模型误差仍为零但余量 0.25）。
+19b. **target 的唯一真源 = SimDist stage-1 的 cfg**（infra §13）。adapt/dyna 臂的 env 来自
+    `stage1_ckpt` 同目录 cfg（`train_simdist_adapt.py:398`），model-free 臂必须复制它。
+    ⚠️ **Coffee 有两套 stage-1，目录名不提示哪套是 G5x**：`coffee_s1g5x_*` 才是
+    （31 个既有 run 都用它），`coffee_simdist_*_h5_seed1` 是 C50 时代的另一个 target。
+    **判断 stage-1 属于哪个 target，只能回溯已完成 run 的 `stage1_ckpt`，不能看目录名。**
+    ⚠️ `train_rl.py` 不传 `--config_path` 就静默拿到三个错的默认值：`domain_shift.mode="none"`
+    （source 物理）、`act_method="rl"`（prior 不进 argmax、`prior_margin` 变死代码）、
+    critic `10×512`（全仓库其他 IBRL run 都是 `5×1024`+ln）。三者都不报错，已各咬一次。
 19. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
 

@@ -47,8 +47,14 @@ echo "=== 2/4  stage-1 world models (4 x ~28 MB) ==="
 # cfg silently changes the task.
 # 5-head and single-head at the SAME horizon 5 and the same source data, so
 # plain-vs-ensemble is not confounded with horizon.
+# ⚠️ coffee_s1g5x_*, NOT coffee_simdist_*_h5_seed1. Their latest.pt is a SYMLINK
+# to the same weights (stage-1 is distilled in the SOURCE domain, so the weights
+# do not depend on the target); what differs is cfg.yaml's eval_domain_shift --
+# s1g5x says G5x (0.2/5/8/5), coffee_simdist_* says C50 (0.5/50/3/2). The adapt
+# scripts read the target out of that cfg, so the wrapper directory IS the choice
+# of target. --copy-links below materialises the symlink on the far end.
 for D in square_simdist_rotw1_dynens_h5_seed1 square_simdist_rotw1_h5_seed1 \
-         coffee_simdist_diversev1_h5_seed1 coffee_simdist_plain_h5_seed1; do
+         coffee_s1g5x_dynens coffee_s1g5x_plain; do
   $R --copy-links --include='latest.pt' --include='cfg.yaml' --exclude='*' \
      exps/mimicgen/$D $T/exps/mimicgen/
 done

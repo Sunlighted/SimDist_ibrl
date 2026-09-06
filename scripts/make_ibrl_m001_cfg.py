@@ -28,11 +28,22 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (name, stage-1 cfg = source of truth for the env, template = a real train_rl.py
 #  cfg so every field train_rl.py expects is present, expert cfg for the diff)
 SPECS = [
+    # Threading had NO cfg at first: the arms passed bare CLI flags and inherited
+    # train_rl.py's dataclass defaults, which means domain_shift.mode="none" --
+    # i.e. they trained AND evaluated in the SOURCE domain while the dyna arms
+    # they were meant to be compared against ran in the target (mode="fixed",
+    # friction 0.5 / gripper_kp 0.12 / mass 3.0 / ring_friction 2.0 /
+    # ring_size 0.85). Same class of bug as act_method defaulting to "rl".
+    dict(name="threading_ibrl_m001",
+         stage1="exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/cfg.yaml",
+         template="exps/mimicgen/threading_ibrl_exp2_nosimdist_seed1/cfg.yaml"),
     dict(name="square_rotw1_ibrl_m001",
          stage1="exps/mimicgen/square_simdist_rotw1_dynens_h5_seed1/cfg.yaml",
          template="exps/mimicgen/square_ibrl_target_B_rotw1_sig01_seed1/cfg.yaml"),
+    # ⚠️ coffee_s1g5x_dynens, NOT coffee_simdist_diversev1_h5_seed1: the latter is
+    # the C50-era stage-1 on a different target. See docs/infra.md 13.
     dict(name="coffee_g5x_ibrl_m001",
-         stage1="exps/mimicgen/coffee_simdist_diversev1_h5_seed1/cfg.yaml",
+         stage1="exps/mimicgen/coffee_s1g5x_dynens/cfg.yaml",
          template="exps/mimicgen/coffee_ibrl_target_G5x_seed1/cfg.yaml"),
 ]
 
@@ -41,6 +52,14 @@ SPECS = [
 # were NOT ported from Threading).
 BUDGET = {
     "num_train_step": 100_000,      # matched to the dyna arms' 100k transitions
+    # 30 for all three tasks. The templates carried 60 (Square/Coffee target
+    # experts) while Threading's CLI said 30; with episode lengths of 400 / ~251
+    # / ~168 that is 24k / 15k / 5k transitions of target interaction spent on
+    # pure-prior rollouts -- up to 24% of the budget, differing per task. Now it
+    # is one number, and count_warmup_transitions bills it to global_step so the
+    # 100k means the same thing here as it does for the dyna arms.
+    "num_warm_up_episode": 30,
+    "count_warmup_transitions": 1,
     "num_eval_episode": 100,        # the dyna arms' eval size
     "log_per_step": 1000,           # the dyna arms log every 1000
     "preload_num_data": 20,         # == the dyna arms' --target_num_data 20
@@ -51,6 +70,13 @@ BUDGET = {
     "mp_eval": 1,
     "use_state": 1,
     # per-seed, overridden on the command line by the job script:
+    # σ=0.1 is the standing eval/train perturbation for all three tasks (the dyna
+    # arms pass it explicitly on the CLI). Do NOT inherit it from stage-1: the
+    # Threading stage-1 cfg has it as None, which silently produced a Threading
+    # ibrl arm running at robosuite's default init noise while the dyna arms ran
+    # at 0.1. Square/Coffee only escaped because their stage-1 happens to say 0.1.
+    "train_hand_init_perturb_joint_sigma": 0.1,
+    "eval_hand_init_perturb_joint_sigma": 0.1,
     "seed": 1,
     "save_dir": "exps/PLACEHOLDER",
     "bc_policy": "PLACEHOLDER",
@@ -61,8 +87,7 @@ BUDGET = {
     "preload_datapath": "PLACEHOLDER",
 }
 # Copied verbatim from the stage-1 cfg: this IS the target definition.
-FROM_STAGE1 = ["task_name", "episode_length", "strict_success",
-               "eval_hand_init_perturb_joint_sigma", "train_hand_init_perturb_joint_sigma"]
+FROM_STAGE1 = ["task_name", "episode_length", "strict_success"]
 
 
 def main() -> int:
@@ -78,8 +103,15 @@ def main() -> int:
         # the env: train and eval both in the target domain, both from stage-1
         for dst in ("train_domain_shift", "eval_domain_shift"):
             cfg[dst] = s1["eval_domain_shift"]
-        for dst in ("train_init_dist", "eval_init_dist"):
-            cfg[dst] = s1["eval_init_dist"]
+        # Threading's stage-1 cfg has no init-distribution block at all (the
+        # nut_z_rot/needle_* windows are a Square/Coffee thing), so copy it only
+        # when the stage-1 actually defines one; otherwise the template's stays.
+        if "eval_init_dist" in s1:
+            for dst in ("train_init_dist", "eval_init_dist"):
+                cfg[dst] = s1["eval_init_dist"]
+        else:
+            print(f"   note: {spec['stage1']} has no eval_init_dist -- "
+                  f"keeping the template's init distribution")
         for k in FROM_STAGE1:
             if k in s1:
                 cfg[k] = s1[k]

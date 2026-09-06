@@ -135,26 +135,22 @@ The priors ship **with their `cfg.yaml`** — `train_rl.py` rebuilds the BC prio
 from `dirname(bc_policy)/cfg.yaml`, so a tarball of bare `.pt` files fails at
 load time, after the queue wait.
 
-### ⚠️ Coffee has two incompatible "targets" in the tree
+### Coffee: two stage-1 families, only one is G5x
 
 `scripts/make_ibrl_m001_cfg.py` copies the env from the **stage-1 cfg**, because
-that is where the dyna arms get their eval env
-(`train_simdist_adapt.py:398`) and two numbers are only comparable if the env
-matches (rule 19). On Coffee that choice is not cosmetic —
-`coffee_simdist_*_h5_seed1` and `coffee_ibrl_target_G5x_seed1` disagree on four
-shift knobs:
+that is where the dyna arms get their eval env (`train_simdist_adapt.py:398`) and
+two numbers are only comparable if the env matches (rule 19).
 
-| knob | stage-1 (used) | target expert |
-|---|---:|---:|
-| `friction_scale` | 0.5 | 0.2 |
-| `lid_damping_scale` | 50.0 | 5.0 |
-| `mass_scale` | 3.0 | 8.0 |
-| `pod_holder_friction_scale` | 2.0 | 5.0 |
+⚠️ On Coffee the right stage-1 is **`coffee_s1g5x_dynens` / `coffee_s1g5x_plain`**
+(`friction 0.2 / lid_damping 5 / mass 8 / pod_holder_friction 5`), which is what
+all 31 finished runs in `exps/coffee_g5x_3arm` inherit and what
+`coffee_d0_state_baseline_target_g5x.yaml` and `coffee_ibrl_target_G5x_seed1` use.
+`coffee_simdist_{diversev1,plain}_h5_seed1` are the **C50-era** stage-1s on a
+different target (`friction 0.5 / lid 50 / mass 3 / pod 2`); this job pointed at
+them until 2026-09-06. The directory names do not say which family is which --
+confirm by reading `stage1_ckpt` out of an existing run's cfg.yaml. Full table:
+`docs/infra.md` §13.
 
-So the Coffee dyna arms — and now the ibrl arm — run on the **stage-1** target,
-which is not the one `coffee_ibrl_target_G5x_seed1` was trained and scored on.
-Square has no such disagreement. Worth settling before any Coffee number is
-compared against a `docs/tasks.md` §40 figure.
 
 ## What the score means
 

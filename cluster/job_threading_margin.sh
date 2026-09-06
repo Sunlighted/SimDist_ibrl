@@ -259,7 +259,24 @@ SRC_EXPERT=exps/mimicgen/threading_ibrl_source_seed1/model0.pt
 # to reproduce). It also broke ibrl_m001_qsrc outright: the source expert's
 # critic then matches no key, `skipped` is non-empty, and the load falls into the
 # Fourier/PE repair path -> AttributeError: 'NoneType' has no attribute 'out_dim'.
-IBRL_ARCH="--q_agent.state_critic.num_q 5 --q_agent.state_critic.hidden_dim 1024 \
+#
+# ⚠️⚠️ act_method: QAgentConfig defaults to "rl" (rl/q_agent.py:37) and train_rl.py
+# does NOT flip it to "ibrl" just because --bc_policy was passed. Without the flag
+# below the BC prior is loaded and printed ("Using BC policy ...") but never
+# entered into the max-Q argmax: _act_ibrl is not called, prior_margin is dead
+# code, and the arm is plain RL + preloaded demos wearing an IBRL name. The
+# symptom is that two arms differing ONLY in prior_margin come out byte-identical,
+# loss curve included. This is CLAUDE.md rule 8 again (5th time).
+# The Square/Coffee arms escape it only because --config_path carries
+# act_method: ibrl over from the target-expert template.
+# The generated target-domain config (scripts/make_ibrl_m001_cfg.py). It carries
+# train/eval_domain_shift = the TARGET the dyna arms run in, act_method=ibrl, the
+# 5x1024 critic, sigma 0.1, episode_length 400 and strict_success -- i.e. every
+# field that made the bare-CLI version incomparable. IBRL_ARCH below is kept as a
+# belt-and-braces override; the values are identical to the cfg's.
+IBRL_CFG=release/cfgs/mimicgen/threading_ibrl_m001.yaml
+IBRL_ARCH="--q_agent.act_method ibrl \
+  --q_agent.state_critic.num_q 5 --q_agent.state_critic.hidden_dim 1024 \
   --q_agent.state_critic.layer_norm 1 \
   --q_agent.state_actor.hidden_dim 1024 --q_agent.state_actor.dropout 0.0"
 
@@ -286,8 +303,10 @@ case $ARM in dynaibrl_dynens*)
 esac
 case $ARM in
   ibrl_m001_qsrc|ibrl_m0_qsrc) NEED_BC=1
+    [ -f "$IBRL_CFG" ] || { echo "MISSING $IBRL_CFG (python3 scripts/make_ibrl_m001_cfg.py)"; exit 1; }
     [ -f "$SRC_EXPERT" ] || { echo "MISSING source expert: $SRC_EXPERT"; exit 1; } ;;
-  ibrl_*) NEED_BC=1 ;;
+  ibrl_*) NEED_BC=1
+    [ -f "$IBRL_CFG" ] || { echo "MISSING $IBRL_CFG (python3 scripts/make_ibrl_m001_cfg.py)"; exit 1; } ;;
   *) NEED_BC=0 ;;
 esac
 if [ "$NEED_BC" = 1 ] && [ ! -f "$BC_PRIOR" ]; then
@@ -393,15 +412,10 @@ case $ARM in
     # anneal this batch is about. prior_margin_steps is train_rl.py's own default
     # of 100000, overridden here to $MARGIN_STEPS to match the dyna arms.
     # No world model anywhere in this arm.
-    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+    $PY train_rl.py --config_path $IBRL_CFG --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_train_step 100000 --num_warm_up_episode 30 \
-      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
-      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
-      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
-      --train_hand_init_perturb_joint_sigma 0.1 \
-      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --num_eval_episode 100 --log_per_step 1000 \
       --prior_margin_init $MARGIN_INIT --prior_margin_final $MARGIN_FINAL \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
@@ -414,15 +428,10 @@ case $ARM in
     # ⚠️ Still TWO differences from any dyna arm, not one: no world model AND a
     # different prior (target-BC here, the frozen stage-2 distilled policy there).
     # It bounds how much of the effect needs a model; it does not isolate it.
-    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+    $PY train_rl.py --config_path $IBRL_CFG --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_train_step 100000 --num_warm_up_episode 30 \
-      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
-      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
-      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
-      --train_hand_init_perturb_joint_sigma 0.1 \
-      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --num_eval_episode 100 --log_per_step 1000 \
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
@@ -438,16 +447,11 @@ case $ARM in
     # ⚠️ That `margin 0 -> 0.000` datapoint predates the IBRL_ARCH fix above and
     # was a single seed, so it is context, not a baseline. The controlled
     # comparison is against ibrl_m001_qsrc in THIS batch.
-    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+    $PY train_rl.py --config_path $IBRL_CFG --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_train_step 100000 --num_warm_up_episode 30 \
-      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
-      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
-      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
-      --train_hand_init_perturb_joint_sigma 0.1 \
-      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --num_eval_episode 100 --log_per_step 1000 \
       --prior_margin_init 0.0 --prior_margin_final 0.0 \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
@@ -468,16 +472,11 @@ case $ARM in
     # MPPI scorer, and the target-domain IQL-pretrained critic bought only speed,
     # not ceiling (~96%, matched). Both are different uses of a critic than IBRL's
     # argmax. Expect a null; the point is to stop guessing.
-    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+    $PY train_rl.py --config_path $IBRL_CFG --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_train_step 100000 --num_warm_up_episode 30 \
-      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
-      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
-      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
-      --train_hand_init_perturb_joint_sigma 0.1 \
-      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --num_eval_episode 100 --log_per_step 1000 \
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;

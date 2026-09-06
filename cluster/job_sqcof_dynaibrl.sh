@@ -159,8 +159,15 @@ case $ARM in
         IBRL_CFG=release/cfgs/mimicgen/coffee_g5x_ibrl_m001.yaml
         BC_PRIOR=exps/mimicgen/coffee_il_ft_target_g5x_seed${SEED}/model0.pt
         SRC_EXPERT=exps/mimicgen/coffee_ibrl_source_sig01_seed1/model0.pt
-        STAGE1_DYNENS=exps/mimicgen/coffee_simdist_diversev1_h5_seed1/latest.pt
-        STAGE1_PLAIN=exps/mimicgen/coffee_simdist_plain_h5_seed1/latest.pt
+        # ⚠️ NOT coffee_simdist_{diversev1,plain}_h5_seed1 -- those are the C50-era
+        # stage-1s and carry a DIFFERENT target (friction 0.5 / lid 50 / mass 3 /
+        # pod 2). Every already-finished run in exps/coffee_g5x_3arm inherits
+        # coffee_s1g5x_* and runs at (0.2, 5.0, 8.0, 5.0), which is also what
+        # coffee_d0_state_baseline_target_g5x.yaml and coffee_ibrl_target_G5x_seed1
+        # use. Confirm with cfg.yaml's stage1_ckpt of an existing run, never by
+        # the stage-1 directory name (the two families are named inconsistently).
+        STAGE1_DYNENS=exps/mimicgen/coffee_s1g5x_dynens/latest.pt
+        STAGE1_PLAIN=exps/mimicgen/coffee_s1g5x_plain/latest.pt
         ANCHOR_PATH=release/data/mimicgen/coffee_anchor_pool_4k/dataset.hdf5 ;;
   *) echo "unknown arm '$ARM' (expected sq_* or cof_*)"; exit 1 ;;
 esac

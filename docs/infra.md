@@ -430,3 +430,81 @@ load fine (only the env shift changed; obs/action spaces are identical).
       training stalls).
 - [ ] Update `release/cfgs/mimicgen/stack_d0_*` and other tasks once their
       target recipes are designed (Threading is the only one so far).
+
+---
+
+## 13. ★ 三个任务的 target 权威定义（唯一真源 = SimDist stage-1 的 cfg）
+
+**规则：target 就是 SimDist adapt 实际跑的那个 env，别处一律以此为准。**
+`train_simdist_adapt.py:398` 里 `self.eval_env = self.ws.eval_env`，adapt/dyna 臂的
+env 完全来自 `stage1_ckpt` 同目录的 `cfg.yaml` 的 `eval_domain_shift` +
+`eval_init_dist`。任何 model-free 臂（`train_rl.py`）要和它们比，就必须复制这份定义。
+
+### 权威 stage-1（2026-09-06 核对：按已完成 run 的 `cfg.yaml:stage1_ckpt` 反查）
+
+| 任务 | stage-1（dynens / plain） | 已完成 run 数 |
+|---|---|---:|
+| Threading_D0 | `threading_simdist_dynens_diversev2_h5_seed1` / `threading_simdist_diversev2_h5_seed1` | 102 |
+| Square_D0 (rotw1) | `square_simdist_rotw1_dynens_h5_seed1` / `square_simdist_rotw1_h5_seed1` | 全部 |
+| **Coffee_D0 (G5x)** | **`coffee_s1g5x_dynens` / `coffee_s1g5x_plain`** | 31 |
+
+### 三份 shift（`mode: fixed`，σ=0.1 train+eval，`episode_length` 400）
+
+**Threading_D0** — `friction_scale 0.5 · gripper_kp_scale 0.12 · mass_scale 3.0 ·
+ring_friction_scale 2.0 · ring_size_scale 0.85`；无 init_dist；`strict_success.enabled = True`
+
+**Square_D0 (rotw1)** — `gripper_kp_scale 0.3 · peg_friction_scale 2.0 · peg_size_scale 1.2`；
+init_dist **enabled**，`nut_z_rot = [2.0944, 3.1416] rad = 120–180°`（这就是 "rotw1"），
+`needle_x [-0.2,0.05] · needle_y [0.15,0.25] · needle_z_rot [-3.6652,0.5236] ·
+tripod_x [-0.1,0.15] · tripod_y [-0.2,-0.1] · tripod_z_rot [0.5236,2.6180]`；
+`strict_success.enabled = False`（tasks §41b：Square 线上 strict 三边全 false）
+
+**Coffee_D0 (G5x)** — `friction_scale 0.2 · gripper_kp_scale 0.3 · lid_damping_scale 5.0 ·
+mass_scale 8.0 · pod_holder_friction_scale 5.0`；init_dist `enabled: False`；
+`strict_success.enabled = False`
+
+### ⚠️ Coffee 有两套 stage-1，名字不提示哪套是 G5x
+
+`coffee_simdist_diversev1_h5_seed1` / `coffee_simdist_plain_h5_seed1` 是 **C50 时代**的，
+带的是另一个 target：`friction 0.5 / lid_damping 50 / mass 3 / pod_holder_friction 2`。
+`cluster/job_sqcof_dynaibrl.sh` 一度指向它们，会让所有 Coffee 臂跑在 C50 物理上，
+和 `exps/coffee_g5x_3arm/` 里 31 个既有 run、`coffee_d0_state_baseline_target_g5x.yaml`、
+`coffee_ibrl_target_G5x_seed1` 全部不可比。**判断 stage-1 属于哪个 target，
+只能回溯已完成 run 的 `stage1_ckpt`，不能看目录名**（`diversev1` 和 `g5x` 是两套命名）。
+
+### Coffee 的 `coffee_s1g5x_*` = 同一份权重 + G5x 的 cfg 包装
+
+`coffee_s1g5x_dynens/latest.pt` 是指向 `coffee_simdist_diversev1_h5_seed1/latest.pt`
+的**符号链接**（plain 同理）。stage-1 在 **source** 域蒸馏，权重与 target 无关；
+两个目录的差别只在 `cfg.yaml` 的 `eval_domain_shift`。而 adapt 脚本正是从这份 cfg
+读 target ⇒ **选哪个包装目录就是在选 target**。同步到 cluster 时要用 `--copy-links`
+把链接实体化。
+
+### model-free 臂的预算口径（与 dyna 臂对齐）
+
+`num_warm_up_episode = 30`（三个任务统一；模板里 Square/Coffee 原为 60，按各自
+episode 长度换算是 24k/15k/5k transitions 的差距，Square 那个占 100k 预算的 24%）。
+`count_warmup_transitions = 1` 把 warm-up 实际走的 transition 计入 `global_step`，
+所以 `num_train_step=100000` 与 dyna 臂的 `max_transitions=100000` 是同一个量。
+**preload 的 20 条 demo 两边都不计**。warm-up 用 BC prior 确定性 rollout，
+所以 critic warm-start 不影响这批数据。
+⚠️ `job_{coffee,square}_baselines.sh` 的 `ibrl` 臂仍是 warm-up 10 且无
+`count_warmup_transitions`，跨批比较时要记得。
+
+### 怎么给 model-free 臂复制这份定义
+
+`python3 scripts/make_ibrl_m001_cfg.py` 从上表的 stage-1 抽 env、从各任务的
+target-域 IBRL run 抽其余字段，产出
+`release/cfgs/mimicgen/{threading,square_rotw1,coffee_g5x}_ibrl_m001.yaml`。
+它会打印每份 cfg 的 env 来源，以及 stage-1 与 target 专家 cfg 是否一致
+（三个任务现在都 `agree`）。σ 在生成器里钉死 0.1，**不从 stage-1 继承** ——
+Threading 的 stage-1 里 σ 是 `None`，继承会做出一个跑在 robosuite 默认初始噪声上的臂。
+
+### `train_rl.py` 的 dataclass 默认全是坑
+
+不传 `--config_path` 就会静默拿到：`domain_shift.mode = "none"`（**source 物理**）、
+`q_agent.act_method = "rl"`（**prior 不进 argmax，`prior_margin` 变死代码**）、
+critic `10×512` 无 layer-norm / actor `512` dropout 0.5（**全仓库其他 IBRL run 都是
+critic 5×1024 + ln、actor 1024 dropout 0**）。三者都不报错。
+现在有两道防线：`train_rl.py` 在 `bc_policy` 非空且 `act_method=="rl"` 时抛错；
+`load_pretrained_agent` 形状不匹配且 PE 关闭时抛错并指出该对齐哪些旋钮。
