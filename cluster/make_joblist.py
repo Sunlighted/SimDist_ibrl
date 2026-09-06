@@ -54,6 +54,11 @@ def main() -> int:
     ap.add_argument("--skip-done", action="store_true",
                     help="drop rows whose train.log already reached step 100000")
     ap.add_argument("--exp-dir", default=None, help="override the arm->exps/ mapping")
+    ap.add_argument("--tail-arms", default="",
+                    help="comma-separated subset of --arms to emit as a SECOND "
+                         "seed-major block after all the others, so they occupy a "
+                         "contiguous --array range at the end of the file. Use when "
+                         "only the new arms still need to run.")
     a = ap.parse_args()
 
     arms = [x.strip() for x in a.arms.split(",") if x.strip()]
@@ -70,20 +75,36 @@ def main() -> int:
                   "generate two lists.", file=sys.stderr)
             return 1
 
+    tail = [x.strip() for x in a.tail_arms.split(",") if x.strip()]
+    unknown_tail = [x for x in tail if x not in arms]
+    if unknown_tail:
+        print(f"--tail-arms not in --arms: {', '.join(unknown_tail)}", file=sys.stderr)
+        return 1
+    head = [x for x in arms if x not in tail]
+
     seeds = [1 + 100 * i for i in range(a.seeds)]
     rows, skipped = [], 0
-    for s in seeds:
-        for arm in arms:            # seed-major
-            if a.skip_done and done(arm, s, a.exp_dir):
-                skipped += 1
-                continue
-            rows.append(f"{arm} {s}")
+    boundary = None
+    for block in ([head, tail] if tail else [arms]):
+        if not block:
+            continue
+        if block is tail:
+            boundary = len(rows) + 1
+        for s in seeds:
+            for arm in block:       # seed-major within each block
+                if a.skip_done and done(arm, s, a.exp_dir):
+                    skipped += 1
+                    continue
+                rows.append(f"{arm} {s}")
     with open(a.out, "w") as f:
         f.write("\n".join(rows) + ("\n" if rows else ""))
     print(f"{a.out}: {len(rows)} rows, {len(arms)} arms x {a.seeds} seeds"
           + (f" ({skipped} already complete, skipped)" if a.skip_done else ""))
     if rows:
         print(f"  sbatch --array=1-{len(rows)} ...")
+        if boundary is not None:
+            print(f"  tail block ({', '.join(tail)}) only:  "
+                  f"--array={boundary}-{len(rows)}")
         if a.skip_done and skipped:
             print("  ⚠️ --skip-done makes the list RAGGED: it is no longer "
                   "'N arms per seed block'. Read it, do not assume the layout.")

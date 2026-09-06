@@ -249,6 +249,19 @@ BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
 # release/cfgs/mimicgen/threading_d0_state_simdist.yaml), so "the source critic"
 # means the same thing here as everywhere else in the pipeline.
 SRC_EXPERT=exps/mimicgen/threading_ibrl_source_seed1/model0.pt
+# ⚠️ train_rl.py's dataclass DEFAULTS are critic 10x512 (no layer-norm) and actor
+# 512/dropout 0.5. EVERY IBRL run in this project -- source experts, target
+# experts, permmargin, and the Square/Coffee arms (which inherit them through
+# --config_path) -- is critic 5x1024 + layer-norm and actor 1024/dropout 0.
+# The Threading ibrl arms pass no --config_path, so without these five flags they
+# would silently run an architecture used nowhere else, making them incomparable
+# to the Square/Coffee arms AND to ibrl_m005_seed1 (which ibrl_m005anneal0 claims
+# to reproduce). It also broke ibrl_m001_qsrc outright: the source expert's
+# critic then matches no key, `skipped` is non-empty, and the load falls into the
+# Fourier/PE repair path -> AttributeError: 'NoneType' has no attribute 'out_dim'.
+IBRL_ARCH="--q_agent.state_critic.num_q 5 --q_agent.state_critic.hidden_dim 1024 \
+  --q_agent.state_critic.layer_norm 1 \
+  --q_agent.state_actor.hidden_dim 1024 --q_agent.state_actor.dropout 0.0"
 
 MARGIN_INIT=${MARGIN_INIT:-0.05}
 MARGIN_FINAL=${MARGIN_FINAL:-0.0}
@@ -381,7 +394,7 @@ case $ARM in
     # of 100000, overridden here to $MARGIN_STEPS to match the dyna arms.
     # No world model anywhere in this arm.
     $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
-      --bc_policy $BC_PRIOR \
+      --bc_policy $BC_PRIOR $IBRL_ARCH \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
       --num_train_step 100000 --num_warm_up_episode 30 \
       --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
@@ -402,7 +415,7 @@ case $ARM in
     # different prior (target-BC here, the frozen stage-2 distilled policy there).
     # It bounds how much of the effect needs a model; it does not isolate it.
     $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
-      --bc_policy $BC_PRIOR \
+      --bc_policy $BC_PRIOR $IBRL_ARCH \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
       --num_train_step 100000 --num_warm_up_episode 30 \
       --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
@@ -431,7 +444,7 @@ case $ARM in
     # not ceiling (~96%, matched). Both are different uses of a critic than IBRL's
     # argmax. Expect a null; the point is to stop guessing.
     $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
-      --bc_policy $BC_PRIOR \
+      --bc_policy $BC_PRIOR $IBRL_ARCH \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
       --num_train_step 100000 --num_warm_up_episode 30 \

@@ -432,6 +432,23 @@ class Workspace:
             if skipped:
                 print(f"[warm-start] skipped {len(skipped)} shape-mismatched keys "
                       f"(PE input widening): e.g. {skipped[:4]}")
+                # The repair below assumes the ONLY reason for a mismatch is
+                # Fourier/PE widening the state input. When PE is off, a mismatch
+                # means the architectures simply differ -- and silently continuing
+                # would leave a randomly-initialised critic behind a warm-started
+                # actor. Say which knobs to align instead of dying on
+                # `'NoneType' object has no attribute 'out_dim'` three frames in.
+                if getattr(self.agent.critic, "pe", None) is None:
+                    raise ValueError(
+                        f"load_pretrained_agent architecture mismatch: "
+                        f"{len(skipped)} keys have different shapes and PE is off, "
+                        f"so this is not the PE-widening case. e.g. {skipped[:4]}\n"
+                        f"Align q_agent.state_critic / state_actor with the "
+                        f"checkpoint's cfg.yaml (this project's IBRL runs are "
+                        f"critic num_q=5 hidden_dim=1024 layer_norm=1, actor "
+                        f"hidden_dim=1024 dropout=0.0; train_rl.py's dataclass "
+                        f"defaults are 10x512 / 512 and do NOT match)."
+                    )
                 # Fourier (PE) widens the state input, so the first layer couldn't
                 # transfer above (random -> broken critic feeding warm deep layers
                 # -> cold-start deadlock). With include_raw + normalize=0 the PE
