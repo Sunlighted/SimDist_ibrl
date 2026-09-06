@@ -25,7 +25,13 @@ CC_ROOT=${CC_ROOT:-'~/scratch/ibrl'}
 DRY=${1:-}
 R="rsync -avh --progress $DRY"
 T="$CC_USER@$CC_HOST:$CC_ROOT"
-SEEDS="1 101 201 301 401"
+# ⚠️ Was "1 101 201 301 401" -- a leftover from when this batch was 4 arms x 5
+# seeds. jobs_sqcof_dynaibrl.txt has held 10 seeds per arm for a while, so every
+# seed >= 501 was silently never shipped and the job died on
+#   MISSING asset: release/data/mimicgen/square_sat_400000_s701/dataset.hdf5
+# after serving its queue wait. Same class of drift as the --array=1-20 header
+# against a 40-line job list.
+SEEDS=${SEEDS:-"1 101 201 301 401 501 601 701 801 901"}
 
 ssh $CC_USER@$CC_HOST "mkdir -p $CC_ROOT/release/data/mimicgen $CC_ROOT/exps/mimicgen $CC_ROOT/cluster"
 

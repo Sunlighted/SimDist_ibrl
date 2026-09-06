@@ -285,7 +285,7 @@ case $ARM in dynaibrl_dynens*)
     [ -f "$STAGE1_DYNENS" ] || { echo "MISSING asset: $STAGE1_DYNENS"; exit 1; } ;;
 esac
 case $ARM in
-  ibrl_m001_qsrc) NEED_BC=1
+  ibrl_m001_qsrc|ibrl_m0_qsrc) NEED_BC=1
     [ -f "$SRC_EXPERT" ] || { echo "MISSING source expert: $SRC_EXPERT"; exit 1; } ;;
   ibrl_*) NEED_BC=1 ;;
   *) NEED_BC=0 ;;
@@ -424,6 +424,31 @@ case $ARM in
       --train_hand_init_perturb_joint_sigma 0.1 \
       --eval_hand_init_perturb_joint_sigma 0.1 \
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  ibrl_m0_qsrc)
+    # Plain IBRL (NO margin at all) + the source expert's critic as Q's start.
+    # Pairs with ibrl_m001_qsrc on one field (the margin) and asks the question
+    # the margin exists to answer: the fixed-margin sweep put `margin 0 -> 0.000`
+    # because an uncalibrated critic decides the argmax by noise (~5.8% action
+    # deviation kills the episode). A critic warm-started from the source expert
+    # is not uncalibrated -- it is calibrated to the WRONG domain. If the margin
+    # was only ever a cold-start crutch, this arm should not collapse.
+    #
+    # ⚠️ That `margin 0 -> 0.000` datapoint predates the IBRL_ARCH fix above and
+    # was a single seed, so it is context, not a baseline. The controlled
+    # comparison is against ibrl_m001_qsrc in THIS batch.
+    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+      --bc_policy $BC_PRIOR $IBRL_ARCH \
+      --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
+      --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
+      --num_train_step 100000 --num_warm_up_episode 30 \
+      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
+      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
+      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
+      --train_hand_init_perturb_joint_sigma 0.1 \
+      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --prior_margin_init 0.0 --prior_margin_final 0.0 \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   ibrl_m001_qsrc)

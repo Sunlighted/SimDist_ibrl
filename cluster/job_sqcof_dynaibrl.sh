@@ -170,7 +170,7 @@ for f in "$DEMOS"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_sqcof_dynaibrl.sh)"; exit 1; }
 done
 case $ARM in
-  *_ibrl_m001_qsrc)
+  *_ibrl_m001_qsrc|*_ibrl_m0_qsrc)
     for f in "$BC_PRIOR" "$IBRL_CFG" "$SRC_EXPERT"; do
         [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
     done ;;
@@ -235,6 +235,17 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  sq_ibrl_m0_qsrc|cof_ibrl_m0_qsrc)
+    # Plain IBRL (no margin) + source-expert critic warm-start. One field from
+    # *_ibrl_m001_qsrc; see job_threading_margin.sh's ibrl_m0_qsrc for why this
+    # is the arm that tests whether the margin was only a cold-start crutch.
+    $PY train_rl.py --config_path $IBRL_CFG \
+      --save_dir $OUT --seed $SEED \
+      --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
+      --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
+      --prior_margin_init 0.0 --prior_margin_final 0.0 \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_ibrl_m001_qsrc|cof_ibrl_m001_qsrc)
     # ibrl_m001 + the SOURCE expert's critic as Q's starting point; differs from
     # the arm below in exactly ONE field. See job_threading_margin.sh's
