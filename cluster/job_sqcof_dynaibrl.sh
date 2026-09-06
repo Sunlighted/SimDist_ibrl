@@ -211,6 +211,18 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_m0|cof_dynaibrl_m0)
+    # Vanilla IBRL inside Dyna (no margin). One field from *_dynaibrl_m001.
+    # init=0.0 rather than the -1 "no schedule" sentinel so dyna/prior_margin=0.0
+    # is logged and verifiable. See job_threading_margin.sh's dynaibrl_*_m0 for
+    # the demo-replay asymmetry against model-free IBRL.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
+      --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_dynaibrl_plain_m0|cof_dynaibrl_plain_m0)
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+      --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_m001|cof_dynaibrl_m001)
     # Identical to the arm above except margin(t): CONSTANT $CONST_MARGIN instead
     # of the 0.05 -> 0 anneal. sgft_coef stays 0.

@@ -334,6 +334,32 @@ case $ARM in
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_plain_m0|dynaibrl_dynens_m0)
+    # Vanilla IBRL inside Dyna: no prior-preference margin at all. One field from
+    # the matching _m001 arm.
+    #
+    # init=0.0 (not the -1 "no schedule" sentinel) so the schedule code path runs
+    # and logs dyna/prior_margin = 0.0 -- verifiable in train.log. Note dyna's
+    # guard is `if prior_margin_init < 0: return`, the MIRROR of train_rl.py's
+    # `if prior_margin_init > 0:`; passing 0.0 means "schedule on, value 0" here
+    # and "schedule off" there. Both end at margin 0, but only this side records it.
+    #
+    # The 20 target demos are already in the TD replay for every Dyna-IBRL arm
+    # (dyna.preload_demos=1 by default), which is what keeps r=1 visible to the
+    # critic while the policy returns nothing -- that matters most here, since
+    # with margin 0 the argmax is the critic's alone. ⚠️ Still not symmetric with
+    # model-free IBRL: there the demos are a frozen half of every batch
+    # (mix_rl_rate 0.5 + freeze_bc_replay), here they are poured once into
+    # real_buf and diluted to ~1.6% by 100k.
+    case $ARM in *_plain_m0) CK=$STAGE1_PLAIN ;; *) CK=$STAGE1_DYNENS ;; esac
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $CK --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_m001)
     # dynaibrl_plain with margin(t) CONSTANT at $CONST_MARGIN instead of the
     # 0.05 -> 0 anneal, shaping still off. Gives dynaibrl_plain_sgft the
