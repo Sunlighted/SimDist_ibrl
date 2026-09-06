@@ -203,6 +203,12 @@ class MainConfig(common_utils.RunConfig):
     pretrain_epoch_len: int = 10000
     load_pretrained_agent: str = ""
     load_policy_only: int = 1
+    # Mirror image of load_policy_only: keep the pretrained CRITIC and throw the
+    # pretrained actor away, so the RL actor still cold-starts and the ONLY thing
+    # transferred from `load_pretrained_agent` is Q. That makes an arm that
+    # differs from a plain IBRL run in exactly one field.
+    # Mutually exclusive with load_policy_only (asserted below).
+    load_critic_only: int = 0
     # Skip robosuite's offscreen renderer entirely for state-based runs. The
     # policy only ever reads obs["state"], so the 224x224 render is pure waste --
     # and building the EGL context is what breaks on MIG-partitioned GPUs, where
@@ -323,6 +329,17 @@ class MainConfig(common_utils.RunConfig):
         if self.save_replay_buffer in ["none", "None"]:
             self.save_replay_buffer = ""
 
+        assert not (self.load_policy_only and self.load_critic_only), (
+            "load_policy_only and load_critic_only are mutually exclusive: the "
+            "first keeps only the pretrained actor, the second only the "
+            "pretrained critic. Set load_policy_only=0 to warm-start Q alone."
+        )
+        if self.load_critic_only and not self.load_pretrained_agent:
+            raise ValueError(
+                "load_critic_only=1 with an empty load_pretrained_agent -- there "
+                "is no critic to warm-start from."
+            )
+
         assert not (self.bc_policy and self.sgft_source_agent), (
             "bc_policy and sgft_source_agent are mutually exclusive — IBRL uses "
             "exactly one BC prior. Use sgft_source_agent to make the source RL "
@@ -400,6 +417,7 @@ class Workspace:
         if cfg.load_pretrained_agent and cfg.load_pretrained_agent != "None":
             print(f"loading loading pretrained agent from {cfg.load_pretrained_agent}")
             critic_states = copy.deepcopy(self.agent.critic.state_dict())
+            actor_states = copy.deepcopy(self.agent.actor.state_dict())
             pretrained = torch.load(cfg.load_pretrained_agent)
             # Shape-tolerant warm-start: load every param whose shape matches the
             # current agent, skip the rest. Identical to the old strict load when
@@ -429,6 +447,14 @@ class Workspace:
                 # avoid overwriting critic
                 self.agent.critic.load_state_dict(critic_states)
                 self.agent.critic_target.load_state_dict(critic_states)
+            if cfg.load_critic_only:
+                # The reverse: undo the actor half of the load, so only Q carries
+                # over. critic_target keeps the pretrained weights it just got
+                # (load_state_dict above wrote both critic and critic_target).
+                self.agent.actor.load_state_dict(actor_states)
+                self.agent.actor_target.load_state_dict(actor_states)
+                print("[warm-start] load_critic_only=1 -> critic + critic_target "
+                      "from the pretrained agent, actor re-initialised")
 
         self.ref_agent = copy.deepcopy(self.agent)
         # override to always use RL even when self.agent is ibrl

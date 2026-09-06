@@ -94,11 +94,33 @@ Threading's `ibrl_m001`.
 *and* a different prior (target-domain BC here, the frozen stage-2 distilled
 policy there). It bounds the model's contribution; it does not isolate it.
 
+`*_ibrl_m001_qsrc` is the same arm with **one** field added: the SOURCE IBRL
+expert's critic as Q's starting point (`--load_pretrained_agent <src expert>
+--load_policy_only 0 --load_critic_only 1`). `load_critic_only` was added to
+`train_rl.py` for this: it keeps critic + critic_target from the pretrained agent
+and restores the freshly-initialised actor, so the RL actor still cold-starts and
+only Q carries over. Verify in the log that
+
+```
+[warm-start] load_critic_only=1 -> critic + critic_target from the pretrained agent, actor re-initialised
+```
+
+appears **without** a `skipped N shape-mismatched keys` line — a shape mismatch is
+skipped silently and the arm would then be a duplicate of `*_ibrl_m001`.
+
+Prior evidence is mixed and none of it is this measurement: `docs/tasks.md` §41b
+has the source expert critic *losing* to the distilled V̂ by 0.085 (z=2.8) as an
+MPPI scorer, and the target-domain IQL-pretrained critic bought only speed, not
+ceiling (~96%, matched). Both are different uses of a critic than IBRL's argmax.
+`threading_ibrl_simdist_srccritic_mppiactor_seed1` is **not** a clean precedent —
+it moved the actor, the margin schedule and the critic at once.
+
 **Prerequisites** (neither exists on the cluster until you ship it):
 
 | asset | how |
 |---|---|
 | `exps/mimicgen/{square_il_ft_target_rotw1,coffee_il_ft_target_g5x}_seed*` | `bash scripts/train_target_bc_priors.sh` on the workstation |
+| the 3 source IBRL experts (`*_qsrc` arms only) | already on the workstation; `cluster/pack_ibrl_priors.sh` ships them |
 | `release/cfgs/mimicgen/{square_rotw1,coffee_g5x}_ibrl_m001.yaml` | `python3 scripts/make_ibrl_m001_cfg.py` (already generated, committed) |
 
 ```bash
@@ -106,7 +128,7 @@ bash scripts/train_target_bc_priors.sh          # 3 tasks x 10 seeds, round-robi
 bash cluster/pack_ibrl_priors.sh                # -> ibrl_m001_priors.tar.gz (~260 MB)
 # scp, then AT THE REPO ROOT on the cluster: tar xzf ibrl_m001_priors.tar.gz
 JOBS=cluster/jobs_sqcof_ibrl_m001.txt \
-  sbatch --account=def-<pi> --array=1-20 --export=ALL,JOBS cluster/job_sqcof_dynaibrl.sh
+  sbatch --account=def-<pi> --array=1-40 --export=ALL,JOBS cluster/job_sqcof_dynaibrl.sh
 ```
 
 The priors ship **with their `cfg.yaml`** — `train_rl.py` rebuilds the BC prior

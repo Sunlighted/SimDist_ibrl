@@ -19,6 +19,7 @@ the **same single-head dynamics**?
 | `dynaibrl_plain_sgft` | `train_simdist_dyna_ibrl.py` | single head, h=5 | constant margin + `--dyna.sgft_coef 1.0` |
 | `ibrl_m005anneal0` | `train_rl.py` | none | model-free IBRL, margin 0.05 → 0 |
 | `ibrl_m001` | `train_rl.py` | none | model-free IBRL at the **constant** margin the `_m001` arms use |
+| `ibrl_m001_qsrc` | `train_rl.py` | none | the same + the SOURCE expert's critic as Q's starting point (`--load_critic_only 1`), one field apart |
 | `dynaibrl_dynens` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain`, on the ensemble stage-1 |
 | `dynaibrl_dynens_m001` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_m001`, on the ensemble stage-1 |
 | `dynaibrl_dynens_sgft` | `train_simdist_dyna_ibrl.py` | 5 heads, h=5 | as `dynaibrl_plain_sgft`, on the ensemble stage-1 |
@@ -52,8 +53,8 @@ default list.
 
 Both `_sgft` arms have already run, and the 0.05 → 0 schedule is not being
 re-spent, so `jobs_threading_margin_m001.txt` **is** the remaining work: the two
-constant-margin dyna arms plus the model-free `ibrl_m001`, 10 seeds each
-(30 rows, seed-major → `--array=1-30`, or `1-3` to smoke all three). Build any other subset by name
+constant-margin dyna arms plus `ibrl_m001` and `ibrl_m001_qsrc`, 10 seeds each
+(40 rows, seed-major → `--array=1-40`, or `1-4` to smoke all four). Build any other subset by name
 with `cluster/make_joblist.py` rather than by `--array` arithmetic.
 
 ⚠️ The `_sgft` numbers they will be read against were produced by an earlier

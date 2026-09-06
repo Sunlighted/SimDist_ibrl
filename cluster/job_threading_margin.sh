@@ -242,8 +242,13 @@ STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
 # when reading dynaibrl_plain against dynaibrl_dynens: the difference is "these
 # two stage-1s", not "ensemble averaging".
 STAGE1_DYNENS=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
-# Target-domain BC prior for the model-free arm, on sat_160000 (see above).
+# Target-domain BC prior for the model-free arms, on sat_160000 (see above).
 BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
+# SOURCE-domain IBRL expert; only ibrl_m001_qsrc uses it, for its critic alone.
+# This is the same checkpoint stage-1 distilled from (source_agent in
+# release/cfgs/mimicgen/threading_d0_state_simdist.yaml), so "the source critic"
+# means the same thing here as everywhere else in the pipeline.
+SRC_EXPERT=exps/mimicgen/threading_ibrl_source_seed1/model0.pt
 
 MARGIN_INIT=${MARGIN_INIT:-0.05}
 MARGIN_FINAL=${MARGIN_FINAL:-0.0}
@@ -266,7 +271,12 @@ done
 case $ARM in dynaibrl_dynens*)
     [ -f "$STAGE1_DYNENS" ] || { echo "MISSING asset: $STAGE1_DYNENS"; exit 1; } ;;
 esac
-case $ARM in ibrl_*) NEED_BC=1 ;; *) NEED_BC=0 ;; esac
+case $ARM in
+  ibrl_m001_qsrc) NEED_BC=1
+    [ -f "$SRC_EXPERT" ] || { echo "MISSING source expert: $SRC_EXPERT"; exit 1; } ;;
+  ibrl_*) NEED_BC=1 ;;
+  *) NEED_BC=0 ;;
+esac
 if [ "$NEED_BC" = 1 ] && [ ! -f "$BC_PRIOR" ]; then
     echo "MISSING $BC_PRIOR -- run cluster/job_threading_bc_s160.sh first"; exit 1
 fi
@@ -393,6 +403,36 @@ case $ARM in
     # It bounds how much of the effect needs a model; it does not isolate it.
     $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
       --bc_policy $BC_PRIOR \
+      --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
+      --num_train_step 100000 --num_warm_up_episode 30 \
+      --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \
+      --replay_buffer_size 1000 --mix_rl_rate 0.5 --num_critic_update 5 \
+      --stddev_max 0.1 --use_state 1 --log_per_step 1000 \
+      --train_hand_init_perturb_joint_sigma 0.1 \
+      --eval_hand_init_perturb_joint_sigma 0.1 \
+      --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  ibrl_m001_qsrc)
+    # ibrl_m001 + the SOURCE expert's critic as Q's starting point. Differs from
+    # ibrl_m001 in exactly ONE field (load_critic_only), so this is the controlled
+    # test of "does warm-starting Q from the source expert help?".
+    #
+    # load_critic_only=1 (train_rl.py) keeps critic + critic_target from the
+    # pretrained agent and RESTORES the freshly-initialised actor, so the RL actor
+    # still cold-starts. Without it, load_pretrained_agent would also transfer the
+    # actor and the arm would move two things at once -- which is what
+    # threading_ibrl_simdist_srccritic_mppiactor_seed1 did (peak 0.97@170k but
+    # oscillating, simdist.md 26); that run is NOT a clean precedent.
+    #
+    # Prior evidence is mixed and none of it is this measurement: tasks.md 41b has
+    # the source expert critic LOSING to the distilled V-hat by 0.085 (z=2.8) as an
+    # MPPI scorer, and the target-domain IQL-pretrained critic bought only speed,
+    # not ceiling (~96%, matched). Both are different uses of a critic than IBRL's
+    # argmax. Expect a null; the point is to stop guessing.
+    $PY train_rl.py --save_dir $OUT --seed $SEED --task_name Threading_D0 \
+      --bc_policy $BC_PRIOR \
+      --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
       --num_train_step 100000 --num_warm_up_episode 30 \
       --num_eval_episode 100 --mp_eval 1 --episode_length 400 --end_on_success 1 \

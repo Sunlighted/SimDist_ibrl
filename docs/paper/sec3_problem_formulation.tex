@@ -398,20 +398,62 @@ identical. We report the noise floor of each comparison alongside the effect.
 \subsection{Model-Free vs.\ Model-Based Adaptation: why do we need a world model?}
 \label{sec:mf-vs-mb}
 
-[TODO: Clarify the trade-offs between model-based and model-free methods.
-Model-based methods leverage a world model to generate additional data, yielding
-higher sample efficiency; they are, however, hindered by the difficulty of
-fitting an accurate model, and long-horizon rollouts in the latent space suffer
-from compounding error. Model-free methods are simpler and more direct;
-nevertheless, even off-policy algorithms need a large amount of interaction
-before the value function converges, which under a sparse terminal reward
-(Eq.~\ref{eq:sparse}) is precisely what a scarce target budget cannot buy.
-IMPORTANT FRAMING: the question of this subsection is \emph{not} which method
-wins with unlimited interaction. The budget is fixed by Def.~\ref{def:budget},
-and the operating point lies entirely inside it. Model-free RL is therefore not
-a competitor we lose to asymptotically; within the budget it is simply not yet
-functional, and we run it out of budget only as a \emph{diagnostic reference}
-that tells us what the target domain admits.]
+Under Def.~\ref{def:budget} an adaptation method must purchase a behavioural
+change with a fixed and small amount of target interaction, and the two families
+pay for it in different currencies. A model-free learner has to recover that
+change from the reward alone: under the sparse terminal reward of
+Eq.~\ref{eq:sparse} credit must be propagated backwards along entire
+trajectories, and even off-policy algorithms need far more interaction than the
+budget contains before the value estimate becomes informative at all. A
+model-based learner spends the same budget on a \emph{supervised} problem
+instead --- regressing the target transition kernel from transitions it has
+already collected --- and then amortizes each real transition over many
+synthetic value updates (Dyna) or many planning queries (MPC). That is the whole
+of the exchange: what a world model buys is not a better solution, but a
+\emph{cheaper} one.
+
+The price is that every model-based arm inherits the error of the fitted kernel,
+and unlike a value estimate that error does not shrink towards zero as
+interaction accumulates --- it is a bias, and it caps what the arm can reach.
+This subsection establishes the two halves of that statement and nothing more.
+\textbf{(i) Inside the budget, the world model is not an optimization but a
+precondition.} Both model-based arms --- Dyna-IBRL and planning-based SimDist
+--- cross the useful success thresholds within $N$ target transitions, while
+model-free IBRL has barely left the zero-shot level when the budget runs out
+(Tab.~\ref{tab:mf-vs-mb-budget}). \textbf{(ii) The model-based plateau is a
+model-error ceiling, not a data ceiling.} Run deliberately past the budget, the
+model-free arm climbs to \ph{0.--} on the same target, so the level at which the
+model-based arms stop improving cannot be attributed to the task, to the success
+predicate, or to the amount of interaction available; it must be a property of
+the learned kernel (Fig.~\ref{fig:mf-vs-mb-asymptote}).
+
+Two things this subsection deliberately does not claim. It is \emph{not} a
+comparison of asymptotes: the operating point of Def.~\ref{def:budget} lies
+entirely inside the shaded region of Fig.~\ref{fig:mf-vs-mb-asymptote}, and in
+the sim-to-real problem this proxy stands in for, the right-hand side of that
+plot is not purchasable at any price. Model-free RL is therefore not a
+competitor we lose to asymptotically; within the budget it is not yet a method
+at all, and we run it out of budget only as a \emph{diagnostic reference} that
+tells us what the target domain admits. Nor does it claim that the two
+model-based arms are interchangeable. They sit close together here only because
+each has already been given the ingredient it needs, and those ingredients are
+not the same one --- Sec.~\ref{sec:dyna-vs-plan} shows that stripped of it, the
+Dyna arm does not function at all.
+
+% NOTE(framing): kept the original "budget, not asymptote" guard. Reporting the
+% out-of-budget model-free score as ATTRIBUTION (the target admits near-
+% saturation, therefore the plateau is the model's fault) is strictly stronger
+% than reporting it as a ranking, which would invite the referee question "then
+% why not just use model-free?" and force us to defend a comparison we never
+% need to make.
+% TODO(table): Tab.~\ref{tab:mf-vs-mb-budget} currently carries two rows per
+% task (IBRL / Dyna-IBRL). Add a third --- planning-based SimDist --- so the
+% table is the three-way family comparison this text promises. The Dyna-IBRL row
+% here is the MARGIN-PROTECTED variant; the bare-Dyna number is withheld for
+% Sec.~\ref{sec:dyna-vs-plan}, where it is the point of the section.
+% TODO(consistency): the last sentence promises "does not function at all", so
+% Sec.~\ref{sec:dyna-vs-plan} must open with the bare-Dyna curve. Verify that
+% number comes from a planner-off evaluation before it is written down.
 
 % ---------------------------------------------------------------------------
 % FLOAT 1 (Sec.~\ref{sec:mf-vs-mb}): table (left) + figure (right), one row.

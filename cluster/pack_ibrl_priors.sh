@@ -4,11 +4,15 @@
 #   bash scripts/train_target_bc_priors.sh     # first: train them locally
 #   bash cluster/pack_ibrl_priors.sh [outdir]  # default /user_data/Chenyang/ship
 #
-# Contents (~260 MB, 30 priors x ~8.5 MB):
+# Contents (~540 MB = 30 priors x ~8.5 MB + 3 source experts x ~103 MB):
 #   exps/mimicgen/il_ft_target_s160_seed*          Threading  (ibrl_m005anneal0 + ibrl_m001)
 #   exps/mimicgen/square_il_ft_target_rotw1_seed*  Square     (sq_ibrl_m001)
 #   exps/mimicgen/coffee_il_ft_target_g5x_seed*    Coffee     (cof_ibrl_m001)
 #   release/cfgs/mimicgen/{square_rotw1,coffee_g5x}_ibrl_m001.yaml
+#   the three SOURCE IBRL experts (~103 MB each) -- only the *_qsrc arms use them,
+#   for their critic alone (--load_critic_only 1). These are the same checkpoints
+#   stage-1 distilled from, so "the source critic" means the same thing here as
+#   everywhere else in the pipeline.
 #
 # ⚠️ Each prior ships with its cfg.yaml, not just model0.pt: train_rl.py rebuilds
 # the BC prior by reading dirname(bc_policy)/cfg.yaml. A tarball of bare .pt
@@ -32,6 +36,14 @@ for S in $SEEDS; do
 done
 add release/cfgs/mimicgen/square_rotw1_ibrl_m001.yaml
 add release/cfgs/mimicgen/coffee_g5x_ibrl_m001.yaml
+
+# source experts for the *_qsrc arms (one per task, NOT per seed)
+for D in exps/mimicgen/threading_ibrl_source_seed1 \
+         exps/mimicgen/square_ibrl_rotw1_sig01_snap_seed1 \
+         exps/mimicgen/coffee_ibrl_source_sig01_seed1; do
+  add "$D/model0.pt"
+  add "$D/cfg.yaml"
+done
 
 if [ "$MISSING" != 0 ]; then
   echo
@@ -65,3 +77,4 @@ echo "Then verify on the far end before submitting:"
 echo "  cd ~/scratch/ibrl && sha256sum -c <(awk '{print \$1\"  \"\$2}' .ibrl_m001_priors.manifest.txt) 2>/dev/null | grep -c OK"
 echo "  # (the manifest holds 16-char prefixes; simplest real check is a file count)"
 echo "  ls -d exps/mimicgen/{il_ft_target_s160,square_il_ft_target_rotw1,coffee_il_ft_target_g5x}_seed* | wc -l   # expect 30"
+echo "  ls exps/mimicgen/{threading_ibrl_source_seed1,square_ibrl_rotw1_sig01_snap_seed1,coffee_ibrl_source_sig01_seed1}/model0.pt | wc -l   # expect 3"

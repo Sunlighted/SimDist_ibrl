@@ -147,6 +147,9 @@ case $ARM in
         DEMOS=release/data/mimicgen/square_sat_400000_s${SEED}/dataset.hdf5
         IBRL_CFG=release/cfgs/mimicgen/square_rotw1_ibrl_m001.yaml
         BC_PRIOR=exps/mimicgen/square_il_ft_target_rotw1_seed${SEED}/model0.pt
+        # SOURCE-domain IBRL expert, the one stage-1 distilled from (source_agent
+        # in square_simdist_rotw1_dynens_h5_seed1/cfg.yaml). Only *_qsrc uses it.
+        SRC_EXPERT=exps/mimicgen/square_ibrl_rotw1_sig01_snap_seed1/model0.pt
         STAGE1_DYNENS=exps/mimicgen/square_simdist_rotw1_dynens_h5_seed1/latest.pt
         STAGE1_PLAIN=exps/mimicgen/square_simdist_rotw1_h5_seed1/latest.pt
         ANCHOR_PATH=release/data/mimicgen/square_anchor_pool_4k/dataset.hdf5 ;;
@@ -155,6 +158,7 @@ case $ARM in
         DEMOS=release/data/mimicgen/coffee_g5x_sat400k_s${SEED}/dataset.hdf5
         IBRL_CFG=release/cfgs/mimicgen/coffee_g5x_ibrl_m001.yaml
         BC_PRIOR=exps/mimicgen/coffee_il_ft_target_g5x_seed${SEED}/model0.pt
+        SRC_EXPERT=exps/mimicgen/coffee_ibrl_source_sig01_seed1/model0.pt
         STAGE1_DYNENS=exps/mimicgen/coffee_simdist_diversev1_h5_seed1/latest.pt
         STAGE1_PLAIN=exps/mimicgen/coffee_simdist_plain_h5_seed1/latest.pt
         ANCHOR_PATH=release/data/mimicgen/coffee_anchor_pool_4k/dataset.hdf5 ;;
@@ -166,6 +170,10 @@ for f in "$DEMOS"; do
     [ -f "$f" ] || { echo "MISSING asset: $f  (run cluster/sync_sqcof_dynaibrl.sh)"; exit 1; }
 done
 case $ARM in
+  *_ibrl_m001_qsrc)
+    for f in "$BC_PRIOR" "$IBRL_CFG" "$SRC_EXPERT"; do
+        [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
+    done ;;
   *_ibrl_m001)
     # No world model in this arm at all -- it needs the BC prior and the cfg
     # instead. The prior is trained on the workstation and shipped in the tarball
@@ -227,6 +235,18 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  sq_ibrl_m001_qsrc|cof_ibrl_m001_qsrc)
+    # ibrl_m001 + the SOURCE expert's critic as Q's starting point; differs from
+    # the arm below in exactly ONE field. See job_threading_margin.sh's
+    # ibrl_m001_qsrc comment for the prior evidence (mixed, and none of it is
+    # this measurement).
+    $PY train_rl.py --config_path $IBRL_CFG \
+      --save_dir $OUT --seed $SEED \
+      --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
+      --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
+      --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_ibrl_m001|cof_ibrl_m001)
     # Model-free IBRL at the same constant margin as the _m001 dyna arms, same
     # 100k budget, same 20 target demos. No world model, so no stage-1 ckpt.
