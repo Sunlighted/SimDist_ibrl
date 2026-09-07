@@ -34,9 +34,10 @@ SQCOF = [f"{t}_dynaibrl{s}" for t in ("sq", "cof")
                    "_plain_m001", "_plain_sgft")]
 SQCOF += ["sq_ibrl_m001", "cof_ibrl_m001",              # model-free, no world model
           "sq_ibrl_m001_qsrc", "cof_ibrl_m001_qsrc",   # ... + source-expert critic warm-start
-          "sq_ibrl_m0_qsrc", "cof_ibrl_m0_qsrc"]       # ... same, margin 0
+          "sq_ibrl_m0_qsrc", "cof_ibrl_m0_qsrc",       # ... same, margin 0
+          "sq_ibrl_m0", "cof_ibrl_m0"]                 # margin 0, NO warm-start
 THREADING = ["plain_h5", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
-             "ibrl_m0_qsrc",
+             "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
              "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m0", "dynaibrl_dynens_m001",

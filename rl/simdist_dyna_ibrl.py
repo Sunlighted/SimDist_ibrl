@@ -52,6 +52,29 @@ class DynaIBRLConfig:
     synth_buffer_size: int = 100_000
     explore_std: float = 0.1
     real_ratio: float = 0.5
+    # Fixed share of every critic minibatch drawn from the 20 target DEMOS.
+    # 0 (default) = OFF and byte-for-byte the legacy path: demos live only in
+    # `real_buf` (see `preload_demos`), so their share of a draw DECAYS as
+    # rollouts accumulate -- 1869 demo transitions against up to 300k collected
+    # is 0.6% by the end of a 300k run. The model-free IBRL baseline instead
+    # holds the demo share FIXED at `1 - mix_rl_rate` = 0.5 for the whole run
+    # (train_rl.py:904 splits the batch rl_bsize / bc_bsize every step), which is
+    # how its critic keeps seeing r=1 through the tens of thousands of steps in
+    # which its own rollouts return nothing. 0.5 is therefore the ALIGNED value.
+    #
+    # Layout for demo_mix_rate=m, real_ratio=rr, batch B:
+    #     n_demo  = round(B*m)
+    #     n_real  = round((B - n_demo) * rr)
+    #     n_synth = B - n_demo - n_real
+    # i.e. the demo slice is carved out of the WHOLE batch and the remainder is
+    # split real/synth by real_ratio, so m=0.5 rr=0.5 gives 128 demo / 64 real /
+    # 64 synthetic out of 256.
+    #
+    # NOTE the demos also stay in `real_buf`, so at m>0 they are drawn twice --
+    # once from the fixed slice, once (at ~0.6%) inside the real slice. Leaving
+    # them there is deliberate: it keeps m=0 EXACTLY the arm already measured, so
+    # the pair differs in one field.
+    demo_mix_rate: float = 0.0
     collect_std: float = 0.1
     # Seed the TD replay with the 20 target demos, matching what the model-free
     # IBRL baseline does (`preload_datapath` + `preload_num_data 20`, with
@@ -67,6 +90,20 @@ class DynaIBRLConfig:
     # IBRL into safe policy improvement (CLAUDE.md: 0.85 floor -> 0.94 @55k on this
     # task with an MPPI prior).
     prior_margin: float = 0.0
+    # --- E2: WHICH CHANNEL the margin applies to. All 1 => legacy behaviour,
+    # byte-for-byte. The margin touches four distinct places and they carry
+    # different mechanisms; zeroing it in a subset is what separates "the margin
+    # protects the DATA distribution" from "it protects the VALUE estimate":
+    #   eval    - the policy that gets scored. Keep 1 in every arm, so two arms
+    #             are always evaluated as the same deployed policy and the only
+    #             difference is what happened during training.
+    #   act     - action selection while collecting REAL target transitions
+    #   imagine - action selection inside imagined rollouts
+    #   boot    - the hybrid argmax that builds the TD target
+    margin_on_eval: int = 1
+    margin_on_act: int = 1
+    margin_on_imagine: int = 1
+    margin_on_boot: int = 1
     # Linear anneal, same three-parameter form as train_rl.py (so the two sides
     # stay cross-referenceable):
     #     margin(t) = max(final, init * (1 - t / steps))
@@ -273,7 +310,8 @@ class DynaIBRLTrainer:
     # ------------------------------------------------------- IBRL action
     @torch.no_grad()
     def act_latent(self, z, *, eval_mode: bool, stddev: float = 0.0,
-                   use_target: bool = False) -> torch.Tensor:
+                   use_target: bool = False,
+                   channel: str = "act") -> torch.Tensor:
         """IBRL: argmax_a Q(z, a) over {RL actor, frozen prior}.
 
         Selected AND scored with the same critic (`q_target` when building a
@@ -288,7 +326,10 @@ class DynaIBRLTrainer:
         critic = self.q_target if use_target else self.q
         q_rl = critic.min_q(z, a_rl)
         q_bc = critic.min_q(z, a_bc)
-        if cfg.prior_margin != 0.0:
+        margin_on = {"eval": cfg.margin_on_eval, "act": cfg.margin_on_act,
+                     "imagine": cfg.margin_on_imagine,
+                     "boot": cfg.margin_on_boot}[channel]
+        if cfg.prior_margin != 0.0 and margin_on:
             q_rl = q_rl - cfg.prior_margin      # actor must WIN by the margin
         pick_rl = (q_rl >= q_bc).unsqueeze(-1)
         return torch.where(pick_rl, a_rl, a_bc), pick_rl.float().mean()
@@ -305,7 +346,8 @@ class DynaIBRLTrainer:
         """
         z = start_z
         for _ in range(self.cfg.rollout_length):
-            a, _ = self.act_latent(z, eval_mode=False, stddev=self.cfg.explore_std)
+            a, _ = self.act_latent(z, eval_mode=False, stddev=self.cfg.explore_std,
+                                   channel="imagine")
             r = self.agent.model.predict_reward(z, a).clamp(0.0, 1.0)
             z2 = self.agent.model.next(z, a)
             d = (r > 0.5).float()          # sparse 0/1 + end_on_success => r IS done
@@ -315,12 +357,20 @@ class DynaIBRLTrainer:
                 break
 
     # -------------------------------------------------------------- update
-    def update(self, real, synth) -> dict:
-        """One critic update (+ delayed actor update) on a real/synthetic mix."""
+    def update(self, real, synth, demo=None) -> dict:
+        """One critic update (+ delayed actor update) on a demo/real/synth mix."""
         cfg = self.cfg
-        n_real = int(round(cfg.batch_size * cfg.real_ratio))
-        n_synth = cfg.batch_size - n_real
-        parts = [real.sample(n_real)]
+        n_demo = 0
+        if cfg.demo_mix_rate > 0 and demo is not None and len(demo) > 0:
+            n_demo = int(round(cfg.batch_size * cfg.demo_mix_rate))
+        rest = cfg.batch_size - n_demo
+        n_real = int(round(rest * cfg.real_ratio))
+        n_synth = rest - n_real
+        parts = []
+        if n_demo > 0:
+            parts.append(demo.sample(n_demo))
+        if n_real > 0:
+            parts.append(real.sample(n_real))
         if n_synth > 0 and len(synth) > 0:
             parts.append(synth.sample(n_synth))
         z, a, r, z2, d = [torch.cat(x, 0) for x in zip(*parts)]
@@ -331,7 +381,7 @@ class DynaIBRLTrainer:
                 # critic learns the value of the policy that will actually act.
                 a2, frac = self.act_latent(z2, eval_mode=False,
                                            stddev=cfg.target_policy_noise,
-                                           use_target=True)
+                                           use_target=True, channel="boot")
             else:
                 a2 = self.actor(z2)
                 frac = torch.zeros(())
@@ -359,7 +409,8 @@ class DynaIBRLTrainer:
 
         m = {"dyna/q_loss": float(q_loss), "dyna/q_mean": float(q_all.mean()),
              "dyna/td_target": float(y.mean()), "dyna/bootstrap_rl_frac": float(frac),
-             "dyna/synth_frac": n_synth / cfg.batch_size}
+             "dyna/synth_frac": n_synth / cfg.batch_size,
+             "dyna/demo_frac": n_demo / cfg.batch_size}
 
         self._step += 1
         if self._step % cfg.policy_update_freq == 0:

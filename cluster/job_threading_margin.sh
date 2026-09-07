@@ -354,7 +354,7 @@ case $ARM in
     case $ARM in *_plain_m0) CK=$STAGE1_PLAIN ;; *) CK=$STAGE1_DYNENS ;; esac
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $CK --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
-      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
@@ -367,7 +367,7 @@ case $ARM in
     # whether the constant is just the better schedule.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
-      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
@@ -410,7 +410,7 @@ case $ARM in
     # dynaibrl_dynens_sgft.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
-      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
@@ -461,7 +461,36 @@ case $ARM in
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  ibrl_m0)
+    # Vanilla IBRL: no margin, NO critic warm-start. The single-variable partner
+    # of ibrl_m0_qsrc (they differ in load_critic_only alone), so this pair is
+    # what actually answers "is warm-starting Q from the source expert worth
+    # anything?" -- at 300k, because a head start is a claim about the whole
+    # trajectory, not about who is ahead at 100k.
+    #
+    # ⚠️ The fixed-margin sweep put `margin 0 -> 0.000`: with a cold critic the
+    # argmax is decided by noise. That measurement predates the act_method /
+    # domain-shift / architecture fixes and was one seed, so it is context, not a
+    # prediction -- but if this arm sits at zero while ibrl_m0_qsrc does not, the
+    # warm-start is doing exactly the job the margin used to do.
+    $PY train_rl.py --config_path $IBRL_CFG --save_dir $OUT --seed $SEED \
+      --bc_policy $BC_PRIOR $IBRL_ARCH \
+      --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
+      --num_eval_episode 100 --log_per_step 5000 \
+      --num_train_step 300000 \
+      --prior_margin_init 0.0 --prior_margin_final 0.0 \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   ibrl_m0_qsrc)
+    # ⚠️ 300k, not 100k: this arm and ibrl_m001_qsrc start from a critic that is
+    # already calibrated (to the SOURCE domain), so what they are being asked is
+    # how that head start plays out over a long horizon, not who is fastest at
+    # 100k. log_per_step 5000 matches dyna's eval cadence
+    # (adapt_interval 1000 x eval_every_rounds 5), so the two sides' curves have
+    # the same x-grid; it also means 60 evals over 300k instead of 300.
+    # ⚠️ ibrl_m001 (no warm-start) is still 100k -- do NOT put it on the same
+    # chart as these two without saying so.
+    #
     # Plain IBRL (NO margin at all) + the source expert's critic as Q's start.
     # Pairs with ibrl_m001_qsrc on one field (the margin) and asks the question
     # the margin exists to answer: the fixed-margin sweep put `margin 0 -> 0.000`
@@ -477,7 +506,8 @@ case $ARM in
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_eval_episode 100 --log_per_step 1000 \
+      --num_eval_episode 100 --log_per_step 5000 \
+      --num_train_step 300000 \
       --prior_margin_init 0.0 --prior_margin_final 0.0 \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
@@ -502,7 +532,8 @@ case $ARM in
       --bc_policy $BC_PRIOR $IBRL_ARCH \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
       --preload_datapath $DEMOS --preload_num_data 20 --freeze_bc_replay 1 \
-      --num_eval_episode 100 --log_per_step 1000 \
+      --num_eval_episode 100 --log_per_step 5000 \
+      --num_train_step 300000 \
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;

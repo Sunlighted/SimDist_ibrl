@@ -377,9 +377,10 @@ identical. We report the noise floor of each comparison alongside the effect.
 % NOTE (preamble additions needed for the floats below):
 %   \usepackage{graphicx}
 %   \usepackage{booktabs}
-%   \usepackage{caption}      % for \captionof inside minipage
 %   \usepackage{subcaption}   % for \subcaptionbox / subfigure
-%   \usepackage{multirow}
+%   (caption/multirow are NO LONGER used: Float 1 became a full-width table*
+%    with \caption, so \captionof-in-minipage and \multirow both went away.
+%    Keep them only if another section still needs them.)
 %   \usepackage{wrapfig}      % for the wrapfigure in Sec.~\ref{sec:what-to-adapt}
 %   \usepackage{xcolor}
 %   \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
@@ -437,7 +438,7 @@ at all, and we run it out of budget only as a \emph{diagnostic reference} that
 tells us what the target domain admits. Nor does it claim that the two
 model-based arms are interchangeable. They sit close together here only because
 each has already been given the ingredient it needs, and those ingredients are
-not the same one --- Sec.~\ref{sec:dyna-vs-plan} shows that stripped of it, the
+not the same one --- Sec.~\ref{sec:dyna} shows that stripped of it, the
 Dyna arm does not function at all.
 
 % NOTE(framing): kept the original "budget, not asymptote" guard. Reporting the
@@ -450,104 +451,140 @@ Dyna arm does not function at all.
 % task (IBRL / Dyna-IBRL). Add a third --- planning-based SimDist --- so the
 % table is the three-way family comparison this text promises. The Dyna-IBRL row
 % here is the MARGIN-PROTECTED variant; the bare-Dyna number is withheld for
-% Sec.~\ref{sec:dyna-vs-plan}, where it is the point of the section.
+% Sec.~\ref{sec:dyna}, where it is the point of the section.
 % TODO(consistency): the last sentence promises "does not function at all", so
-% Sec.~\ref{sec:dyna-vs-plan} must open with the bare-Dyna curve. Verify that
+% Sec.~\ref{sec:dyna} must open with the bare-Dyna curve. Verify that
 % number comes from a planner-off evaluation before it is written down.
 
 % ---------------------------------------------------------------------------
-% FLOAT 1 (Sec.~\ref{sec:mf-vs-mb}): table (left) + figure (right), one row.
-%   LEFT  = budget-to-threshold + matched-budget score  -> "inside the budget,
-%           only the model-based arm is functional at all"
-%   RIGHT = DIAGNOSTIC, deliberately run past the budget -> "the Dyna plateau is
-%           a model-error ceiling, not a data ceiling": something else reaches
-%           near-saturation on the same target, so the plateau is the model's
-%           fault and not the task's.
-% The two halves are the two axes of Def.~\ref{def:budget}: (b) then (a).
-% DO NOT frame the right half as "model-free eventually wins" -- an out-of-budget
-% score is not a result in this setting, and reading it as a competitor would
-% concede a comparison we never make. Its only job is attribution.
+% FLOAT 1a (Sec.~\ref{sec:mf-vs-mb}): FULL-WIDTH table, tasks on the horizontal
+% axis, one row per method. Was a 0.52\textwidth minipage sharing a float with
+% the asymptote figure; 5 methods x 4 tasks x 2 metrics does not fit there, so
+% the two halves are now separate floats (1a = table, 1b = figure).
+%
+% The point of the table is NOT "model-based wins". It is that BOTH intra-family
+% spans (IBRL critic init; Dyna margin) are LARGER than the model-free/
+% model-based gap -- which is what makes Sec.~\ref{sec:dyna} necessary
+% rather than optional. Keep the two-row-per-family layout even if one row looks
+% redundant: dropping the faithful variant is what would make this look tuned.
+%
+% ALL world-model arms here use the SINGLE-HEAD dynamics. Using the ensemble of
+% Sec.~\ref{sec:what-to-adapt} in this table would spend that section's result
+% early AND erase the plateau that Fig.~\ref{fig:mf-vs-mb-asymptote} depends on
+% (measured on Threading @300k: plain 0.893 vs dynens 0.960 vs model-free 0.969).
+%
+% TODO(data): N_30 is a DEAD column on Threading -- the Dyna arm starts at 0.45
+% zero-shot, so the 30% threshold is already crossed at 0 transitions. Thresholds
+% below are 50/80; re-pick them per task once Coffee/Square zero-shot is known.
+% TODO(data): SR must come from independent re-evaluation (>=300 episodes), NOT
+% from in-training eval, which is optimistic by 0.06-0.19 (Sec.~\ref{sec:setup}).
+% ---------------------------------------------------------------------------
+\begin{table*}[t]
+\centering
+\caption{%
+  \textbf{Inside the adaptation budget, the model-based advantage is not
+  automatic.} Target transitions to reach $50\%$ and $80\%$ success
+  ($N_{50}$, $N_{80}$; lower is better), and success rate at the matched budget
+  of $100$k target transitions (SR; higher is better). \texttt{---} means the
+  threshold was not reached within $100$k. Every arm starts from the same
+  zero-shot policy (first row) and is given the same $20$ target
+  demonstrations. All world-model arms use the \emph{single-head} dynamics of
+  Sec.~\ref{sec:simdist}; the ensemble of Sec.~\ref{sec:what-to-adapt} is
+  deliberately not used here. The two \textsc{Dyna-IBRL} rows differ in a single
+  scalar, and the two \textsc{IBRL} rows in the critic initialization alone;
+  both pairs span more of this table than the model-free/model-based
+  distinction does. Means over [TODO: $k$] seeds with $\ge 300$ evaluation
+  episodes; $\pm$ is the seed spread.
+}
+\label{tab:mf-vs-mb-budget}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l cc cc cc cc c}
+\toprule
+ & \multicolumn{2}{c}{Threading} & \multicolumn{2}{c}{Coffee}
+ & \multicolumn{2}{c}{Square} & \multicolumn{2}{c}{TPA~[TPA]}
+ & Speedup to $50\%$ \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-10}
+Method & $N_{50}\downarrow$ & SR$\uparrow$ & $N_{50}\downarrow$ & SR$\uparrow$
+       & $N_{50}\downarrow$ & SR$\uparrow$ & $N_{50}\downarrow$ & SR$\uparrow$
+       & (geo.\ mean) \\
+\midrule
+\emph{zero-shot} (frozen $\pi_s$, Eq.~\ref{eq:gapdef})
+  & --- & \ph{0.--} & --- & \ph{0.--} & --- & \ph{0.--} & --- & \ph{0.--} & --- \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-free}}\\
+\quad IBRL (critic from scratch)
+  & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{$--\times$} \\
+\quad IBRL ($+$ source critic)
+  & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{$--\times$} \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-based: Dyna}}\\
+\quad Dyna-IBRL ($m=0$)
+  & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{$--\times$} \\
+\quad \textbf{Dyna-IBRL} ($m=0.01$)
+  & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{$--\times$} \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-based: planning}}\\
+\quad \textbf{SimDist} (MPPI)
+  & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{$--\times$} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+% ---------------------------------------------------------------------------
+% FLOAT 1b (Sec.~\ref{sec:mf-vs-mb}): the asymptote DIAGNOSTIC, deliberately run
+% past the budget. Its only job is attribution: the same target admits near-
+% saturation, so the model-based plateau is the model's fault, not the task's.
+% DO NOT frame it as "model-free eventually wins" -- an out-of-budget score is
+% not a result in this setting, and reading it as a competitor concedes a
+% comparison we never make.
+%
+% ARM CHOICE (measured, Threading @300k, in-training eval):
+%   dynaplain_m001 0.893  vs  ibrl_m0_qsrc 0.969   -> gap 0.076, claim HOLDS
+%   dyna_m001 (dynens) 0.960 vs ibrl_m0_qsrc 0.969 -> gap 0.009, claim FAILS
+% => plot the PLAIN Dyna against the source-critic IBRL: the strongest faithful
+% member of each family, so neither "you undertuned Dyna" nor "you starved the
+% baseline" is available to a referee. The ensemble closing this same gap in
+% Sec.~\ref{sec:what-to-adapt} is then a free callback to this figure.
 % ---------------------------------------------------------------------------
 \begin{figure*}[t]
 \centering
-\begin{minipage}[t]{0.52\textwidth}
-  \centering
-  \captionof{table}{%
-    \textbf{Sample efficiency of model-based adaptation.} Target transitions
-    required to reach $30\%$ and $50\%$ success, and success rate at a matched
-    budget of $100$k target transitions. Arrows indicate whether lower or
-    higher is better; \texttt{---} means the threshold was never reached within
-    the budget. All entries are means over [TODO: $k$] seeds with
-    $\ge 300$ evaluation episodes; $\pm$ is the seed spread.
-    % TODO: also report the zero-shot score of the frozen source expert
-    % (Eq.~\ref{eq:gapdef}) as a "0 transitions" reference row -- it is the
-    % starting point every arm shares, and it makes the speedup readable.
-  }
-  \label{tab:mf-vs-mb-budget}
-  \resizebox{\linewidth}{!}{%
-  \begin{tabular}{llccc}
-  \toprule
-   &  & \multicolumn{2}{c}{Steps to threshold $\downarrow$} & SR @100k $\uparrow$ \\
-  \cmidrule(lr){3-4}\cmidrule(lr){5-5}
-  Task & Method & $30\%$ & $50\%$ & \\
-  \midrule
-  \multirow{2}{*}{Threading}
-    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
-    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
-  \midrule
-  \multirow{2}{*}{Coffee}
-    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
-    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
-  \midrule
-  \multirow{2}{*}{Square}
-    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
-    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
-  \midrule
-  \multirow{2}{*}{TPA~[TPA]}
-    & IBRL (model-free) & \ph{--k} & \ph{--k} & \ph{0.--} \\
-    & \textbf{Dyna-IBRL} & \ph{--k} & \ph{--k} & \ph{0.--} \\
-  \midrule
-  \multicolumn{2}{l}{\emph{Speedup to $50\%$ (geo.\ mean)}} & & \ph{$--\times$} & \\
-  \bottomrule
-  \end{tabular}}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.45\textwidth}
-  \centering
-  \includegraphics[width=\linewidth]{figs/placeholder_mf_vs_mb_asymptote.pdf}
-  \caption{%
-    \textbf{The model-based plateau is a model-error ceiling, not a budget
-    ceiling.} \emph{Diagnostic, deliberately run outside the adaptation
-    budget.} Target success rate vs.\ target transitions on [TODO: 2
-    representative tasks, one panel each], continued to [TODO: $\sim$1M]
-    transitions --- roughly [TODO: $--\times$] the budget of
-    Def.~\ref{def:budget}. The shaded region on the left is the budget we
-    actually operate in; inside it the model-free arm has barely left the
-    zero-shot level, which is why it is not a viable adaptation method here.
-    Outside it, model-free IBRL nonetheless climbs to $\ph{0.--}$, while
-    Dyna-IBRL stops improving at $\ph{0.--}$ despite being given the same
-    extended interaction. The comparison is used for attribution only: since the
-    same target domain \emph{does} admit near-saturating performance, the
-    model-based plateau cannot be blamed on the task or on the amount of data,
-    and must be a property of the learned model --- which is what
-    Sections~\ref{sec:dyna-vs-plan} and \ref{sec:what-to-adapt} then localize.
-    Shaded band = seed spread; horizontal dashed line = frozen source expert
-    (zero-shot).
-    % TODO(fig): SHADE the budget region and label it "adaptation budget".
-    % The figure must read left-to-right as "in budget: nothing else works" ->
-    % "out of budget: the plateau is the model's fault". Do not annotate the
-    % crossover as an operating point: we always operate left of it.
-    % TODO(fig): x-axis log scale, otherwise the in-budget region collapses to
-    % a sliver and the early model-based advantage is invisible.
-    % TODO(fig): give BOTH arms the same extended budget on the right. If the
-    % Dyna arm is cut off at 100k the plateau claim is unsupported -- a curve
-    % that was never run cannot be shown to have stopped rising.
-    % TODO(fig): if the plateau is not flat, say so honestly -- do NOT crop the
-    % x-range to manufacture one. A slowly-rising Dyna curve still supports the
-    % efficiency claim on the left; it just weakens this attribution, in which
-    % case fall back to the horizon sweep below as the primary evidence.
-  }
-  \label{fig:mf-vs-mb-asymptote}
-\end{minipage}
+\includegraphics[width=0.72\textwidth]{figs/placeholder_mf_vs_mb_asymptote.pdf}
+\caption{%
+  \textbf{The model-based plateau is a model-error ceiling, not a budget
+  ceiling.} \emph{Diagnostic, deliberately run outside the adaptation budget.}
+  Target success rate vs.\ target transitions on [TODO: 2 representative tasks,
+  one panel each], continued to $300$k transitions --- $3\times$ the budget of
+  Def.~\ref{def:budget}. The shaded region on the left is the budget we actually
+  operate in; inside it the model-free arm has barely left the zero-shot level,
+  which is why it is not a viable adaptation method here. Outside it, model-free
+  IBRL nonetheless climbs to $\ph{0.--}$, while Dyna-IBRL stops improving at
+  $\ph{0.--}$ despite being given the same extended interaction. The comparison
+  is used for attribution only: since the same target domain \emph{does} admit
+  near-saturating performance, the model-based plateau cannot be blamed on the
+  task or on the amount of data, and must be a property of the learned model ---
+  which is what Sections~\ref{sec:dyna} and \ref{sec:what-to-adapt} then
+  localize. Both arms are the strongest faithful member of their family
+  (source-critic IBRL; margin-protected single-head Dyna-IBRL), so the gap is
+  not an artifact of undertuning either side. Shaded band = seed spread;
+  horizontal dashed line = frozen source expert (zero-shot).
+  % TODO(fig): SHADE the budget region and label it "adaptation budget".
+  % The figure must read left-to-right as "in budget: nothing else works" ->
+  % "out of budget: the plateau is the model's fault". Do not annotate the
+  % crossover as an operating point: we always operate left of it.
+  % TODO(fig): x-axis log scale, otherwise the in-budget region collapses to
+  % a sliver and the early model-based advantage is invisible.
+  % TODO(fig): both arms ARE now run to the same 300k -- keep it that way; a
+  % curve that was never run cannot be shown to have stopped rising.
+  % TODO(fig): the 0.076 gap currently rests on in-training eval, which is
+  % optimistic by 0.06-0.19 and not necessarily by the same amount in both arms.
+  % Re-evaluate both 300k checkpoints independently (>=300 episodes) before this
+  % number goes in -- it is the only quantitative claim the figure makes.
+  % TODO(fig): if the plateau is not flat, say so honestly -- do NOT crop the
+  % x-range to manufacture one. A slowly-rising Dyna curve still supports the
+  % efficiency claim on the left; it just weakens this attribution, in which
+  % case fall back to the horizon sweep below as the primary evidence.
+}
+\label{fig:mf-vs-mb-asymptote}
 \end{figure*}
 
 [TODO: text for Table~\ref{tab:mf-vs-mb-budget}. Claim 1 --- \emph{under the
@@ -580,84 +617,181 @@ introduces --- and the rest of Section~\ref{empirical} is a search for which one
 % TODO(analysis, optional but strong): decompose the Dyna plateau by rollout
 % horizon -- sweep the synthetic rollout length h and show the plateau height is
 % non-monotone in h (short h = no value propagation under sparse reward, long h =
-% compounding latent error). This is the bridge into Sec.~\ref{sec:dyna-vs-plan}
+% compounding latent error). This is the bridge into Sec.~\ref{sec:dyna}
 % and it is cheap: it reuses the same world model.
 
-\subsection{Dyna vs.\ Planning: how should we use the world model for adaptation?}
-\label{sec:dyna-vs-plan}
+\subsection{What Makes Dyna Work: keeping the collected data near the prior}
+\label{sec:dyna}
 
-[TODO: Contrast Dyna with planning: planning significantly outperforms Dyna and
-is substantially less vulnerable to dynamics error. Data generated in the latent
-space by Dyna cannot be rolled out over long horizons without policy/model
-collapse; yet under a sparse terminal reward, long trajectories reaching all the
-way to the goal are exactly what value propagation needs. Dyna is thus squeezed
-from both sides, and its three-way objective (dynamics, value and policy
-optimized jointly) is notoriously hard to converge. Planning only has to keep
-the dynamics honest during adaptation (e.g.\ SimDist adapts the dynamics head
-alone), which is more direct, more tractable and more robust.]
+Table~\ref{tab:mf-vs-mb-budget} leaves an uncomfortable result standing: the
+faithful Dyna arm, given the same world model, the same demonstrations and the
+same budget, adapts \emph{more slowly} than model-free RL. A world model is
+supposed to make adaptation cheaper, and here it does not. This subsection
+shows that the entire difference is carried by one scalar, identifies which of
+its several plausible mechanisms is the operative one, and extracts from that
+the property Sec.~\ref{sec:what-to-adapt} then builds on.
+
+\paragraph{One scalar spans the whole family.}
+Dyna-IBRL selects its action by the IBRL argmax of Eq.~\ref{eq:ibrl-argmax},
+and we give the frozen prior a permanent preference floor $m$: the learned
+actor is executed only where it beats the prior by more than $m$
+(Eq.~\ref{eq:ibrl-margin}). Sweeping $m$ (Table~\ref{tab:margin}a) produces an
+inverted U whose two ends are further apart than any other comparison in this
+paper --- from a complete failure at $m=0$ to $\ph{0.87}$ at $m=0.01$, and back
+down to the prior's own score at $m=0.1$.
+
+\paragraph{Both ends fail, for opposite reasons.}
+At $m=0$ the actor wins the argmax from the first round (it beats the prior
+under a critic that cannot yet score either of them), and the arm collapses:
+the first $50$k transitions score exactly $0.00$, and the run spends the rest of
+the budget climbing back. At $m=0.1$ the opposite happens --- the actor
+\emph{never} wins the argmax (the measured win rate is $0.00$ at every logging
+point), so the prior alone carries every episode and the score is, point for
+point, the prior's own. That arm is not adapting slowly; it is not adapting at
+all. The useful reading of the sweep is therefore not "more protection is
+better'' but that a learned component must be admitted into execution
+\emph{neither immediately nor never}.
+
+\paragraph{The margin acts through the data, not through the value.}
+Three mechanisms move together with $m$: it protects execution from a bad
+actor, it keeps the \emph{collected} distribution near the prior, and it
+suppresses exploration and so raises the fraction of successful trajectories the
+critic sees. The first is a property of the value estimate; the others are
+properties of the data. They can be separated, because the argmax is invoked in
+distinguishable places: when acting in the target environment, when rolling
+imagined branches, and when forming the TD target. Zeroing the margin in a
+subset of those channels leaves everything else --- including the policy that is
+finally evaluated --- untouched.
+
+The decomposition (Table~\ref{tab:margin}b) is one-sided. Removing the margin
+from the TD target costs nothing measurable ($\ph{0.882}$ vs.\ $\ph{0.878}$,
+inside the noise floor of Sec.~\ref{sec:setup}), while removing it from the two
+data channels gives back only part of the effect ($\ph{0.790}$) and doubles the
+transitions needed to reach $50\%$. The margin is not protecting the critic
+from bootstrapping off actions it cannot score; it is keeping the data
+on-policy with respect to the prior.
+
+The same conclusion is visible in the mechanism indicators. Across all four
+arms the score tracks how often the actor wins the argmax \emph{while
+collecting} and is indifferent to how often it wins \emph{inside the backup}:
+the data-channel arm holds a collection win rate of $\ph{0.03}$ while letting
+the actor win $\ph{0.65}$ of the backups, and scores as high as the fully
+protected arm. A null of this kind is informative rather than arithmetic --- an
+indicator moves by $4.6\times$ and the outcome does not follow it.
+
+\paragraph{Protection is scaffolding, not a crutch.}
+If the prior were simply the better policy, releasing the margin would have to
+hurt. It does not: annealing $m$ from $0.05$ to $0$ over the first half of the
+budget lets the actor recover a $\ph{0.57}$ win rate by the end, and the arm
+still finishes at $\ph{0.870}$. What the margin buys is time for the critic to
+become able to rank the two candidates --- after which it is no longer needed.
+This is the sense in which Dyna's failure is not a failure of the world model.
+
+\paragraph{Demonstrations and the margin are substitutes.}
+Seeding the replay with the $20$ target demonstrations is worth $\ph{+0.63}$
+when $m=0$ and $\ph{+0.006}$ when $m=0.01$. Both are ways of keeping the early
+critic from being misled, and either one alone suffices; reporting a Dyna
+baseline while varying only one of them will over-credit whichever was varied.
+The same protection also transfers outside the model-based setting: giving
+model-free IBRL the identical floor cuts its transitions-to-$50\%$ by
+$\ph{4\times}$, which is what one expects if the mechanism is about the
+collected distribution rather than about the imagined data.
+
+\paragraph{Why planning needs none of this.}
+Planning already has it. MPPI draws most of its candidates from the policy
+proposal and confines the remainder to a trust region around it
+(Sec.~\ref{sec:simdist}), so the collected distribution cannot leave the
+prior's neighbourhood in the first place. What Dyna must install as a
+hyper-parameter, planning owns structurally --- and that, rather than search
+depth, is the substantive difference between the two ways of consuming one
+world model.
+
+This relocates the question rather than answering it. If planning obtains for
+free the property this subsection had to install by hand, then whatever error
+remains in the planning arm lies elsewhere.
+Sec.~\ref{sec:what-to-adapt} takes the planner apart component by component and
+finds that two of the three obvious places to spend the target budget are the
+wrong ones.
 
 % ---------------------------------------------------------------------------
-% FLOAT 2 (Sec.~\ref{sec:dyna-vs-plan}): one wide figure, 3--4 panels,
-% one panel per task. Matched-budget adaptation curves.
+% FLOAT 2 (Sec.~\ref{sec:dyna}): margin dose-response (a) + channel
+% decomposition (b). REPLACES the old 4-panel "Dyna vs planning" curve figure,
+% whose content is now carried by Table~\ref{tab:mf-vs-mb-budget}; this section
+% is about what the scalar buys, not about the family comparison.
+%
+% PROVENANCE of every number below (fill/replace before submission):
+%   (a) exps/simdist_threading_3arm/dynaibrl_{m0,m001nodemo,m005,m01}_seed1
+%       -- single variable: none of these preloads demos. m001nodemo was run to
+%       complete this line; m0/m005/m01 predate it and match on every other field.
+%   (b) exps/simdist_threading_3arm/dynaibrl_{m001,m001dataonly,m001bootonly,
+%       m0demo}_seed1 -- all preload demos, all m=0.01 except m0demo.
+%       See exps/simdist_threading_3arm/README_E2_margin_channels.md.
+% CAVEATS: seed1 only, Threading only, and the scores are in-training eval
+% (100 episodes), optimistic by 0.06-0.19 per Sec.~\ref{sec:setup}. Before
+% submission: (i) re-evaluate every cell independently at >=300 episodes,
+% (ii) replicate (b) on a pre-registered new seed, (iii) repeat (a) on one more
+% task -- the inverted U is the section's central claim and currently rests on
+% one task.
 % ---------------------------------------------------------------------------
-\begin{figure*}[t]
+\begin{table*}[t]
 \centering
-\begin{subfigure}[t]{0.245\textwidth}
-  \includegraphics[width=\linewidth]{figs/placeholder_dvp_threading.pdf}
-  \caption{Threading}\label{fig:dvp-threading}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.245\textwidth}
-  \includegraphics[width=\linewidth]{figs/placeholder_dvp_coffee.pdf}
-  \caption{Coffee}\label{fig:dvp-coffee}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.245\textwidth}
-  \includegraphics[width=\linewidth]{figs/placeholder_dvp_square.pdf}
-  \caption{Square}\label{fig:dvp-square}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.245\textwidth}
-  \includegraphics[width=\linewidth]{figs/placeholder_dvp_tpa.pdf}
-  \caption{TPA~[TPA]}\label{fig:dvp-tpa}
-\end{subfigure}
 \caption{%
-  \textbf{At a matched target budget, planning adapts far better than Dyna.}
-  Target success rate vs.\ target transitions consumed (cap $100$k) for
-  Dyna-IBRL and planning-based adaptation (SimDist), both built on the
-  \emph{same} source-distilled world model and the same $n$ target
-  demonstrations, so the comparison isolates \emph{how} the model is used ---
-  as a data generator or as a decision-time simulator. Model-free IBRL at the
-  same budget and the frozen source expert are shown as references; the shaded
-  band is the seed spread and the grey band at the right edge marks the
-  evaluation noise floor.
-  % TODO(fig): the anchor number to reproduce here is the same-world-model
-  % contrast in docs/on-policy-adaptation.md (planning 0.813 vs Dyna 0.157).
-  % It MUST be the identical world-model checkpoint in both arms, otherwise the
-  % comparison silently becomes a model-quality comparison.
-  % TODO(fig): keep the in-budget model-free curve on the same axes -- it is the
-  % "what a budget buys without a world model" reference, consistent with the
-  % left half of Fig.~\ref{fig:mf-vs-mb-budget}. Do NOT extend it past the
-  % budget cap here; the out-of-budget continuation lives only in the diagnostic
-  % Fig.~\ref{fig:mf-vs-mb-asymptote}.
-  % TODO(fig): compare only steady-state segments; the slower arm shows
-  % transient peaks (methodology, Sec.~\ref{sec:setup}).
+  \textbf{What the prior-preference floor buys, and through which channel.}
+  \textbf{(a)} Sweeping the floor $m$ produces an inverted U: at $m=0$ the
+  learned actor takes over before the critic can rank it and the arm collapses;
+  at $m=0.1$ it never takes over and the arm reproduces the prior exactly (win
+  rate $0.00$ throughout). \textbf{(b)} The floor is applied in the channels
+  marked $\checkmark$ and zeroed elsewhere; the evaluated policy is identical in
+  all four rows, so the arms differ only in what happened during training.
+  Removing it from the TD target is free; removing it from the data channels is
+  not. ``win rate'' is the fraction of steps at which the actor wins the argmax,
+  reported separately for collection and for the backup.
+  [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
+  in-training eval.]
 }
-\label{fig:dyna-vs-planning}
-\end{figure*}
+\label{tab:margin}
+\begin{minipage}[t]{0.40\textwidth}
+\centering
+\small (a) dose--response (no demonstrations)\\[2pt]
+\begin{tabular}{lccc}
+\toprule
+$m$ & SR @100k & $N_{50}\downarrow$ & win rate (collect) \\
+\midrule
+$0$     & \ph{0.00} & \ph{---}  & \ph{0.68} \\
+$0.01$  & \ph{\textbf{0.87}} & \ph{\textbf{20k}} & \ph{0.07} \\
+$0.05$  & \ph{0.77} & \ph{---}  & \ph{0.01} \\
+$0.1$   & \ph{0.62} & \ph{---}  & \ph{0.00} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.56\textwidth}
+\centering
+\small (b) which channel the floor acts through ($m=0.01$)\\[2pt]
+\begin{tabular}{lccccc}
+\toprule
+\multicolumn{2}{c}{floor applied in} & & & \multicolumn{2}{c}{win rate} \\
+\cmidrule(lr){1-2}\cmidrule(lr){5-6}
+data & TD target & SR @100k & $N_{50}\downarrow$ & collect & backup \\
+\midrule
+$\checkmark$ & $\checkmark$ & \ph{0.878} & \ph{20k} & \ph{0.07} & \ph{0.14} \\
+$\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
+---          & $\checkmark$ & \ph{0.790} & \ph{40k} & \ph{0.64} & \ph{0.12} \\
+---          & ---          & \ph{0.630} & \ph{85k} & \ph{0.81} & \ph{0.65} \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table*}
 
-[TODO: text for Fig.~\ref{fig:dyna-vs-planning}. Report the matched-budget
-margin (planning $\ph{0.--}$ vs.\ Dyna $\ph{0.--}$, averaged over tasks) and
-make the mechanism claim: with the same model, planning re-queries the model
-$H$ steps ahead from the \emph{current} state and never has to commit model
-error into learned parameters, while Dyna writes model error into the critic,
-where it is compounded by bootstrapping and cannot be undone by later real data.]
-
-[TODO: close the subsection with the honest limitation, so that
-Sec.~\ref{sec:what-to-adapt} has a reason to exist: planning is the best use of
-the budget, yet it saturates at $\ph{0.--}$ and additional target transitions
-inside a realistic budget do not move it. Measure that residual against what is
-\emph{achievable} on this target --- the oracle-dynamics planner and the target
-expert (Sec.~\ref{sec:what-to-adapt}) --- rather than against the out-of-budget
-model-free run, which is a diagnostic and not a target to catch. The remaining
-question is which component of the planner the residual lives in.]
+% NOTE(carried over from the two TODO blocks this replaced): when
+% Sec.~\ref{sec:what-to-adapt} reports the planner's residual, measure it against
+% what is ACHIEVABLE on this target -- the oracle-dynamics planner and the target
+% expert -- and NOT against the out-of-budget model-free run of
+% Fig.~\ref{fig:mf-vs-mb-asymptote}, which is a diagnostic and not a target to
+% catch. The other half of those blocks (planning re-queries the model from the
+% current state and never commits model error to parameters, whereas Dyna writes
+% it into the critic) is now the "Why planning needs none of this" paragraph
+% above, stated in terms of the collected distribution, which is what the channel
+% decomposition actually measured.
 
 \subsection{What to adapt: value, dynamics, or policy?}
 \label{sec:what-to-adapt}
@@ -777,7 +911,7 @@ planner was missing was never the value.]
 Holding value and proposal fixed, replacing the learned model with the oracle is
 worth $\ph{+0.--}$, an order of magnitude more than either other swap, and it
 alone accounts for the residual gap to model-free RL identified in
-Sec.~\ref{sec:dyna-vs-plan}. Tie back to the multiplicity argument in
+Sec.~\ref{sec:dyna}. Tie back to the multiplicity argument in
 Sec.~\ref{sec:setting}: the dynamics is consumed $H$ times per candidate and
 its error is selected \emph{adversarially} by the optimizer, while the value is
 consumed once and only through candidate-wise contrast.]

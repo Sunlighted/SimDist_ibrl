@@ -181,7 +181,7 @@ case $ARM in
     for f in "$BC_PRIOR" "$IBRL_CFG" "$SRC_EXPERT"; do
         [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
     done ;;
-  *_ibrl_m001)
+  *_ibrl_m0|*_ibrl_m001)
     # No world model in this arm at all -- it needs the BC prior and the cfg
     # instead. The prior is trained on the workstation and shipped in the tarball
     # (scripts/train_target_bc_priors.sh + cluster/pack_ibrl_priors.sh).
@@ -211,16 +211,19 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
-  sq_dynaibrl_m0|cof_dynaibrl_m0)
-    # Vanilla IBRL inside Dyna (no margin). One field from *_dynaibrl_m001.
-    # init=0.0 rather than the -1 "no schedule" sentinel so dyna/prior_margin=0.0
-    # is logged and verifiable. See job_threading_margin.sh's dynaibrl_*_m0 for
-    # the demo-replay asymmetry against model-free IBRL.
-    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
-      --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
-      --dyna.prior_margin_steps $MARGIN_STEPS ;;
-  sq_dynaibrl_plain_m0|cof_dynaibrl_plain_m0)
-    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+  sq_dynaibrl_m0|cof_dynaibrl_m0|sq_dynaibrl_plain_m0|cof_dynaibrl_plain_m0)
+    # ⚠️ 300k, not the 100k $COMMON sets: these arms are asked how a margin-free
+    # IBRL behaves over a long horizon, matching the 300k model-free *_qsrc arms.
+    # The repeated --max_transitions is deliberate -- argparse takes the LAST one,
+    # verified. Measured cost on this task family: round ~37s, eval ~168s,
+    # eval_every_rounds 5 -> ~5.3h for 300k, inside the 14h wall.
+    #
+    # NOTE the eval cadence is already dyna's own (adapt_interval 1000 x
+    # eval_every_rounds 5 = every 5000), i.e. the same grid the 300k model-free
+    # arms now use via log_per_step 5000.
+    case $ARM in *_plain_m0) CK=$STAGE1_PLAIN ;; *) CK=$STAGE1_DYNENS ;; esac
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $CK $COMMON \
+      --max_transitions 300000 \
       --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_m001|cof_dynaibrl_m001)
@@ -234,6 +237,7 @@ case $ARM in
     # put 0.01 -> 0.873 above anneal-to-0 -> ~0.855, which is inside that sweep's
     # noise and was never replicated on a fresh seed (CLAUDE.md rules 1 and 3).
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
+      --max_transitions 300000 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_sgft|cof_dynaibrl_sgft)
@@ -248,13 +252,28 @@ case $ARM in
     # Single-head counterpart of *_dynaibrl_m001, and the single-variable partner
     # of *_dynaibrl_plain_sgft.
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
+      --max_transitions 300000 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   sq_dynaibrl_plain_sgft|cof_dynaibrl_plain_sgft)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+  sq_ibrl_m0|cof_ibrl_m0)
+    # Vanilla IBRL, no margin, no critic warm-start; single-variable partner of
+    # *_ibrl_m0_qsrc. See job_threading_margin.sh's ibrl_m0.
+    $PY train_rl.py --config_path $IBRL_CFG \
+      --save_dir $OUT --seed $SEED \
+      --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
+      --num_train_step 300000 --log_per_step 5000 \
+      --prior_margin_init 0.0 --prior_margin_final 0.0 \
+      --prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_ibrl_m0_qsrc|cof_ibrl_m0_qsrc)
+    # ⚠️ 300k (not the 100k the other arms use) + log_per_step 5000 to match
+    # dyna's eval cadence. See job_threading_margin.sh's ibrl_m0_qsrc for why.
+    # *_ibrl_m001 (no warm-start) stays at 100k and is NOT directly comparable.
+    #
     # Plain IBRL (no margin) + source-expert critic warm-start. One field from
     # *_ibrl_m001_qsrc; see job_threading_margin.sh's ibrl_m0_qsrc for why this
     # is the arm that tests whether the margin was only a cold-start crutch.
@@ -262,6 +281,7 @@ case $ARM in
       --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
+      --num_train_step 300000 --log_per_step 5000 \
       --prior_margin_init 0.0 --prior_margin_final 0.0 \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
@@ -274,6 +294,7 @@ case $ARM in
       --save_dir $OUT --seed $SEED \
       --bc_policy $BC_PRIOR --preload_datapath $DEMOS \
       --load_pretrained_agent $SRC_EXPERT --load_policy_only 0 --load_critic_only 1 \
+      --num_train_step 300000 --log_per_step 5000 \
       --prior_margin_init $CONST_MARGIN --prior_margin_final $CONST_MARGIN \
       --prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;

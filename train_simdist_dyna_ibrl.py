@@ -82,6 +82,11 @@ class DynaIBRLWorkspace(AdaptWorkspace):
         real_cap = max(cfg.max_transitions + cfg.adapt_interval, 10_000)
         self.real_buf = FlatBuffer(real_cap, z_dim, action_dim, "cuda")
         self.synth_buf = FlatBuffer(d.synth_buffer_size, z_dim, action_dim, "cuda")
+        # Demo-only view of the preloaded target demos, for `dyna.demo_mix_rate`.
+        # Allocated lazily in _preload_demos (its size is #demo transitions, not
+        # known here). None => the knob is inert, which is also what happens when
+        # preload_demos=0.
+        self.demo_buf = None
         self.dyna = DynaIBRLTrainer(self.agent, d, obs_dim, action_dim, "cuda")
         # Make the trained heads part of the agent so `saver.save(agent.state_dict())`
         # captures them. Without this the checkpoint holds only the world model --
@@ -102,7 +107,8 @@ class DynaIBRLWorkspace(AdaptWorkspace):
         single = state.dim() == 1
         s = state.view(1, -1) if single else state
         z = self.agent.model.encode(s.to("cuda").float())
-        a, frac = self.dyna.act_latent(z, eval_mode=eval_mode, stddev=stddev)
+        a, frac = self.dyna.act_latent(z, eval_mode=eval_mode, stddev=stddev,
+                                       channel="eval" if eval_mode else "act")
         return (a[0] if single else a), float(frac)
 
     # --------------------------------------------------------------- eval
@@ -209,7 +215,8 @@ class DynaIBRLWorkspace(AdaptWorkspace):
         if d.actor_updates_per_round > 0:
             d.policy_update_freq = max(1, d.q_updates // d.actor_updates_per_round)
         for _ in range(d.q_updates):
-            self.stat.append(self.dyna.update(self.real_buf, self.synth_buf))
+            self.stat.append(
+                self.dyna.update(self.real_buf, self.synth_buf, self.demo_buf))
         self.stat["dyna/synth_buffer"].append(len(self.synth_buf))
 
     def _train_dynamics(self):
@@ -268,6 +275,11 @@ class DynaIBRLWorkspace(AdaptWorkspace):
         with torch.no_grad():
             z, z2 = self.agent.model.encode(S), self.agent.model.encode(S2)
         self.real_buf.add_batch(z, A, R, z2, D)
+        # Separate demo-only buffer so `dyna.demo_mix_rate` can hold the demo
+        # share of each batch FIXED. Kept in ADDITION to the real_buf copy above
+        # so that demo_mix_rate=0 is exactly the already-measured arm.
+        self.demo_buf = FlatBuffer(z.shape[0], z.shape[-1], A.shape[-1], "cuda")
+        self.demo_buf.add_batch(z, A, R, z2, D)
         print(f"[dyna-ibrl] preloaded {len(eps)} target demos into the TD replay: "
               f"{len(S)} transitions, {int(D.sum())} terminal (r=1)")
 
