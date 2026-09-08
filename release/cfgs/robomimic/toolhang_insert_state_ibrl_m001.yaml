@@ -1,0 +1,85 @@
+# IBRL on ToolHangInsert (stage-1 ToolHang: insert the frame into the stand and
+# let go). SOURCE domain only -- no domain shift, no strict-success gating
+# (both are Threading/Square/Coffee-only in this repo).
+#
+# ARM 3 (constant prior-margin 0.01). Prior = the BC policy trained on the 200 truncated robomimic ph demos
+# (release/cfgs/robomimic/toolhang_insert_state_*_bc.yaml). Plain original IBRL:
+# no prior_margin, no add_bc_loss (docs/tasks.md §32: prior_margin lowered final
+# Square performance).
+#
+# episode_length 550: the truncated demos average 277 steps and the longest is 508,
+# so anything shorter would make the task unsolvable-by-construction and
+# would also break the demo preload (ReplayBuffer max_episode_length).
+#
+#   python train_rl.py --config_path release/cfgs/robomimic/toolhang_insert_state_ibrl.yaml \
+#       --save_dir exps/robomimic/toolhang_insert_ibrl_seed1
+
+task_name: "ToolHangInsert"
+episode_length: 550
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+# BC prior + seed demos. Filled in by the launcher (see README block above).
+bc_policy: PLACEHOLDER
+preload_num_data: 20
+preload_datapath: "release/data/robomimic/tool_hang_insert/ph/insert_low_dim.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 400000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+# --- the only change vs toolhang_insert_state_ibrl.yaml ---
+# Plain IBRL sat at eval 0.00 through 100k steps while its own prior scores 0.41
+# single-step: the critic could not rank the two candidates (Q level ~0.32,
+# critic_loss 1e-3) and executed the RL actor on ~65% of steps, whose actions are
+# 1.7x larger in norm than the prior's (anorm_rl 1.12 vs anorm_bc 0.67). On a
+# precision insertion that is fatal -- all 18 rollouts ran the full 550 steps
+# with zero successes, so the replay never got an on-policy success to learn from.
+#
+# ARM 3: CONSTANT margin 0.01 (no anneal) -- the value both existing margin cfgs
+# use (threading_ibrl_m001.yaml, coffee_g5x_ibrl_m001.yaml). With
+#   margin(t) = max(final, init * (1 - t/steps))
+# and init == final == 0.01, the margin is 0.01 for the whole run.
+# 0.01 is ~3% of this task's Q level (critic_qt ~0.32), i.e. a much weaker
+# prior preference than arm 2's annealed 0.3 -> tests whether the mild,
+# always-on floor is enough on its own, or whether the strong early margin was
+# what got the replay its first on-policy successes.
+prior_margin_init: 0.01
+prior_margin_steps: 50000
+prior_margin_final: 0.01
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"

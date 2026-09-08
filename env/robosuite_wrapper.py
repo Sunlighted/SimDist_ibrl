@@ -16,6 +16,10 @@ try:
 except Exception:  # pragma: no cover - mimicgen optional
     pass
 
+# Registers ToolHangInsert / ToolHangInsertHold (stage-1-only ToolHang) with the
+# same robosuite registry. Local module, no optional dependency.
+import env.tool_hang_variants  # noqa: F401,E402
+
 from env.domain_shift import (
     DomainShiftConfig,
     InitDistConfig,
@@ -78,12 +82,19 @@ STATE_KEYS = {
         # "robot0_joint_vel",  # (389, 7)
     ],
 }
+# ToolHangInsert / ToolHangInsertHold are `ToolHang` with a different
+# `_check_success` only -- identical objects, obs keys and state layout.
+for _t in ["ToolHangInsert", "ToolHangInsertHold"]:
+    STATE_KEYS[_t] = STATE_KEYS["ToolHang"]
+
 STATE_SHAPE = {
     "Lift": (19,),
     "PickPlaceCan": (23,),
     "NutAssemblySquare": (23,),
     "TwoArmTransport": (59,),
     "ToolHang": (53,),
+    "ToolHangInsert": (53,),
+    "ToolHangInsertHold": (53,),
 }
 
 # MimicGen D0 tasks all use the default state keys (eef_pos[3] + eef_quat[4] +

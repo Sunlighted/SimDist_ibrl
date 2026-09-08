@@ -1,0 +1,49 @@
+# ToolHangInsert — single-step MLP BC (StateBcPolicy) on the 200 robomimic
+# tool_hang/ph demos, truncated at the stage-1 ("frame inserted + released")
+# success by scripts/make_toolhang_insert_dataset.py.
+#
+# Purpose: BC prior for the IBRL run (toolhang_insert_state_ibrl.yaml).
+# state = 53 (eef_pos[3] + eef_quat[4] + gripper_qpos[2] + object[44]),
+# action_dim = 7 (OSC_POSE delta + gripper).
+#
+# NOTE: only 200 demos (robomimic ph is all that exists for ToolHang — MimicGen
+# has no ToolHang), vs 1000 for the MimicGen tasks, and the demos are ~2x longer.
+# domain_shift / strict_success are Threading/Square/Coffee-only — both OFF.
+#
+#   python train_bc.py --config_path release/cfgs/robomimic/toolhang_insert_state_mlp_bc.yaml \
+#       --save_dir exps/robomimic/toolhang_insert_mlp_bc_seed1
+
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/robomimic/tool_hang_insert/ph/insert_low_dim.hdf5
+  num_data: -1                # all kept demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  eval_episode_len: 550       # > the longest truncated demo (508); dataset asserts this
+  val_ratio: 0.0
+
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 1500
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+use_wb: 1
+save_dir: exps/robomimic/toolhang_insert_mlp_bc_seed1

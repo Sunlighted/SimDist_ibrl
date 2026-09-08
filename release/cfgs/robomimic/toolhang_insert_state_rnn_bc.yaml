@@ -1,0 +1,51 @@
+# ToolHangInsert — BC-RNN+GMM (StateRnnGmmPolicy, open-loop chunked) on the same
+# 200 truncated tool_hang/ph demos. Candidate STRONGER prior than the
+# single-step MLP: on Square the RNN prior took IBRL from 89.2% -> 97.8%
+# (docs/tasks.md §32), and robomimic's own ToolHang result is an RNN-GMM.
+# Hyperparams = robomimic low_dim BC-RNN-GMM (lr 1e-3, hidden 400, seq 10).
+#
+# state_stack=1 so it can serve directly as the IBRL prior.
+#
+#   python train_bc.py --config_path release/cfgs/robomimic/toolhang_insert_state_rnn_bc.yaml \
+#       --save_dir exps/robomimic/toolhang_insert_rnn_bc_seed1
+
+seed: 1
+
+dataset:
+  path: /home/Chenyang/ibrl/release/data/robomimic/tool_hang_insert/ph/insert_low_dim.hdf5
+  use_state: 1
+  action_horizon: 10        # = Tp (robomimic seq_length)
+  build_state_chunk: 0      # open-loop RNN
+  num_data: -1
+  eval_episode_len: 550       # > the longest truncated demo (508); dataset asserts this
+  val_ratio: 0.0
+
+use_flow: 0
+use_rnn: 1
+rnn_policy:
+  rnn_hidden_dim: 400
+  rnn_num_layers: 2
+  num_modes: 5
+  min_std: 0.01
+  std_activation: "softplus"
+  low_noise_eval: 1
+  use_tanh: 1
+  pred_horizon: 10
+  action_horizon: 8         # Ta (chunked eval; <= pred_horizon)
+  use_ema: 0
+
+num_epoch: 1500
+epoch_len: 100
+batch_size: 256
+lr: 1e-3
+weight_decay: 0
+grad_clip: 5
+use_wb: 1
+num_eval_episode: 50
+eval_period: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+save_dir: exps/robomimic/toolhang_insert_rnn_bc_seed1

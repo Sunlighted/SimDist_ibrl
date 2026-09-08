@@ -103,7 +103,7 @@ class MultiCounter:
 
         self.last_time = datetime.now()
 
-    def summary(self, global_counter, *, reset=True, prefix=""):
+    def summary(self, global_counter, *, reset=True, prefix="", wandb_step=None):
         assert self.last_time is not None
         time_elapsed = (datetime.now() - self.last_time).total_seconds()
         print("[%d] Time spent = %.2f s" % (global_counter, time_elapsed))
@@ -129,13 +129,23 @@ class MultiCounter:
 
         if self.use_wandb:
             to_log = {f"{prefix}{k}": v.mean() for k, v in self.stats.items() if v.counter > 0}
-            # step=global_counter, NOT wandb's own auto-incrementing counter. Without
-            # it the x-axis is "how many times summary() was called", so a run that
-            # evaluates every 5000 transitions and one that evaluates every 1000 are
-            # plotted on the same 0..N axis and look like they used the same budget.
-            # global_counter is transitions for both families here: train_rl.py
-            # passes global_step, train_simdist_adapt.py passes total_transitions.
-            wandb.log(to_log, step=int(global_counter))
+            # Default (wandb_step=None): wandb's own auto-incrementing counter, i.e.
+            # the x-axis is "how many times summary() was called". Every existing run
+            # in this repo is plotted that way, and for the adapt/dyna family it
+            # happens to mean thousands-of-transitions, because those call summary()
+            # once per 1000-transition round (train_simdist_adapt.py, including the
+            # eval-skipped branch) -- 100k transitions -> step 100.
+            #
+            # A caller that does NOT log once per 1000 transitions must pass
+            # wandb_step explicitly to stay on that axis; train_rl.py does, since its
+            # log_per_step is now 5000 and auto-increment would compress 300k into 60
+            # steps against dyna's 300. Units are the caller's business -- summary()
+            # is also called with epochs (train_bc.py), so there is nothing sensible
+            # to divide by here.
+            if wandb_step is None:
+                wandb.log(to_log)
+            else:
+                wandb.log(to_log, step=int(wandb_step))
 
         if reset:
             self.reset()

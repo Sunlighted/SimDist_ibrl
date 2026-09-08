@@ -891,7 +891,11 @@ class Workspace:
             assert self.agent.cfg.act_method == original_act_method
 
         saved = saver.save(self.agent.state_dict(), eval_score, save_latest=True)
-        stat.summary(self.global_step, reset=True)
+        # //1000 keeps this run on the same wandb x-axis as the dyna arms, which
+        # call summary() once per 1000-transition round: 100k transitions -> 100.
+        # Without it, log_per_step=5000 would put 300k at step 60 against dyna's 300.
+        stat.summary(self.global_step, reset=True,
+                     wandb_step=self.global_step // 1000)
         print(f"saved?: {saved}")
         stopwatch.summary(reset=True)
         print("total time:", common_utils.sec2str(stopwatch.total_time))
