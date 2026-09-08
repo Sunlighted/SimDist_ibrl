@@ -129,7 +129,13 @@ class MultiCounter:
 
         if self.use_wandb:
             to_log = {f"{prefix}{k}": v.mean() for k, v in self.stats.items() if v.counter > 0}
-            wandb.log(to_log)
+            # step=global_counter, NOT wandb's own auto-incrementing counter. Without
+            # it the x-axis is "how many times summary() was called", so a run that
+            # evaluates every 5000 transitions and one that evaluates every 1000 are
+            # plotted on the same 0..N axis and look like they used the same budget.
+            # global_counter is transitions for both families here: train_rl.py
+            # passes global_step, train_simdist_adapt.py passes total_transitions.
+            wandb.log(to_log, step=int(global_counter))
 
         if reset:
             self.reset()

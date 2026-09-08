@@ -796,13 +796,128 @@ $\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
 \subsection{What to adapt: value, dynamics, or policy?}
 \label{sec:what-to-adapt}
 
-[TODO: Frame the intuition and then refute it. One might suspect the ceiling of
-planning is set by the value function, since a source--target value gap
-demonstrably exists. Our experiments show the opposite: every attempt to adapt
-the value degrades performance. The reason is that a value function is harder to
-fit than a dynamics model --- and adapting it forfeits the very advantage of
-planning, because like Dyna and model-free RL it needs reward to propagate, and
-therefore needs a budget we do not have.]
+Sec.~\ref{sec:mf-vs-mb} measured the single largest gain in this paper:
+transferring the source critic is worth $\ph{+0.40}$ to a model-free learner,
+more than any world model contributes. This subsection shows that the same
+quantity is the one component that must \emph{not} be adapted. The source value
+is at once the most valuable transferable asset and the most fragile one --- it
+is to be used, not touched.
+
+The planner exposes exactly three places where target interaction could be
+spent: the terminal value $\hat V$ that ranks candidate trajectories, the
+dynamics $\hat p_\theta$ that rolls them, and the proposal policy that supplies
+them. Because planning already owns the on-policy property that
+Sec.~\ref{sec:dyna} had to install by hand, it isolates these three cleanly:
+whatever residual error remains is attributable to one of them rather than to
+the collection procedure. We examine each in turn, in decreasing order of how
+intuitive the answer is.
+
+\paragraph{The value must not be adapted.}
+The intuitive target is the value, since a source--target value gap
+demonstrably exists (Eq.~\ref{eq:gapdef}). Every schedule we tried degrades
+performance --- value first, dynamics first, and the two jointly all collapse
+(Fig.~\ref{fig:value-adapt-bars}), and a deliberately marginal update
+interpolates towards the failure rather than avoiding it. The mechanism is
+quantitative, and it is a property of \emph{how planning consumes a value},
+not of how well the value is fit. MPPI never reads $\hat V$ on an absolute
+scale; it uses it to rank candidates and keep an elite set. The
+candidate-wise signal available for that ranking is
+$\mathrm{std}_i(\gamma^H \hat V) = \ph{0.0068}$, i.e.\ $\ph{1.4\%}$ of the value
+range, whereas the residual of any offline refit on the available target data is
+of the same order or several times larger. A refit that looks accurate by every
+averaged criterion therefore rewrites the elite set wholesale. This also
+explains why the failure is invisible offline: MSE, $R^2$ and rank correlation
+are all averages, while the quantity that matters is a within-candidate-set
+spread. Consistent with a directional rather than a tuning failure, the
+degradation is monotone in the adaptation strength (Spearman $\ph{-1.000}$).
+
+Pessimism does not rescue it either. Making the value ensemble-based and
+conservative fails for a structural reason: the domain gap lives in
+$p_t(s'|s,a)$, whereas a value function is a function of $s$ alone, so no amount
+of disagreement among value heads can see the quantity that actually differs.
+The one boundary worth stating is that this constraint relaxes as the dynamics
+improves --- on an ensemble dynamics the same value perturbation costs
+$\ph{\sim1/9}$ of what it costs on a single head, which already anticipates the
+interaction reported at the end of this subsection.
+
+\paragraph{Dynamics accuracy is what moves the ceiling.}
+Swapping the planner's three inputs independently
+(Table~\ref{tab:factorial-bottleneck}) gives a clear ordering of main effects:
+dynamics $\ph{+0.--}$ $\gg$ proposal $\ph{+0.--}$ $>$ value $\ph{+0.--}$
+(n.s.). Replacing the learned model with the true target simulator, holding
+everything else fixed, recovers most of the gap; replacing the value recovers
+none of it. Dynamics is also the only one of the three that can be improved
+\emph{supervisedly} --- fitting $p_t$ from collected transitions requires no
+reward propagation, which is precisely the cost Sec.~\ref{sec:mf-vs-mb} showed
+the budget cannot pay. This is the substantive advantage a world model has, and
+it is the only one.
+
+Acting on it, a dynamics ensemble whose members are averaged at plan time raises
+the target score from $\ph{0.88}$ to $\ph{0.96}$, saturating at about
+$\ph{three}$ heads. The gain is attributable to the averaging itself and not to
+a better representation: an ensemble scored with a single head reaches
+$\ph{0.12}$ while the same checkpoint scored with all heads reaches
+$\ph{0.97}$. Note that the ensemble is used to \emph{average}, not to be
+pessimistic --- penalizing cross-head disagreement is at best neutral and at
+worst harmful, the same negative result as for value pessimism and for the same
+reason.
+
+\paragraph{The proposal must be warmed up on target data --- and anchored.}
+The third component is the one Sec.~\ref{sec:dyna} predicts will matter, and it
+does (Fig.~\ref{fig:policy-warmup}). Leaving the proposal frozen at the source
+expert forfeits the target information contained in the demonstrations; but
+fine-tuning it on them without regularization \emph{destroys} it, because
+$\ph{1633}$ demonstration transitions are re-visited for $\ph{157}$ effective
+epochs and the proposal leaves the region where the dynamics and the value are
+valid. Adding a source anchor to the cloning objective resolves the conflict and
+recovers $\ph{+0.--}$ over the frozen proposal.
+
+This is not a new mechanism. It is the same one Sec.~\ref{sec:dyna} isolated,
+implemented differently: Dyna protects the collected distribution with a gate on
+the argmax, planning protects it with a penalty on the proposal --- and the
+proposal is what generates the collected distribution. The diagnostics
+correspond as well. What predicted score across the Dyna arms was the actor's
+win rate while collecting; what predicts it across the planning arms is the
+quality of the proposal alone, which explains $\ph{98\%}$ of the variance
+between mechanistically distinct arms. Both are measurements of the same thing:
+how far the executed distribution has drifted from the prior the model was fit
+around.
+
+\paragraph{The same interaction appears a second time.}
+The anchor and the ensemble are not additive. On a single-head dynamics the
+anchor is worth $\ph{+0.055}$; on the ensemble it is worth $\ph{+0.172}$
+(interaction $t=\ph{4.2}$) --- the same shape, and nearly the same magnitude
+ratio, as the margin\,$\times$\,ensemble interaction of Sec.~\ref{sec:dyna}
+($\Delta$AUC $\ph{+0.062}$ vs.\ $\ph{+0.214}$). Two paradigms, two different
+implementations of the protection, one shared conclusion: \emph{keeping the
+executed distribution near the prior and reducing model error are complements,
+not two independent tricks}. Reporting either one alone --- as the literature
+generally does --- understates it by a factor of $\ph{3}$, and explains why
+neither has previously looked decisive on its own.
+
+Three conclusions define the method of Sec.~\ref{simopd}: do not adapt the
+value; spend the budget on dynamics accuracy, which is the only component
+improvable without reward propagation; and warm up the proposal on target data
+while anchoring it to the source, so that the dynamics, the value and the
+proposal continue to describe one shared occupancy.
+
+% ---------------------------------------------------------------------------
+% PROVENANCE for the numbers above (verify each before submission):
+%   0.0068 / 1.4% / Spearman -1.000 / "1/9 on an ensemble"  -> findings.md 33
+%   value pessimism is structurally blind (gap in p(s'|s,a)) -> findings.md 29
+%   0.88 -> 0.96, ~3 heads, 5-head 0.97 vs single-head 0.12  -> findings.md 31
+%   disagreement penalty neutral-to-harmful                  -> findings.md 31
+%   1633 transitions / 157 effective epochs / anchor recovery-> simdist.md 42
+%   anchor +0.055 (plain) vs +0.172 (dynens), t=4.2          -> simdist.md 44
+%   policy_only explains 98% of between-arm variance         -> simdist.md 44
+%   margin x ensemble dAUC +0.062 vs +0.214                  -> Sec.~\ref{sec:dyna}
+% ---------------------------------------------------------------------------
+% TODO(float): the closing interaction currently has no figure of its own. The
+% cheapest strong option is to merge it with the Sec.~\ref{sec:dyna} bar chart
+% into ONE two-panel figure (left: Dyna, margin x ensemble; right: planning,
+% anchor x ensemble), placed here as the section's landing point and referenced
+% back from Sec.~\ref{sec:dyna}. Same axes, same colours -- the reader should
+% recognise the two panels as the same phenomenon at a glance.
 
 % ---------------------------------------------------------------------------
 % FLOAT 3 (Sec.~\ref{sec:what-to-adapt}, part A): "adapting the value breaks it"
@@ -975,15 +1090,10 @@ not of value coherence per se.]
 \vspace{-\baselineskip}
 \end{wrapfigure}
 
-[TODO: text for Fig.~\ref{fig:policy-warmup} and the summary of the subsection.
-State the three conclusions in the order they were established: (1) do not adapt
-the value --- the planner consumes it only as a ranking and the available
-candidate-wise signal is smaller than any offline refit residual; (2) improving
-the dynamics accuracy is the one intervention that moves the ceiling; (3) while
-the dynamics remains imperfect, the dynamics, the value and the proposal must be
-trained and used on a single, shared occupancy, which is what the
-source-anchored proposal warm-up buys. These three points define the method in
-Sec.~\ref{simopd}.]
+% NOTE: the text that used to sit here (three ordered conclusions for
+% Fig.~\ref{fig:policy-warmup}) is now the "proposal" and "same interaction"
+% paragraphs above, so that the wrapfigure has a paragraph to wrap into and the
+% subsection ends on the interaction rather than on a list.
 
 \section{SimOPD: Sim-to-real On-policy Adaptation with Ensemble Dynamics}
 \label{simopd}
