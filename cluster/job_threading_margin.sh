@@ -320,7 +320,7 @@ case $ARM in
     # at its "" default for the same reason.
     $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
-      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef 0.0 --original_mppi 1 \

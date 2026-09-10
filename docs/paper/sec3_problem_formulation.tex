@@ -846,11 +846,14 @@ Swapping the planner's three inputs independently
 dynamics $\ph{+0.--}$ $\gg$ proposal $\ph{+0.--}$ $>$ value $\ph{+0.--}$
 (n.s.). Replacing the learned model with the true target simulator, holding
 everything else fixed, recovers most of the gap; replacing the value recovers
-none of it. Dynamics is also the only one of the three that can be improved
-\emph{supervisedly} --- fitting $p_t$ from collected transitions requires no
-reward propagation, which is precisely the cost Sec.~\ref{sec:mf-vs-mb} showed
-the budget cannot pay. This is the substantive advantage a world model has, and
-it is the only one.
+none of it. The dynamics is where the budget buys the most because it is what
+sets the ceiling: with the model replaced by the simulator and nothing else
+changed, the same controller reaches $\ph{1.00}$ where the learned model caps it
+at $\ph{0.83}$. A second, weaker reason applies only against the value: fitting
+$p_t$ from collected transitions is a supervised problem and needs no reward
+propagation, which is precisely the cost Sec.~\ref{sec:mf-vs-mb} showed the
+budget cannot pay. (The proposal is supervised too --- what distinguishes the
+dynamics is the ceiling, not the tractability.)
 
 Acting on it, a dynamics ensemble whose members are averaged at plan time raises
 the target score from $\ph{0.88}$ to $\ph{0.96}$, saturating at about
@@ -1098,16 +1101,126 @@ not of value coherence per se.]
 \section{SimOPD: Sim-to-real On-policy Adaptation with Ensemble Dynamics}
 \label{simopd}
 
-[TODO: Next, we present our key improvements: 1. Dynamics ensemble with
-optimistic exploration and pessimistic planning. 2. Addressing the trade-off in
-target domain demonstration fine-tuning for the policy proposal: We observe that
-a prerequisite for MPPI to function effectively is that the policy proposal must
-be trained on the same distribution as the value function. However, the policy
-also requires target domain information to warm up and achieve superior
-performance. To balance this, we introduce a KL divergence regularizer alongside
-the behavioral cloning (BC) objective to constrain the fine-tuned policy from
-drifting too far from the original policy, which significantly enhances
-performance.]
+Sec.~\ref{sec:what-to-adapt} established three constraints on how a target
+budget may be spent: the value must be left alone; the dynamics sets the
+ceiling, so it is where the budget buys the most; and the proposal must carry
+target information without leaving the occupancy the other two were fit on.
+\textbf{SimOPD} is SimDist with the two modifications those constraints imply
+--- and, equally deliberately, with nothing done to the value head.
+
+\paragraph{Plan-time dynamics ensemble.}
+Because the dynamics sets the ceiling, the target budget is spent entirely on
+it. We fit $K$ dynamics heads
+on the same collected transitions, differing only in initialization and in an
+independent Bernoulli bagging mask per head, and the planner advances on their
+\emph{mean}: every latent rollout step uses
+$\bar{f}(z,a)=\frac{1}{K}\sum_i f_i(z,a)$ in place of a single head's
+prediction. This raises the target score from $\ph{0.88}$ to $\ph{0.96}$ and
+saturates at about $\ph{three}$ heads. The gain comes from the averaging, not
+from a better representation: scoring the same checkpoint with one member
+reaches $\ph{0.12}$, with all members $\ph{0.97}$
+(Sec.~\ref{sec:what-to-adapt}).
+
+The same ensemble admits two further uses, and we adopt both only in a weak
+form: an optimistic disagreement bonus while \emph{collecting}
+(Plan2Explore-style, $\ph{0.5}$) and a small disagreement penalty while
+\emph{planning} (MOPO/PETS-style, $\ph{c}$). Neither is a load-bearing part of
+the method. Sweeping the planning penalty over [TODO: seven] configurations
+($\ph{10}$ paired seeds each) produces effects bounded by $\ph{|\Delta|\le
+0.017}$ whose sign depends on which demonstration set was used, and the
+collection bonus moves the score by $\ph{+0.004}$ --- an order of magnitude
+below the seed spread. We keep both at small values and report the full sweeps
+in Sec.~\ref{sec:ablation}. In this system the ensemble's value is in the
+averaging.
+
+\paragraph{Source-anchored proposal fine-tuning.}
+The obvious way to give the proposal target information is to clone the $n$
+target demonstrations. Done directly it destroys the proposal: $\ph{1633}$
+demonstration transitions are re-visited for $\ph{157}$ effective epochs, and
+the resulting policy leaves the region on which the dynamics and the value are
+accurate --- exactly the failure Sec.~\ref{sec:what-to-adapt} diagnosed. We
+therefore optimize the cloning objective under an explicit pull toward the
+source policy,
+\begin{equation}
+\mathcal{L}(\pi) \;=\;
+\mathbb{E}_{(s,a)\sim\mathcal{D}_t}\!\left[\Vert{}\pi(s)-a\Vert{}_2^2\right]
+\;+\; \lambda \,
+\mathbb{E}_{s\sim\mathcal{B}}\!\left[\Vert{}\pi(s)-\pi_s(s)\Vert{}_2^2\right],
+\label{eq:anchor}
+\end{equation}
+with $\lambda \approx \ph{1}$. Here $\mathcal{B}$ is a fixed pool of $\ph{40}$k
+source-domain states, subsampled from $\ph{2000}$ episodes of source
+interaction, on which the anchor targets $\pi_s(s)$ are precomputed once and
+held frozen; it is disjoint from the target demonstrations $\mathcal{D}_t$ and
+requires no target interaction. The anchor target is the source policy itself
+rather than any action recorded in that data, and the penalty is on the policy's
+output rather than on its parameters. Both choices are load-bearing, as are the
+states $\mathcal{B}$ is drawn from; Sec.~\ref{sec:ablation} reports the
+sweeps.
+
+\paragraph{The two are complements, not two tricks.}
+On a single-head dynamics the anchor is worth $\ph{+0.055}$; on the ensemble it
+is worth $\ph{+0.172}$ (interaction $t=\ph{4.2}$). Neither component recovers
+much of the gap alone, which is why we present SimOPD as one method rather than
+as two independent improvements --- and, as Sec.~\ref{sec:dyna} showed, the same
+complementarity holds in the Dyna paradigm under a different implementation of
+the same protection.
+
+\paragraph{What we do not change.}
+The value and reward heads stay frozen at their source-distilled values
+throughout adaptation, and the encoder is frozen after stage~1. No target reward
+shaping, no target expert and no access to $p_t$ is used at any point. All
+remaining architecture and optimization settings follow SimDist
+(Sec.~\ref{sec:simdist}); planner search parameters are listed in
+App.~\ref{app:hparams}.
+
+\paragraph{Main result.}
+Fig.~\ref{fig:main-sim2sim} reports adaptation under the budget of
+Def.~\ref{def:budget} on [TODO: five] tasks. SimOPD is the only arm that both
+starts near the source expert's zero-shot level and keeps improving inside the
+budget, reaching $\ph{0.--}$ on average and closing $\ph{--\%}$ of the gap to a
+planner given oracle target dynamics. The model-free arms have not left their
+zero-shot level when the budget expires, consistent with
+Sec.~\ref{sec:mf-vs-mb}. The locomotion panel lies outside the regime the
+analysis covers --- dense reward, periodic contact, no terminal goal predicate
+--- and is included to show the ordering survives there, not as a further
+instance of the analysis.
+
+% ---------------------------------------------------------------------------
+% PROVENANCE / open items for this section:
+%   0.88 -> 0.96, ~3 heads, 1-member 0.12 vs all 0.97   -> findings.md 31
+%   disagreement penalty neutral-to-harmful             -> findings.md 31
+%   1633 transitions / 157 effective epochs             -> simdist.md 42
+%   anchor target must be pi_s (logged-action floor)    -> simdist.md 44
+%   anchor-state re-weighting closed (0/11 outward)     -> simdist.md 44b
+%   parameter-space penalty costs -0.277                -> simdist.md 43
+%   anchor +0.055 (plain) vs +0.172 (dynens), t=4.2     -> simdist.md 44
+%
+% ENSEMBLE-USE SWEEPS (now measured; move the tables to Sec.~\ref{sec:ablation}):
+%   PLANNING PENALTY (eval_disagree_coefs), 10 paired seeds per group, tail:
+%     sq_dynens_d400000      base .791  c=.1 +0.014 (t=+2.86)   SIGNIF POSITIVE
+%     sq_dynens_anch_d400000 base .836  c=.1 +0.016 (t=+3.03)   SIGNIF POSITIVE
+%     thr dynens_h5          base .776  c=.1 +0.008 (t=+0.96)   ns
+%     sq_dynens_anch_d600000 base .860  c=.1 -0.005 (t=-0.90)   ns
+%     thr slow_anchor        base .966  c=.1 -0.003 (t=-1.48)   ns   <- final recipe
+%     thr slow               base .880  c=.1 -0.009 (t=-2.56)   SIGNIF NEGATIVE
+%     sq_dynens_d600000      base .833  c=.1 -0.017 (t=-3.10)   SIGNIF NEGATIVE
+%   => |effect| <= 0.017, sign flips with the demonstration set, and it is NOT
+%      positive on the final recipe. Do not claim it as a contribution.
+%   COLLECTION BONUS (collect_disagree_coef 0 -> 0.5), n=1:
+%     threading_simdist_dynens_adapt_long_h5_seed1 vs ..._Cp_explore05_seed1
+%     dAUC@100k +0.004 (seed spread is 0.035) -- unreadable. cfg diff verified
+%     single-variable (dyn_demo_frac defaults to 0.0).
+%   TODO: state the exact penalty coefficient the final recipe uses (0 or small)
+%   and make sure the text above matches it. If it is 0, say "we do not use it"
+%   rather than "we keep it small".
+%   TODO: 3-4 seeds on Threading would make the collection bonus readable; the
+%   Square arm used for it was budget-mismatched (12k vs 35k) and is unusable.
+% TODO(eq): Eq.~\ref{eq:anchor} is written for a deterministic policy head.
+% If the head is Gaussian, add one clause: under equal covariance this MSE IS
+% the KL, so the divergence is not a free design axis -- the alternatives are
+% monotone functions of the same scalar (simdist.md 43).
+% ---------------------------------------------------------------------------
 
 % ---------------------------------------------------------------------------
 % FLOAT 6 (Sec.~\ref{simopd}): MAIN RESULT.

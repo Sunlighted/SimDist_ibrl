@@ -1,0 +1,135 @@
+# IBRL with the frozen ADAPTED SimDist base (MPPI) as the BC prior -- TPA_D0.
+#
+# WHY THIS RUN. On TPA the planner is nearly worthless: SimDist MPPI scores 0.34
+# while its own proposal (policy_only) is 0.28, i.e. planning buys +0.06 -- versus
+# +0.578 on Threading (findings 31). The reason is measured: on the on-policy
+# candidate sets the planner actually ranks, rms(eps_tilde)/std_a(J) = 1.09 and the
+# candidate it picks is 1.49 std_a worse than the best available. Oracle dynamics
+# on the SAME planner scores 0.900 vs 0.300 -- so the objective and the value head
+# are fine, the imagined rollout is not. Rather than keep refitting the dynamics
+# (stage-1 is saturated; source coverage already matches a held-out source set at
+# 1.01x), this arm stops arg-maxing inside the model: Q is evaluated on REAL states
+# and the SimDist base only proposes. That is the same move that broke Threading's
+# 0.85 ceiling (0.94-0.97 vs 0.88 for plain MPPI, section 25).
+#
+# THREE THINGS ARE SET FROM TPA-SPECIFIC MEASUREMENTS, NOT COPIED FROM THREADING:
+#
+# 1. planner_set init_std=0.15. apply_original_recipe leaves init_std=1.0, which is
+#    NOT portable (rule 9). Measured on this world model, n=100 each:
+#      original (init_std 1.0)      0.35 / 0.40
+#      init_std 0.15                0.42
+#      init_std 0.15 + bps 0        0.43 / 0.46
+#      bps 0 alone                  0.31   <- worse, so the two knobs interact
+#    base_policy_std is left at the recipe's 0.1 (bps=0 only helps together with
+#    init_std 0.15, and that pair is not what the adapt arms were tuned on).
+#
+# 2. prior_margin_init 1.0 -> prior_margin_final 0.1 (permanent floor). On TPA a
+#    cold critic is FATAL, and this is measured, not feared: an IBRL arm with the
+#    same 20 TARGET demos scored 0.00 through 140k steps with a cold critic and
+#    0.00-0.12 through 200k even with a warm one, because a cold Q mis-ranks the
+#    untrained actor above the prior (actor/bc_eval = 0.16, i.e. the garbage actor
+#    wins 84% of the argmax) so no reward is ever collected. The margin keeps the
+#    prior in control until Q calibrates, then defers to the actor only when it is
+#    CONFIDENTLY better -- the safe-policy-improvement recipe that on Threading held
+#    a prior-level floor and climbed to 0.94 by 55k.
+#
+# 3. value_init_steps 2000: seed Q(s, a_prior) from the SimDist value head V_hat
+#    BEFORE any TD bootstrap. This is the one ingredient that can make SimDist BEAT
+#    the model-free baseline rather than tie it: with oracle dynamics, the distilled
+#    V_hat outscored the SOURCE EXPERT's critic by +0.085 (z=2.8) as a ranking
+#    function (tasks 41b). The model-free arm we are chasing
+#    (tpa_ibrl_target_qsrc_seed1, 0.69 at n=100) warm-starts its critic from exactly
+#    that source-expert critic, so this is a like-for-like upgrade of its best part.
+#
+# WHAT THE COMPARISON IS. tpa_ibrl_target_qsrc_seed1 decomposes as
+#   prior (source expert hybrid) 0.39  +  RL actor 0.31  -> argmax 0.69,
+# i.e. its score is the argmax COMPOSITION, superadditive by +0.30, not either part.
+# Here the prior is SimDist MPPI (0.34, statistically the same as 0.39) and the
+# critic is seeded from V_hat instead of Q_src. So this arm is that same
+# composition with SimDist supplying both halves of the source knowledge.
+# HONEST EXPECTATION: matching 0.69 is the target; beating it requires ingredient 3
+# to actually pay, and every prior-registered prediction in this project has a poor
+# record (three consecutive misses), so treat it as a measurement, not a forecast.
+#
+# Run:
+#   python train_ibrl_simdist.py \
+#     --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_simdist.yaml \
+#     --save_dir exps/mimicgen/tpa_ibrl_simdist_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000          # TPA is 1000, not Threading's 400 (4 subtasks)
+end_on_success: 1
+use_state: 1
+state_stack: 1                # MUST match the adapted SimDist base's obs space
+obs_stack: 1
+prop_stack: 1
+
+nstep: 3
+discount: 0.99
+batch_size: 256
+mix_rl_rate: 0.5              # RLPD: half of each RL batch = online, half = demos
+num_critic_update: 5          # RED-Q
+update_freq: 1
+replay_buffer_size: 100000
+
+# lambda=3 is the best-measured stage-2 anchor on TPA (100k stage-3, 21 eval points:
+# lambda 0/0.5/1/3/10/inf -> 0.130/0.241/0.279/0.310/0.176/0.155 over all 20 points).
+# latest.pt, NOT model0.pt: model0 is TopkSaver's single-point peak (rule 14).
+base_adapt_ckpt: "exps/mimicgen/tpa_adapt100k_anch3_seed1/latest.pt"
+planner_set: "init_std=0.15"
+
+offline_demo_path: "release/data/mimicgen/tpa_d0_target_expert_n50/dataset.hdf5"
+offline_num_data: 20          # the same 20 the SimDist stage-2 BC used
+
+prior_margin_init: 1.0
+prior_margin_final: 0.1
+prior_margin_steps: 20000
+value_init_steps: 2000
+
+learning_starts: 5000         # env steps of MPPI-base warmup before training
+num_train_step: 200000        # matches the model-free arm's 200k comparison point
+log_per_step: 2500
+num_eval_episode: 100
+mp_eval: 1
+num_eval_proc: 5
+use_wb: 1
+seed: 1
+
+stddev_max: 0.1
+stddev_min: 0.1
+
+# TPA trains and evals at sigma=null (the stage-1 cfg's setting), NOT Threading's 0.1
+hand_init_perturb_joint_sigma: null
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  bc_loss_coef: 0.1
+  bc_loss_dynamic: 0
+  lr: 0.0001
+  critic_target_tau: 0.01
+  stddev_clip: 0.3
+  use_prop: 0
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0.0
+    layer_norm: 0
+    orth: 0
+  state_critic:            # 5x1024 + LayerNorm, matching every other IBRL run here
+    num_q: 5
+    num_k: 2
+    num_layer: 3
+    hidden_dim: 1024
+    layer_norm: 1
+    dropout: 0.0
+    append_action: 0
+    orth: 0
+
+# TARGET domain -- copied field-for-field from the SimDist stage-1 cfg's
+# eval_domain_shift, which rule 19b makes the single source of truth for this task.
+domain_shift:
+  mode: "fixed"
+  base_hole_size_scale: 0.96
+  base_friction_scale: 2.0
+  gripper_kp_scale: 0.25

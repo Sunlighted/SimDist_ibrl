@@ -116,6 +116,12 @@ class MainConfig(common_utils.RunConfig):
     # base = the ADAPTED SimDist ckpt (its dir cfg.yaml -> stage1_ckpt -> stage-1
     # cfg.yaml rebuilds the world model; MPPI forced on + original recipe)
     base_adapt_ckpt: str = "exps/mimicgen/threading_simdist_adapt_seed1/model0.pt"
+    # Planner overrides applied AFTER apply_original_recipe, same syntax as
+    # train_simdist_adapt.py's --planner_set. Needed because the original recipe's
+    # init_std=1.0 is NOT portable across tasks (CLAUDE.md rule 9): on TPA_D0,
+    # init_std 1.0 -> 0.15 was worth +0.05..0.08 (0.35-0.40 -> 0.42-0.46, n=100).
+    # Empty = untouched, so existing runs stay bit-identical.
+    planner_set: str = ""
     # WARM-START the trainable actor/critic from a competent QAgent ckpt (arch must
     # match q_agent). "" = cold start (prior-only, stalls — see ibrl_simdist ~50%).
     load_pretrained_agent: str = ""
@@ -323,6 +329,12 @@ class Workspace:
             train_simdist.MainConfig, open(stage1_cfg_path, "r"))  # type: ignore
         base_cfg.simdist.use_planner = 1
         p = apply_original_recipe(base_cfg.simdist.planner)
+        for kv in (x for x in self.cfg.planner_set.split(",") if x.strip()):
+            k, v = kv.split("=")
+            k = k.strip()
+            old_v = getattr(p, k)
+            setattr(p, k, type(old_v)(v))
+            print(f"[prior] planner.{k}: {old_v} -> {getattr(p, k)}")
         print(f"[prior] adapted SimDist MPPI: samples={p.num_samples} "
               f"(base_override={p.num_base_override}), init_std={p.init_std}, "
               f"iters={p.iterations}, horizon={p.horizon}")

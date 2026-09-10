@@ -123,6 +123,22 @@ class MainConfig(common_utils.RunConfig):
     # policy trains on the main (exploration) buffer like before.
     policy_replay_path: str = ""
     policy_replay_num_data: int = -1
+    # ---- SECOND source replay, mixed into the DISTILL batch (default OFF) ----
+    # For targeted top-up collections that are small in volume but land where the
+    # planner needs accuracy. On TPA the ranking regret correlates with how far the
+    # executed (s,a) sits from the stage-1 source set (Spearman +0.381, p<0.001;
+    # worst (s,a)-distance quartile has 2.6x the regret of the best), so
+    # scripts/collect_source_targeted.py re-collects SOURCE physics seeded from
+    # TARGET-visited sim_states. That yields ~0.9M transitions against v1's 41.9M
+    # -- 2.2% of a merged set, i.e. diluted to irrelevance if simply concatenated.
+    # This knob decouples "how much was collected" from "how much weight it gets":
+    # extra_frac of every batch is drawn from it, so at 0.25 each new transition is
+    # seen ~11x as often as a v1 one. Same carve-out-of-B scheme as
+    # train_simdist_adapt.py's dyn_src_frac, so batch size (and the per-step
+    # gradient scale) is unchanged whatever the fraction.
+    extra_replay_path: str = ""
+    extra_replay_num_data: int = -1
+    extra_replay_frac: float = 0.0
     # stage-2 target demos
     target_demo_path: str = "release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5"
     target_num_data: int = 20
@@ -306,6 +322,24 @@ class Workspace:
                   f"({self.seq_replay.num_success} success)")
             assert self.seq_replay.can_sample(self.H), (
                 f"no expert-demo episode of length >= horizon={self.H}")
+        # OPTIONAL second source buffer mixed into the distill batch.
+        self.extra_replay = None
+        if self.cfg.extra_replay_frac > 0:
+            assert self.cfg.extra_replay_path, \
+                "extra_replay_frac>0 needs extra_replay_path"
+            self.extra_replay = SequenceReplayBuffer(
+                max_episodes=self.cfg.seq_replay_max_episode, device="cpu")
+            load_source_replay_to_sequence_buffer(
+                self.extra_replay, self.cfg.extra_replay_path,
+                num_data=self.cfg.extra_replay_num_data,
+                reward_scale=self.cfg.env_reward_scale,
+            )
+            assert self.extra_replay.can_sample(self.H), (
+                f"no extra-replay episode of length >= horizon={self.H}")
+            print(f"[extra-buffer] frac={self.cfg.extra_replay_frac} | "
+                  f"{self.extra_replay.size()} episodes "
+                  f"({self.extra_replay.num_transitions()} transitions)")
+
         # OPTIONAL pure-expert buffer for the policy-BC head only (ablation).
         self.policy_replay = None
         if self.cfg.policy_replay_path:
@@ -456,11 +490,30 @@ class Workspace:
                     initial=self.global_step, dynamic_ncols=True, mininterval=1.0)
         while self.global_step < self.cfg.distill_steps:
             with stopwatch.time("train"):
+                B = self.cfg.batch_size
+                n_ex = (int(B * self.cfg.extra_replay_frac)
+                        if self.extra_replay is not None else 0)
                 sampled = self.seq_replay.sample(
-                    self.cfg.batch_size, self.H, "cuda",
+                    B - n_ex, self.H, "cuda",
                     return_mask=bool(self.cfg.bc_expert_only))
                 states, actions, rewards = sampled[:3]
                 policy_mask = sampled[3] if self.cfg.bc_expert_only else None
+                if n_ex:
+                    e_s = self.extra_replay.sample(
+                        n_ex, self.H, "cuda",
+                        return_mask=bool(self.cfg.bc_expert_only))
+                    states = torch.cat([states, e_s[0]], 0)
+                    actions = torch.cat([actions, e_s[1]], 0)
+                    rewards = torch.cat([rewards, e_s[2]], 0)
+                    if policy_mask is not None:
+                        # The extra set's expert_flags are deliberately ZEROED at
+                        # merge time (see scripts/merge_targeted_source.py): it must
+                        # move the dynamics/value/reward heads WITHOUT redefining
+                        # pi_src. pi_src is the BC of expert_flag==1 steps, it is the
+                        # stage-2 anchor target, and the distilled V is V^{pi_src}
+                        # (simdist.md 44) -- letting a top-up rewrite it would change
+                        # three things at once and make any result unattributable.
+                        policy_mask = torch.cat([policy_mask, e_s[3]], 0)
                 value_targets = self._source_value_targets(states)
                 p_states = p_actions = p_mask = None
                 if self.policy_replay is not None:

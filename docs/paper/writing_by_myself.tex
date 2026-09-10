@@ -1,0 +1,301 @@
+\section{Problem Formulation}
+\label{preliminary}
+
+We model each domain as a Markov decision process (MDP) $\mathcal{M} = (\mathcal{S}, \mathcal{A}, p, r, \gamma, \rho_0)$ with state space $\mathcal{S}$, action space $\mathcal{A}$, transition kernel $p(s' | s, a)$, reward function $r$, discount $\gamma \in [0,1)$ and initial state distribution $\rho_0$. Among the components of this tuple, the transition kernel (environmental dynamics) $p$ encodes physics into the problem, including inertia, friction, contact stiffness and actuator response. The remaining components specify the task ($r$, $\gamma$, $\rho_0$) or the agent's interface to it ($\mathcal{S}$, $\mathcal{A}$). A policy $\pi(a | s)$ interacting with $p$ induces the discounted return $J_{p}(\pi) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^t r_t]$, the value functions $V^{\pi}_{p}(s) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^{t} r_t \,|\, s_0 = s], Q^{\pi}_{p}(s,a) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^{t} r_t \,|\, s_0 = s, a_0 = a]$, and the normalized state-action occupancy $d^{\pi}_{p}(s,a) = (1-\gamma)\sum_{t\ge0}\gamma^{t}\Pr_{\pi,p}(s_t = s,\, a_t = a).$ $\left(\mathcal{T}_{p}\,Q\right)(s,a) \;=\; r(s,a) \;+\;
+\gamma\, \mathbb{E}_{s' \sim p(\cdot \mid s,a)}\!\left[\,Q\!\left(s', \pi(s')\right)\right]$ is the Bellman Operator depend on $p$.
+
+Our problem setting is to hold the task fixed and perturb only $p$. We instantiate two MDPs that share $(\mathcal{S}, \mathcal{A}, r, \gamma,
+\rho_0)$ and differ in their dynamics $p_s, p_t$. In a source domain with $p_s$, the interactions are cheap and unlimited, while a target domain with $p_t$ is sparse. Suppose we have access to the optimal policy $\pi_s$ and optimal value function under the environmental dynamics $p_s$. Since $\pi_s$ was optimized against $\mathcal{T}_{p_s}$ and the contact physics it presumes, executing it under $p_t$ generally incurs a performance drop: $\mathrm{gap}(\pi_s) \;=\; J_{s}(\pi_s) \;-\; J_{t}(\pi_s) \;>\; 0,$ which we refer to as the dynamics gap. The problem is to transfer them under the dynamics gap to obtain the optimal policy $\pi^*_t$, utilizing only a limited rollout budget. 
+
+We mainly compare three ways to leverage source domain data and consume target domain's interaction data: (i) Model-free value-based RL: off-policy RL methods can reuse data stored in their replay buffer. They fir the critic directly on collected transitions: $\min_{Q} \mathbb{E}_{\mathcal{D}} \big[ (Q(s,a) - r - \gamma Q^{-}(s', \pi(s')))^2 \big]$ and improve policy $\pi$ against it. (ii) Dyna-style model-based RL: Dyna-style methods train a world model to generate data for RL training. They fit an approximate model $\hat{p}$ and use synthetic rollouts from $\hat{p}$ to supply extra transitions to the same value/policy update. (iii) Model-based planning: model-based planning trains a world model but uses it at test time. Given a learned world model $\hat{p}$ with reward and value head, the executed action is the first element solved approximately by sampling-based optimization (MPPI/CEM) seeded from a base proposal $\hat{\pi}$.
+
+\section{Empirical Studies of Adaptation to Dynamics Gap}
+\label{empirical}
+
+To evaluate model adaptation and address the limitations of physical sim-to-real studies, we establish a controlled sim-to-sim proxy framework across four contact-rich manipulation tasks from MimicGen with sparse reward. To simulate the dynamics gap between simulation and real world, the setup keeps the task, asset, and success predicate fixed while perturbing only the physical parameters of the environment. The advantage of the sim-to-sim setup is that it can provide low-cost evaluation capable of running hundreds of episodes for different methods. Moreover, it helps fix the state (visual) feature the same in two domains, keeping the setting focus on adaptation to dynamics gap.
+
+To ensure a fair and rigorous comparison, all adaptation methods are allowed to arbitrarily interact with the source environment to obtain an initial policy for subsequent adaptation, and share a budget constraint in target environment. Each method has access to 20 demonstrations in target domain collected by a scripted expert. As MimicGen is a relatively difficult benchmark, we utilize 100 or more evaluation episodes for evaluation to accurately capture performance differences on the order of a few success-rate points.
+
+\subsection{Model-Free vs. Model-Based Adaptation: Do world models necessarily lead to improvements?}
+\label{sec:mf-vs-mb}
+
+We compare three approaches. We first train an RL agent in the source domain to obtain a source expert policy $\pi_s^e$ and value function $Q_s^e$. For the model-free method we choose IBRL, which fine-tunes the source expert on target demonstrations $\mathcal{D}_t$ as a prior $\mu$ and trains a critic $Q_\psi$ from scratch. The critic selects between the learned actor $\pi_\phi$ and the prior at each step:
+\begin{equation}
+a_\psi(s) = \arg\max_{a \in \{\pi_\phi(s),\,\mu(s)\}} Q_\psi(s,a),
+\qquad
+y = r + \gamma\, Q_{\bar\psi}\!\left(s',\, a_{\bar\psi}(s')\right).
+\label{eq:ibrl}
+\end{equation}
+For model-based approaches, we alternate the expert policy $\pi^e_s$ and a set of sub-optimal policies $\{\pi^i_s\}_{i=1}^N$ to collect a diverse dataset $\mathcal{D}_s^d$. The world model is trained with value targets relabeled by the source expert $Q_s^e$:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}(\theta) = \sum_{i=0}^{H-1} \rho^{\,i} \Big[\;
+&\underbrace{\Vert{}\hat{z}_{t+i+1} - \text{sg}(E_\theta(s_{t+i+1}))\Vert{}_2^2}_{\text{dynamics}}
+\;+\; \underbrace{c_1\, \ell(\hat{r}_{t+i},\, r_{t+i})}_{\text{reward}} \\[3pt]
+&+\; \underbrace{c_2\, \ell\big(\hat{v}_{t+i+1},\; Q^{e}_{s}(s_{t+i+1},\pi_s^e(s_{t+i+1}))\big)}_{\text{value}}
+\;+\; \underbrace{c_3\, \ell\big(\hat{q}_{t+i},\; Q^{e}_{s}(s_{t+i},a_{t+i})\big)}_{\text{action-value}}\\[3pt]
+&+\; \underbrace{c_4\, \mathbb{I}_e(a_{t+i})\, \Vert{}\pi_\theta(\text{sg}(z_{t+i})) - a_{t+i}\Vert{}_2^2}_{\text{policy (or proposal)}} 
+\;\Big],
+\end{aligned}
+\label{eq:simdist-distill}
+\end{equation}
+where $H$ is the rollout horizon, $\mathbb{I}_e(\cdot)$ indicates whether the action comes from the expert, $\ell$ is a two-hot soft cross-entropy over $101$ bins, and $\rho=0.5$ discounts later rollout steps with the sum normalized by $\sum_i \rho^i$. After training, this world model is shared by both model-based variants so that the comparison isolates how the model is used
+rather than which model is used. Dyna-IBRL keeps training the dynamics and action-value heads while using the frozen policy head as the IBRL prior, then trains a separate actor against the critic. Planning follows SimDist: it transfers the value head for online search and fine-tunes only the dynamics during adaptation.
+
+[] shows that model-based methods adapt much faster than original IBRL under the default budget. Sparse reward makes credit assignment expensive for model-free learners: even with a prior whose success rate is $30$--$50\%$, the value estimate requires far more interaction than the budget allows before it becomes informative. Most prior work believes that model-based methods outperform model-free methods because they can generate more data via a world model, thereby improving sample efficiency. However, this comparison is not fair: they consistently compare model-free methods that lack value transfer against model-based methods that carry it. The world model carries a trained value function from the source domain, while IBRL initializes its critic from scratch. Any observed gap could reflect the world model, the transferred value, or both. To separate them, we give IBRL the same source critic $Q^e_s$ as its initial $Q_\psi$. This single change raises the model-free AUC from  to  , surpassing faithful Dyna  without any world model involved. The experiment shows that most of that gap belongs to the transferred value function rather than to the learned dynamics.
+
+Nonetheless, after equalizing value transfer, the best variant of model-based Dyna adaptation still leads. The main questions we are exploring are the causes of this residual advantage, and the conditions under which it can be realized.
+
+\begin{table*}[t]
+\centering
+\caption{%
+  \textbf{Inside the adaptation budget, the model-based advantage is not
+  automatic.} Two different horizontal axes are reported. \textbf{SR} is the
+  success rate at the matched adaptation budget of $100$k target transitions,
+  the operating point of Def.~\ref{def:budget}. $N_{50}/N_{80}$ are the target
+  transitions needed to \emph{first} reach $50\%$ and $80\%$ success, measured
+  on runs deliberately continued to [TODO: $300$k], i.e.\ well past the budget;
+  \texttt{---} means the threshold was never reached even there. TPA is reported
+  at $N_{20}$ because no arm reaches $50\%$ on it. Every arm starts from the
+  same zero-shot policy and receives the same $20$ target demonstrations. All
+  world-model arms use the \emph{single-head} dynamics of
+  Sec.~\ref{sec:simdist} except the row marked \emph{+ dynamics ensemble}; the
+  planning arm is shown in its base form and is improved in
+  Sec.~\ref{simopd}. The two \textsc{IBRL} rows differ in the critic
+  initialization alone and the \textsc{Dyna-IBRL} rows in a single scalar; both
+  intra-family spans exceed the model-free/model-based gap.
+  Best per column in \textbf{bold}: planning dominates $N_{50}$ by
+  $3$--$6\times$, yet \emph{Dyna + dynamics ensemble} reaches $80\%$ first on
+  every task --- planning starts high and then flattens, which is what
+  Sec.~\ref{sec:planner-adapt} localizes.
+  Means over [TODO: $k$] seeds with $\ge 300$ independent evaluation episodes;
+  $\pm$ is the seed spread.
+  % TODO(caption): state the evaluation interval for each family. The model-free
+  % arms are evaluated every [TODO: 1k] transitions and the model-based arms
+  % every [TODO: 5k]. N_x is a FIRST-CROSSING statistic, so a denser evaluation
+  % grid triggers it earlier on noise alone -- the comparison is biased toward
+  % whichever family is evaluated more often. If the intervals differ, put the
+  % smoothed-curve version (fixed transition window, density-invariant) in the
+  % appendix and say so here.
+  % TODO(caption): the last column is currently empty. AUC@100k (mean score
+  % inside the budget) is the natural filler: it has no missing values, is
+  % immune to the density issue above, and summarises speed and level together.
+}
+\label{tab:mf-vs-mb-budget}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l cc cc cc cc c}
+\toprule
+ & \multicolumn{2}{c}{Threading} & \multicolumn{2}{c}{Coffee}
+ & \multicolumn{2}{c}{Square} & \multicolumn{2}{c}{TPA~[TPA]}
+ & $\overline{\text{AUC}}_{100k}\uparrow$ \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-10}
+Method & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
+       & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{20}\downarrow$ & SR$\uparrow$
+       & (mean over tasks) \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-free}}\\
+\quad IBRL
+  & 175k/260k & 0.00 & 205k/--- & 0.00 & 260k/--- & 0.01 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\quad + source critic
+  & 55k/90k & 0.48 & 90k/200k & 0.30 & 85k/190k & 0.39 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\quad + margin
+  & 35k/80k & 0.67 & 65k/140k & 0.44 & 45k/155k & 0.51 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-based: Dyna}}\\
+\quad Dyna-IBRL
+  & 165k/--- & 0.11 & ---/--- & 0.04 & 275k/--- & \ph{0.--} & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\quad + margin
+  & 40k/120k & 0.58 & 70k/190k & 0.30 & 50k/160k & 0.52 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\quad + dynamics ensemble
+  & 30k/\textbf{70k} & 0.70 & 50k/\textbf{135k} & 0.51 & 40k/\textbf{85k} & 0.60 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\midrule
+\multicolumn{10}{l}{\emph{Model-based: planning}}\\
+\quad \textbf{SimDist} (MPPI)
+  & \textbf{5k}/90k & \textbf{0.76} & \textbf{15k}/--- & \textbf{0.56} & \textbf{10k}/200k & \textbf{0.67} & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\subsection{What Makes Dyna Work: reducing the model error and keeping the collected data near the prior}
+\label{sec:two-conditions}
+
+\begin{table*}[t]
+\centering
+\caption{%
+  \textbf{What the prior-preference floor buys, and through which channel.}
+  \textbf{(a)} Sweeping the floor $m$ produces an inverted U: at $m=0$ the
+  learned actor takes over before the critic can rank it and the arm collapses;
+  at $m=0.1$ it never takes over and the arm reproduces the prior exactly (win
+  rate $0.00$ throughout). \textbf{(b)} The floor is applied in the channels
+  marked $\checkmark$ and zeroed elsewhere; the evaluated policy is identical in
+  all four rows, so the arms differ only in what happened during training.
+  Removing it from the TD target is free; removing it from the data channels is
+  not. ``win rate'' is the fraction of steps at which the actor wins the argmax,
+  reported separately for collection and for the backup.
+  [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
+  in-training eval.]
+}
+\label{tab:margin}
+\begin{minipage}[t]{0.42\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figs/placeholder_margin_doseresponse.pdf}
+\\[2pt]\small (a) dose--response (no demonstrations)
+% TODO(fig): two curves on shared x = m (0, 0.01, 0.05, 0.1), log or categorical.
+%   LEFT y  : SR @100k          -> inverted U, peak at m=0.01
+%   RIGHT y : win rate (collect)-> monotone decreasing, hits 0.00 at m=0.1
+% The whole mechanism is readable from the overlay: SR falls on the right
+% exactly where the win rate reaches zero (the actor is never executed, so the
+% arm reproduces the prior), and falls on the left where the win rate is highest
+% (the actor takes over before the critic can rank it). Mark the prior's own
+% score as a horizontal dashed line -- the m=0.1 point should sit on it.
+% Shade +/- 1 seed spread once the replications land.
+\end{minipage}\hfillliy
+\begin{minipage}[t]{0.56\textwidth}
+\centering
+\small (b) which channel the floor acts through ($m=0.01$)\\[2pt]
+\begin{tabular}{lccccc}
+\toprule
+\multicolumn{2}{c}{floor applied in} & & & \multicolumn{2}{c}{win rate} \\
+\cmidrule(lr){1-2}\cmidrule(lr){5-6}
+data & TD target & SR @100k & $N_{50}\downarrow$ & collect & backup \\
+\midrule
+$\checkmark$ & $\checkmark$ & \ph{0.878} & \ph{20k} & \ph{0.07} & \ph{0.14} \\
+$\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
+---          & $\checkmark$ & \ph{0.790} & \ph{40k} & \ph{0.64} & \ph{0.12} \\
+---          & ---          & \ph{0.630} & \ph{85k} & \ph{0.81} & \ph{0.65} \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table*}
+
+
+Once value transfer is equalized, the remaining gap between model-based and model-free methods must originate in properties that only a world model can provide. We first suspected that errors within the world model itself affect adaptation; i.e., the data it generates in the latent space are insufficiently accurate. The asymptote experiment in [] reveals this issue: when the target-domain budget is increased well beyond the default allocation, model-free IBRL (with value transfer) continues to improve and eventually converges to optimality. In contrast, both Dyna and planning variants plateau instead, indicating that this plateau is related to model accuracy rather than the budget. We made a minor modification to Dyna to improve its accuracy: using an ensemble model instead of a single model. Experiments demonstrate that this modification brings improvements, yet Dyna's adaptation speed remains slower than that of IBRL.
+
+The second factor we find is the distribution of the data that the agent collects while adapting. Dyna-IBRL selects actions through the IBRL argmax (Eq.~\ref{eq:ibrl}), and we add a preference margin $m$ that requires the learned actor to beat the prior by at least $m$ before it is executed. After sweeping $m$, we find $m=0.01$ is the best for IBRL adaptation, as it effectively uses the prior to warm up. When $m$ reduces (like $m=0$), the actor wins the argmax immediately,
+before the critic can meaningfully rank either candidate, and the policy needs more budget to learn to be optimal. When $m$ increases (like $m=0.1$), the actor never wins the argmax at
+any logging point, so the prior carries every episode and little adaptation occurs, and policy performance improves slowly. 
+
+To determine whether the margin acts through the value estimate or through the collected data, we exploit the fact that the IBRL argmax is invoked in three distinguishable places: when acting in the target environment, when rolling out imagined branches, and when forming the TD target. Zeroing the margin in a subset of these channels while holding the rest fixed separates the mechanisms. Removing the margin from the TD target alone costs nothing measurable. Removing it from the interaction with the real environment and imagined rollouts degrades performance to
+$0.790$ and doubles the transitions needed to reach $50\%$ success. The margin is not protecting the critic from bootstrapping off poorly scored actions; it is keeping the collected distribution close to the prior.
+
+Addressing the two conditions in isolation yields partial improvement. Reducing model error through an ensemble of dynamics heads breaks the ceiling by improving its final performance. Controlling the collection distribution through the margin accelerates the adaptation process. Both gains are real, but neither alone reaches the best performance achievable within the budget.
+
+Applying both corrections together produces an additional interaction of $+0.153$ beyond their individual contributions, reaching $0.715$---the highest success rate among all methods under the same budget. The interaction is expected: a more accurate model makes the imagined rollouts more useful, but only when those rollouts are drawn from a region where the model is reliable; staying near the prior helps only when the model is accurate enough in that region to support meaningful value updates. Neither condition substitutes for the other, and their combination is what justifies the cost of learning a world model for adaptation.
+
+\subsection{What to Adapt in the Planner: Value, Dynamics, or Proposal?}
+\label{sec:planner-adapt}
+
+Although Dyna can match model-free methods once model error is reduced and the collection distribution is controlled, under the same budget the planning variant still adapts faster. The reason is straightforward: planning spends additional computation at test time to query the world model directly, extracting more from the same learned dynamics than Dyna does by generating offline data. This makes planning a more promising starting point for further improvement. However, the asymptotic experiment in [] shows equally here that planning plateaus earlier and lower than both Dyna and model-free methods as the target budget grows. The initial speed advantage is real, but the ceiling is tight. Nonetheless, we can leverage the previous takeaways and analyze each module of the planner individually to solve this problem.
+
+The planner exposes exactly three components where target interaction could be spent: the terminal value $\hat V$ that ranks candidate trajectories, the dynamics $\hat p_\theta$ that rolls them out, and the proposal policy that supplies them. Reward $\hat r$ is not discussed here, as it doesn't provide any signal for the planner under the sparse reward setting. Because these three modules are trained separately, though the latent space is shared, they can be isolated cleanly. We examine each in turn.
+
+The most intuitive target is the value. Sec.~\ref{sec:mf-vs-mb} showed that transferring the source critic $Q^e_s$ is the single largest gain in this study. The natural next step is to adapt that value to the target domain, since a source-target value gap demonstrably exists. However, every schedule we tried degrades performance: value first, dynamics first, and the two jointly all collapse, and a deliberately marginal update interpolates toward the failure rather than avoiding it. This indicates that learning the value function requires substantial fitting beyond the current budget. As can be seen from the asymptote experiment in Sec.~\ref{sec:mf-vs-mb}, the model-free method still requires more than 100k interactions after transferring the source value for the value to fully fit. In fact, we do not need the value to be sufficiently accurate, because planning consumes the value differently from value-based model-free RL: MPPI never reads $\hat V$ on an absolute scale; it uses it to rank candidates and retain an elite set. We conducted a simple oracle experiment to demonstrate that the source-transferred value is sufficient for MPPI planning, whereas the main gap lies in the distribution coverage of the dynamics and policy proposal. 
+
+Swapping the planner's three inputs independently (Table~\ref{tab:factorial-bottleneck}) gives a clear ordering: the dynamics main effect dominates, the proposal contributes a smaller but significant gain, and the value contributes nothing beyond noise. Replacing the learned dynamics with the true target simulator, holding everything else fixed, recovers most of the gap to the oracle; replacing the value recovers none of it. Dynamics is also the only component that can be improved supervisedly, as it fits $\hat p_\theta$ from collected transitions requires no reward propagation, which is a main advantage of model based planning.
+
+The third component is the proposal, the one Sec.~\ref{sec:two-conditions} predicts will matter. [] shows that leaving the proposal frozen at the source expert forfeits the target information in the demonstrations, while fine-tuning it on target demonstrations will help it but causes catastrophic forgetting in wider distribution trained on source. [] also indicates that keeping value and proposal in the same trained distribution is more important than fitting them in new distribution. We find adding a source regulation, i.e., a KL divergence item between source distilled policy and learned policy, to the cloning objective resolves the conflict. This is the same mechanism Sec.~\ref{sec:two-conditions} isolated, implemented differently: Dyna protects the collected distribution with a gate on the argmax to improve the collection quality, planning protects it with a penalty on the proposal to make it be supervised in widen distribution. Both measure the same thing: how far the executed distribution has drifted from the prior the model was fit around. It balances the trade-off between adaptation warmup in the new dynamics with the preservation of behavior near the states trained by the value function.
+
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/placeholder.pdf}
+\caption{%
+  \textbf{Adapting the value function degrades planning, in every ordering and
+  at every strength.} Final target success rate for five adaptation schedules
+  under an identical target budget:
+  (i) \emph{dynamics only} (SimDist, ours);
+  (ii) \emph{joint} --- value and dynamics adapted simultaneously;
+  (iii) \emph{value $\rightarrow$ dynamics};
+  (iv) \emph{dynamics $\rightarrow$ value};
+  (v) \emph{marginal value} --- the value head nudged with a small
+  learning rate / few steps / small trust region [TODO: name the exact knob].
+  Dynamics-only is best on all [TODO: four] tasks; no ordering rescues value
+  adaptation, and the marginal variant merely interpolates towards the failure
+  rather than avoiding it. Error bars are the seed spread and the grey band is
+  the evaluation noise floor, so bars inside it are not distinguishable.
+}
+\label{fig:value-adapt-bars}
+\end{figure*}
+
+\begin{table*}[t]
+\centering
+\caption{%
+  \textbf{Localizing the bottleneck: dynamics accuracy dominates, and value is
+  not the constraint.} Target success rate of the same MPPI controller as we independently swap its three inputs: the dynamics
+  (learned latent model vs.\ the true target simulator as an oracle), the
+  terminal value (source-distilled $\hat V$ vs.\ a value fit on target data),
+  and the proposal policy (frozen source expert $\pi_s$ vs.\ behaviour cloning
+  on the $n$ target demonstrations, \emph{without} any further fine-tuning).
+  [TODO: state the effect sizes as main effects: dynamics
+  $\ph{+0.--}$ ($z=\ph{--}$) $\gg$ proposal $\ph{+0.--}$ $>$ value
+  $\ph{+0.--}$ (n.s.).] All cells: [TODO: $\ge 300$] episodes, [TODO: $k$] seeds.
+}
+\label{tab:factorial-bottleneck}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lllcccc}
+\toprule
+Dynamics & Value & Proposal & Threading & Coffee & Square & TPA~[TPA] \\
+\midrule
+Oracle  & source-distilled $\hat V$ & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & source-distilled $\hat V$ & target $\pi_t$              & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & target-fit $V_t$          & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Oracle  & target-fit $V_t$          & target $\pi_t$              & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+\midrule
+Learned & source-distilled $\hat V$ & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & source-distilled $\hat V$ & target $\pi_t$              & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & target-fit $V_t$          & source $\pi_s$          & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+Learned & target-fit $V_t$          & target $\pi_t$              & \ph{0.--} & \ph{0.--} & \ph{0.--} & \ph{0.--} \\
+\midrule
+\multicolumn{3}{l}{\emph{Main effect: dynamics (oracle $-$ learned)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\multicolumn{3}{l}{\emph{Main effect: value (target $-$ source)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\multicolumn{3}{l}{\emph{Main effect: proposal (target BC $-$ source $\pi_s$)}}
+  & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} & \ph{+0.--} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{wrapfigure}{r}{0.46\textwidth}
+\vspace{-\baselineskip}
+\centering
+\includegraphics[width=0.46\linewidth]{figs/place.pdf}
+\caption{%
+  \textbf{The proposal policy must be warmed up on target data --- but anchored
+  to the source.} Target success rate over the course of adaptation, with the
+  planner's proposal (a) frozen at the source expert, (b) fine-tuned on the $n$
+  target demonstrations \emph{without} regularization, and (c) fine-tuned with a
+  source anchor [TODO: name the coefficient]. Warm-up decides the level the
+  whole adaptation starts from and converges to ($\ph{+0.--}$ for (c) over (a)),
+  while unregularized fine-tuning (b) destroys the proposal --- $\ph{--}$
+  demonstration transitions are re-visited for $\ph{--}$ effective epochs, so
+  the proposal leaves the region where the model and value are valid.
+}
+\label{fig:policy-warmup}
+\vspace{-\baselineskip}
+\end{wrapfigure}
+
+\section{SimOAED: Sim-to-real On-policy Adaptation with Ensemble Dynamics}
+\label{simopd}
+
+Sec.~\ref{sec:planner-adapt} established three rules for spending the target budget. First, the value should not be adapted. Second, dynamics error determines the performance ceiling, so reducing it is the most direct way to raise final performance. Third, the proposal must incorporate target demonstrations while staying anchored to the source, so that the dynamics and the value remain valid in the region the planner actually searches. \textbf{SimOAED} applies the two modifications these rules prescribe to SimDist by adding an ensemble for the dynamics and an anchored warm-up for the proposal, with the value head still untouched.
+
+\paragraph{Plan-time dynamics ensemble.}
+We fit $K$ dynamics heads on the collected target transitions, differing only in initialization and in an independent Bernoulli bagging mask per head. At plan time the planner rolls out on the mean prediction $\bar{f}(z,a)=\frac{1}{K}\sum_i f_i(z,a)$ rather than on any single head. The gain is attributable to the averaging itself, as it reduces the learned dynamics error, improving averaged performance within 50k transitions from  to . We also tested penalizing disagreement during planning and rewarding it during exploration, but neither produces a meaningful effect (Sec.~\ref{sec:ablation}).
+
+\paragraph{Source-anchored proposal fine-tuning.}
+The obvious way to give the proposal target information is to clone the target demonstrations. Due to the limited number and sparse distribution of demonstrations, directly fitting a policy on these data causes it to forget behaviors within the original dense distribution. Meanwhile, since the planner generates actions by iteratively adding noise to actions sampled from proposals, a policy directly fitted on target demonstrations is more likely to drift out of the pre-trained distribution. This leads to sampling states where the value lacks supervision, ultimately resulting in inaccurate value estimation. On the other hand, directly using the policy distilled from the source leads to slower adaptation without target warmup, as we discuss in Sec.\ref{sec:planner-adapt}. We therefore optimize the cloning objective under an explicit pull toward the source policy,
+\begin{equation}
+\mathcal{L}(\theta) \;=\;
+\mathbb{E}_{(s,a)\sim\mathcal{D}_t}\!\left[\Vert{}\pi_\theta(s)-a\Vert{}_2^2\right]
+\;+\; \lambda \,
+\mathbb{E}_{s\sim\mathcal{D}^d_s}\!\left[\Vert{}\pi_\theta(s)-\pi_s(s)\Vert{}_2^2\right],
+\label{eq:anchor}
+\end{equation}
+where $\lambda$ is a hyperparameter. $\mathcal{D}^d_s$ is the source diverse dataset that the world model is trained on. $\pi_s$ is the frozen policy trained on an expert subset of $\mathcal{D}^d_s$.
+
+\paragraph{What we do not change.}
+The value and reward heads stay frozen at their source-distilled values throughout adaptation, and the encoder is frozen after source domain training. No target reward shaping, no target expert and no access to $p_t$ is used at any point. All remaining architecture and optimization settings follow SimDist.
+
+\paragraph{SimOAED performance.}
+Fig.~\ref{fig:main-sim2sim} reports adaptation under the budget of Def.~\ref{def:budget} on [TODO: five] tasks. The Isaac Lab locomotion panel lies outside the regime the analysis covers, as it has dense reward, periodic contact, and no terminal goal predicate. SimOAED is the only arm that both starts near the source expert's zero-shot level and keeps improving inside the budget, reaching $\ph{0.--}$ on average and closing $\ph{--\%}$ of the gap to a planner given oracle target dynamics. The model-free arms have not left their zero-shot level when the budget expires, consistent with Sec.~\ref{sec:mf-vs-mb}. 

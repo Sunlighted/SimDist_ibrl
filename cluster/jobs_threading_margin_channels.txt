@@ -1,0 +1,16 @@
+both 101
+dataonly 101
+bootonly 101
+neither 101
+both 201
+dataonly 201
+bootonly 201
+neither 201
+both 301
+dataonly 301
+bootonly 301
+neither 301
+both 401
+dataonly 401
+bootonly 401
+neither 401

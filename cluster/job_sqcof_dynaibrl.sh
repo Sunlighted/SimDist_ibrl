@@ -188,6 +188,8 @@ case $ARM in
     for f in "$BC_PRIOR" "$IBRL_CFG"; do
         [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
     done ;;
+  sq_plain|cof_plain) NEED=$STAGE1_PLAIN
+    [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
   *_plain*) NEED=$STAGE1_PLAIN
     [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
   *) NEED=$STAGE1_DYNENS
@@ -211,6 +213,28 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_plain|cof_plain)
+    # SimDist MPPI adapt on the single-head stage-1 -- the PLANNING reference the
+    # dyna/model-free arms are measured against. Deliverable IS the planner, so
+    # score/score is the MPPI score and --eval_policy_only 1 logs the bare policy
+    # alongside as score/policy_only. Mirrors job_threading_margin.sh's plain_h5.
+    #
+    # ⚠️ --target_num_data 20 here, while the existing workstation runs
+    # (cof_plain_seed*, sq_plain_d400000_seed*) left it at None = every episode in
+    # the file (25). 20 is what every other arm in this batch uses, so this is the
+    # comparable setting -- but it means these runs are NOT continuations of those.
+    #
+    # collect_disagree_coef 0 and eval_disagree_coefs "" because geometric
+    # disagreement needs >1 dynamics head; both are undefined on a single head.
+    # ~7h for 300k (round ~30s, MPPI eval ~295s, eval_every_rounds 5).
+    case $ARM in sq_*) CK=$STAGE1_PLAIN ;; *) CK=$STAGE1_PLAIN ;; esac
+    $PY train_simdist_adapt.py --stage1_ckpt $CK --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.0 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_dynaibrl_m0|cof_dynaibrl_m0|sq_dynaibrl_plain_m0|cof_dynaibrl_plain_m0)
     # ⚠️ 300k, not the 100k $COMMON sets: these arms are asked how a margin-free
     # IBRL behaves over a long horizon, matching the 300k model-free *_qsrc arms.

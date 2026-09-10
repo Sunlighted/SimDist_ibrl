@@ -234,6 +234,22 @@ class AdaptConfig(common_utils.RunConfig):
     # fixes the success-path contact dynamics up-front (free, no extra interaction).
     # 0.0 = OFF (dynamics trains on adapt buffer only; legacy). mse path only.
     dyn_demo_frac: float = 0.0
+    # (B2) mix SOURCE replay (s,a,s') into the same dynamics batch. Unlike
+    # dyn_anchor_coef (which pins next(z,a) to the stage-1 MODEL's prediction on
+    # source states) this trains on the source's REAL recorded transitions --
+    # i.e. hard data targets, the direct analogue of preloading source demos into
+    # IBRL's critic replay (which was worth 3.6-29x on TPA).
+    # !! MEASURED CAVEAT (TPA, 2026-09-08): replaying target-demo (sim_state, a)
+    # in both physics gives a median |ds'| of 0.52 state-std, with only 6.3% of
+    # transitions below 0.1 std (same-physics control: median 0.0001, 99.1%
+    # below 0.01). So on THIS target the source s' is wrong nearly everywhere,
+    # and source states overlap the target on-policy region (nearest-neighbour
+    # distance 1.01x a held-out source set) -- the mixed-in data lands exactly
+    # where the adaptation needs to move. Predicted harmful; run it to find out.
+    # 0.0 = OFF (legacy path bit-identical). mse path only.
+    dyn_src_frac: float = 0.0
+    dyn_src_path: str = ""
+    dyn_src_episodes: int = 2000      # source trajectories to load into the buffer
     # ---- SOURCE anchor for the DYNAMICS (mirror of bc_anchor_*, default OFF) ----
     # stage-3 refits the dynamics on whatever narrow on-policy slice the current
     # planner visits. A meta-analysis over 134 SimDist adapt runs found
@@ -505,6 +521,25 @@ class AdaptWorkspace:
             reward_scale=self.base_cfg.env_reward_scale,
         )
         assert self.demo_replay.can_sample(self.H), "no TARGET demo >= horizon"
+
+        # --- optional SOURCE replay for the dynamics batch (dyn_src_frac) ---
+        self.src_replay = None
+        if cfg.dyn_src_frac > 0:
+            assert cfg.dyn_src_path, "dyn_src_frac>0 needs --dyn_src_path"
+            from rl.sequence_replay import load_source_replay_to_sequence_buffer
+            self.src_replay = SequenceReplayBuffer(
+                max_episodes=cfg.dyn_src_episodes + 16, device="cpu")
+            load_source_replay_to_sequence_buffer(
+                self.src_replay, cfg.dyn_src_path,
+                num_data=cfg.dyn_src_episodes,
+                reward_scale=self.base_cfg.env_reward_scale,
+            )
+            assert self.src_replay.can_sample(self.H), \
+                f"no source episode of length >= horizon={self.H}"
+            print(f"[dyn-src] frac={cfg.dyn_src_frac} | "
+                  f"{self.src_replay.size()} source episodes "
+                  f"({self.src_replay.num_transitions()} transitions) mixed into "
+                  f"the dynamics batch")
 
         # --- TARGET rollout buffer (stage-3 dynamics adaptation) ---
         self.adapt_replay = SequenceReplayBuffer(
@@ -929,12 +964,30 @@ class AdaptWorkspace:
                     # (B) mix in TARGET demos: cleanest contact-phase (s,a,s') so the
                     # dynamics consistency loss learns the success-path contact
                     # transitions up-front (free, no extra target interaction).
-                    if self.cfg.dyn_demo_frac > 0 and self.demo_replay.can_sample(self.H):
-                        nd = int(B * self.cfg.dyn_demo_frac)
-                        if nd > 0:
+                    # Both mixes carve out of the SAME batch of B, so the batch
+                    # size (and therefore the per-step gradient scale) is unchanged
+                    # no matter how the fractions are set. The on-policy adapt
+                    # rollouts keep whatever is left over.
+                    nd = (int(B * self.cfg.dyn_demo_frac)
+                          if self.cfg.dyn_demo_frac > 0
+                          and self.demo_replay.can_sample(self.H) else 0)
+                    nsrc = (int(B * self.cfg.dyn_src_frac)
+                            if self.cfg.dyn_src_frac > 0
+                            and self.src_replay is not None else 0)
+                    assert nd + nsrc <= B, \
+                        f"dyn_demo_frac + dyn_src_frac > 1 (nd={nd} nsrc={nsrc} B={B})"
+                    if nd or nsrc:
+                        s_parts = [states[:B - nd - nsrc]]
+                        a_parts = [actions[:B - nd - nsrc]]
+                        if nd:
                             ds, da, _ = self.demo_replay.sample(nd, self.H, "cuda")
-                            states = torch.cat([states[:B - nd], ds], 0)
-                            actions = torch.cat([actions[:B - nd], da], 0)
+                            s_parts.append(ds); a_parts.append(da)
+                        if nsrc:
+                            s_src, a_src, _ = self.src_replay.sample(
+                                nsrc, self.H, "cuda")
+                            s_parts.append(s_src); a_parts.append(a_src)
+                        states = torch.cat(s_parts, 0)
+                        actions = torch.cat(a_parts, 0)
                     az = aa = at = None
                     if self._dyn_anchor[0] is not None:
                         k = torch.randint(len(self._dyn_anchor[0]),
