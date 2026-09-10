@@ -188,7 +188,7 @@ case $ARM in
     for f in "$BC_PRIOR" "$IBRL_CFG"; do
         [ -f "$f" ] || { echo "MISSING asset: $f  (untar the ibrl-prior bundle)"; exit 1; }
     done ;;
-  sq_plain|cof_plain) NEED=$STAGE1_PLAIN
+  sq_plain_d600000|sq_plain_d400000|cof_plain) NEED=$STAGE1_PLAIN
     [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
   *_plain*) NEED=$STAGE1_PLAIN
     [ -f "$NEED" ] || { echo "MISSING stage-1: $NEED"; exit 1; } ;;
@@ -213,23 +213,42 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
-  sq_plain|cof_plain)
+  sq_plain_d600000|sq_plain_d400000|cof_plain)
     # SimDist MPPI adapt on the single-head stage-1 -- the PLANNING reference the
     # dyna/model-free arms are measured against. Deliverable IS the planner, so
     # score/score is the MPPI score and --eval_policy_only 1 logs the bare policy
     # alongside as score/policy_only. Mirrors job_threading_margin.sh's plain_h5.
     #
-    # ⚠️ --target_num_data 20 here, while the existing workstation runs
-    # (cof_plain_seed*, sq_plain_d400000_seed*) left it at None = every episode in
-    # the file (25). 20 is what every other arm in this batch uses, so this is the
-    # comparable setting -- but it means these runs are NOT continuations of those.
+    # ⚠️ NO --target_num_data: the whole exps/square_rotw1_6arm and
+    # exps/coffee_g5x_3arm plain/dynens family runs with it at None (= every
+    # episode in the file), and the arm names below ARE those groups' names, so
+    # these runs land in the same wandb group and extend them 100k -> 300k.
+    # Passing 20 (as $COMMON does for the dyna arms) would fork a different demo
+    # budget into an existing group. Square also picks its demo set by arm name:
+    # d600000 -> square_sat_600000, d400000 -> square_sat_400000 ($DEMOS default).
     #
     # collect_disagree_coef 0 and eval_disagree_coefs "" because geometric
     # disagreement needs >1 dynamics head; both are undefined on a single head.
     # ~7h for 300k (round ~30s, MPPI eval ~295s, eval_every_rounds 5).
-    case $ARM in sq_*) CK=$STAGE1_PLAIN ;; *) CK=$STAGE1_PLAIN ;; esac
-    $PY train_simdist_adapt.py --stage1_ckpt $CK --save_dir $OUT --seed $SEED \
-      --target_demo_path $DEMOS --target_num_data 20 \
+    case $ARM in
+      sq_plain_d600000) PDEMOS=release/data/mimicgen/square_sat_600000_s${SEED}/dataset.hdf5 ;;
+      *) PDEMOS=$DEMOS ;;
+    esac
+    [ -f "$PDEMOS" ] || { echo "MISSING demos: $PDEMOS"; exit 1; }
+    # ⚠️ Square needs an explicit planner trust region; Coffee does not. ALL 60
+    # runs in exps/square_rotw1_6arm (plain and dynens, d400000 and d600000) were
+    # launched with init_std=0.15,base_policy_std=0.0, while every run in
+    # exps/coffee_g5x_3arm has planner_set='' (defaults). Omitting it on Square
+    # leaves the planner at the stage-1 default init_std -- a much wider trust
+    # region, and tasks.md 40c measured this single knob at up to 40 points. That
+    # is what made the first sq_plain_* runs look far worse than sq_plain_d400000.
+    # CLAUDE.md rule 9: planner hyperparameters do not port across tasks, so this
+    # is per-task and must NOT be copied to cof_plain.
+    case $ARM in sq_*) PSET=(--planner_set "init_std=0.15,base_policy_std=0.0") ;;
+                 *)    PSET=() ;; esac
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      "${PSET[@]}" \
+      --target_demo_path $PDEMOS \
       --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \

@@ -1,0 +1,100 @@
+# TPA_D0 TARGET, EASIER VARIANT ("T2"): the current target with gripper_kp
+# relaxed 0.25 -> 0.5. Everything else is byte-identical to
+# tpa_d0_state_ibrl_target.yaml, so the two differ in exactly one field.
+#
+# WHY A SECOND, EASIER TARGET. On the original target the frozen source expert
+# scores 0.36 while oracle-dynamics MPPI scores 0.90 and SimDist sits at 0.34 --
+# i.e. SimDist already captures 94% of what the expert policy manages, and the
+# entire remaining headroom is against a ceiling only PERFECT dynamics reaches.
+# With that little room, "the method is weak" and "this target is brutal" are not
+# separable (CLAUDE.md rule 18: to show a mechanism exists you must first create
+# margin). This variant restores margin while keeping the gap's structure.
+#
+# THE SWEEP IT CAME FROM (frozen source expert, n=100 each, same harness, seed 0;
+# scripts is the one-off in the session log, results in
+# exps/mimicgen/_evalshim/tpa_sweep/results.json):
+#     identity                        0.99
+#     hole0.98                        0.96
+#     kp0.5                           0.94
+#     hole0.96                        0.91
+#     fric2.0                         0.87
+#     kp0.5+fric2.0                   0.83
+#     kp0.5+hole0.96                  0.81
+#     kp0.5+fric2+hole0.96            0.67   <- THIS
+#     kp0.25                          0.50
+#     kp0.25+fric2+hole0.96           0.36   <- the original target
+# gripper_kp is the dominant and violently non-linear knob (0.5 -> 0.94 but
+# 0.25 -> 0.50); the three compose roughly multiplicatively
+# (0.94*0.87*0.91 = 0.744 vs 0.67 measured, i.e. mildly super-additive).
+#
+# WHY NOT A SIMPLER RELAXATION. Dropping to kp0.5 alone (0.94) leaves almost no
+# dynamics gap to study. Keeping only fric+hole would confine the gap to the two
+# insertion phases -- exactly the failure mode of Coffee C50 (tasks 40e: the
+# difficulty must be IN PHASE with the gap and cover the bulk of the transitions;
+# C50's sat in a phase holding 4% of them and was the only target that collapsed).
+# All three knobs are retained here: kp loads every step and both grasps, fric and
+# hole load piece_1 seating and piece_2 sliding.
+#
+# NOTE. Every existing TPA target-side number (the lambda sweep, the five
+# dynamics-mixing arms, oracle 0.90, the regret/coverage diagnostics) was measured
+# on the ORIGINAL target. Do not pool them with runs on this one.
+#
+#   python train_rl.py --config_path release/cfgs/mimicgen/tpa_d0_state_ibrl_target_kp05.yaml \
+#       --save_dir exps/mimicgen/tpa_ibrl_target_kp05_seed1
+task_name: "ThreePieceAssembly_D0"
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: ''
+preload_num_data: 1000
+preload_datapath: "release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5"
+num_warm_up_episode: 50
+
+num_train_step: 1500000
+replay_buffer_size: 2000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_domain_shift:
+  mode: "fixed"
+  base_hole_size_scale: 0.96
+  base_friction_scale: 2.0
+  gripper_kp_scale: 0.5
+eval_domain_shift:
+  mode: "fixed"
+  base_hole_size_scale: 0.96
+  base_friction_scale: 2.0
+  gripper_kp_scale: 0.5
+
+sgft_source_agent: exps/mimicgen/tpa_source_expert_frozen/model0.pt
+source_agent_use_hybrid: 1

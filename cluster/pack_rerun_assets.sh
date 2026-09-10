@@ -11,7 +11,10 @@
 #      weights -- stage-1 is distilled in the source domain); what differs is
 #      cfg.yaml's eval_domain_shift. tar -h follows the link so the far end gets
 #      a real file and does not need the link target to exist.
-#   2. release/data/mimicgen/{square_sat_400000,coffee_g5x_sat400k}_s{501..901}
+#   2. release/data/mimicgen/square_sat_600000_s* (all 10 seeds, 15 MB) -- the
+#      sq_plain_d600000 arm's demos; the sync script only ever shipped the
+#      400000 set.
+#   3. release/data/mimicgen/{square_sat_400000,coffee_g5x_sat400k}_s{501..901}
 #      Seeds >= 501 were never shipped: sync_sqcof_dynaibrl.sh's SEEDS list still
 #      said "1 101 201 301 401" while the job lists had held 10 seeds for a while.
 #
@@ -35,6 +38,16 @@ done
 for S in $SEEDS; do
   add "release/data/mimicgen/square_sat_400000_s$S"
   add "release/data/mimicgen/coffee_g5x_sat400k_s$S"
+done
+
+# 3. square_sat_600000, ALL ten seeds -- sync_sqcof_dynaibrl.sh only ever shipped
+#    the 400000 set, so the sq_plain_d600000 arm has nothing to read. Small (15 MB
+#    total), so ship every seed rather than tracking which ones are missing.
+#    The videos/ subdirectory is excluded below; only dataset.hdf5 + env_cfg.json
+#    are read by the trainer.
+for S in 1 101 201 301 401 501 601 701 801 901; do
+  add "release/data/mimicgen/square_sat_600000_s$S/dataset.hdf5"
+  add "release/data/mimicgen/square_sat_600000_s$S/env_cfg.json"
 done
 
 [ "$MISSING" = 0 ] || { echo "preflight FAILED"; rm -f "$LIST"; exit 1; }

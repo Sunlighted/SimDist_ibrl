@@ -122,11 +122,11 @@ Method & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & 
 \begin{table*}[t]
 \centering
 \caption{%
-  \textbf{What the prior-preference floor buys, and through which channel.}
-  \textbf{(a)} Sweeping the floor $m$ produces an inverted U: at $m=0$ the
+  \textbf{What the prior-preference margin buys, and through which channel.}
+  \textbf{(a)} Sweeping the margin $m$ produces an inverted U: at $m=0$ the
   learned actor takes over before the critic can rank it and the arm collapses;
   at $m=0.1$ it never takes over and the arm reproduces the prior exactly (win
-  rate $0.00$ throughout). \textbf{(b)} The floor is applied in the channels
+  rate $0.00$ throughout). \textbf{(b)} The margin is applied in the channels
   marked $\checkmark$ and zeroed elsewhere; the evaluated policy is identical in
   all four rows, so the arms differ only in what happened during training.
   Removing it from the TD target is free; removing it from the data channels is
@@ -152,10 +152,10 @@ Method & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & 
 \end{minipage}\hfillliy
 \begin{minipage}[t]{0.56\textwidth}
 \centering
-\small (b) which channel the floor acts through ($m=0.01$)\\[2pt]
+\small (b) which channel the margin acts through ($m=0.01$)\\[2pt]
 \begin{tabular}{lccccc}
 \toprule
-\multicolumn{2}{c}{floor applied in} & & & \multicolumn{2}{c}{win rate} \\
+\multicolumn{2}{c}{margin applied in} & & & \multicolumn{2}{c}{win rate} \\
 \cmidrule(lr){1-2}\cmidrule(lr){5-6}
 data & TD target & SR @100k & $N_{50}\downarrow$ & collect & backup \\
 \midrule

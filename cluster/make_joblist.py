@@ -32,7 +32,8 @@ def exp_dir(arm: str) -> str:
 SQCOF = [f"{t}_dynaibrl{s}" for t in ("sq", "cof")
          for s in ("", "_m0", "_m001", "_sgft", "_plain", "_plain_m0",
                    "_plain_m001", "_plain_sgft")]
-SQCOF += ["sq_plain", "cof_plain",                     # SimDist MPPI reference
+SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference
+          "cof_plain",
           "sq_ibrl_m001", "cof_ibrl_m001",              # model-free, no world model
           "sq_ibrl_m001_qsrc", "cof_ibrl_m001_qsrc",   # ... + source-expert critic warm-start
           "sq_ibrl_m0_qsrc", "cof_ibrl_m0_qsrc",       # ... same, margin 0
