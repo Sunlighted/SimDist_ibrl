@@ -38,7 +38,7 @@ SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference
           "sq_ibrl_m001_qsrc", "cof_ibrl_m001_qsrc",   # ... + source-expert critic warm-start
           "sq_ibrl_m0_qsrc", "cof_ibrl_m0_qsrc",       # ... same, margin 0
           "sq_ibrl_m0", "cof_ibrl_m0"]                 # margin 0, NO warm-start
-THREADING = ["plain_h5", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
+THREADING = ["plain_h5", "plain_nobc", "plain_anch", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
              "dynaibrl_plain_sgft",

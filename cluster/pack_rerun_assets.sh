@@ -14,7 +14,9 @@
 #   2. release/data/mimicgen/square_sat_600000_s* (all 10 seeds, 15 MB) -- the
 #      sq_plain_d600000 arm's demos; the sync script only ever shipped the
 #      400000 set.
-#   3. release/data/mimicgen/{square_sat_400000,coffee_g5x_sat400k}_s{501..901}
+#   3. release/data/mimicgen/threading_anchor_pool_4k -- the plain_anch arm's
+#      source-state pool (ANCHOR=0 to skip).
+#   4. release/data/mimicgen/{square_sat_400000,coffee_g5x_sat400k}_s{501..901}
 #      Seeds >= 501 were never shipped: sync_sqcof_dynaibrl.sh's SEEDS list still
 #      said "1 101 201 301 401" while the job lists had held 10 seeds for a while.
 #
@@ -27,6 +29,11 @@ cd "$(dirname "$0")/.."
 OUT=${1:-/user_data/Chenyang/ship}
 SEEDS=${SEEDS:-"501 601 701 801 901"}
 mkdir -p "$OUT"
+
+# 4. the Threading bc_anchor pool for the plain_anch arm. 115 MB extract of the
+#    4.3 GB threading_d0_source_diverse_v2 (scripts/extract_anchor_pool.py);
+#    _build_bc_anchor reads only obs/state.
+ANCHOR=${ANCHOR:-1}
 
 LIST=$(mktemp); MISSING=0
 add() { if [ -e "$1" ]; then echo "$1" >> "$LIST"; else echo "  MISSING $1"; MISSING=1; fi; }
@@ -49,6 +56,10 @@ for S in 1 101 201 301 401 501 601 701 801 901; do
   add "release/data/mimicgen/square_sat_600000_s$S/dataset.hdf5"
   add "release/data/mimicgen/square_sat_600000_s$S/env_cfg.json"
 done
+
+if [ "$ANCHOR" = 1 ]; then
+  add "release/data/mimicgen/threading_anchor_pool_4k/dataset.hdf5"
+fi
 
 [ "$MISSING" = 0 ] || { echo "preflight FAILED"; rm -f "$LIST"; exit 1; }
 

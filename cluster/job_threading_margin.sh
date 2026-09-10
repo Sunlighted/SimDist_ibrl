@@ -314,6 +314,45 @@ if [ "$NEED_BC" = 1 ] && [ ! -f "$BC_PRIOR" ]; then
 fi
 
 case $ARM in
+  plain_nobc|plain_anch)
+    # Stage-2 ablation on the PLANNING reference, all three arms otherwise
+    # identical to plain_h5 (same single-head stage-1, same sat_160000 demos,
+    # same original_mppi planner, 100k):
+    #
+    #   plain_h5    stage-2 BC on the 20 target demos          ("target BC")
+    #   plain_nobc  --bc_steps 0, no stage-2 at all            ("no target BC")
+    #   plain_anch  target BC + source anchor, bc_anchor_coef 1.0
+    #
+    # Why the anchor arm exists: CLAUDE.md rule 16 -- 1000 steps x batch 256 of
+    # UNREGULARISED BC lands ~157 epochs on 1633 demo transitions and wrecks the
+    # proposal the planner leans on. bc_anchor_coef pulls pi_theta back toward
+    # pi_src on SOURCE states (simdist 42/44; the anchor target is the distilled
+    # pi_src's own action, which is why no expert_flags are needed).
+    #
+    # ⚠️ lambda=1.0 is NOT a safe default -- it is a multiplier, and the measured
+    # lambda* spans 5.2x across targets (memory: anchor-lambda-not-portable).
+    # 1.0 is the Coffee G5x value and is a starting point on Threading, not a
+    # tuned one; read this arm on its absolute score.
+    #
+    # bc_anchor_path is the 4k extract (115 MB), not the 4.3 GB source-diverse
+    # set: _build_bc_anchor reads only obs/state from bc_anchor_episodes (2000)
+    # episodes and keeps 40000 states. 4000 > 2000 so each seed still draws its
+    # own subset.
+    case $ARM in
+      plain_nobc) BCARGS=(--bc_steps 0) ;;
+      *)          BCARGS=(--bc_anchor_coef 1.0
+                          --bc_anchor_path release/data/mimicgen/threading_anchor_pool_4k/dataset.hdf5)
+                  [ -f release/data/mimicgen/threading_anchor_pool_4k/dataset.hdf5 ] || {
+                      echo "MISSING anchor pool (scripts/extract_anchor_pool.py)"; exit 1; } ;;
+    esac
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      "${BCARGS[@]}" \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.0 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   plain_h5)
     # collect_disagree_coef stays 0: geometric disagreement needs >1 dynamics head,
     # so the 0.5 the dynens arms use is undefined here. eval_disagree_coefs is left
