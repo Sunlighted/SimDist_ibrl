@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=24G
-#SBATCH --time=12:00:00
+#SBATCH --time=5:00:00
 #SBATCH --output=cluster/logs/%x_%A_%a.out
 # ^ --account=def-<pi> at submit time:
 #       sbatch --account=def-<pi> cluster/job_threading_margin.sh
