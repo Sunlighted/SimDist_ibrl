@@ -21,6 +21,8 @@ import argparse, os, sys
 
 # Same mapping the job scripts use to pick EXP_DIR from the arm prefix.
 def exp_dir(arm: str) -> str:
+    if arm.startswith("tpa_"):
+        return "exps/tpa_kp025_6arm"
     if arm.startswith("sq_"):
         return "exps/square_rotw1_6arm"
     if arm.startswith("cof_"):
@@ -47,7 +49,10 @@ THREADING = ["plain_h5", "plain_nobc", "plain_anch",
              "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m0", "dynaibrl_dynens_m001",
              "dynaibrl_dynens_sgft"]
-KNOWN = set(SQCOF) | set(THREADING)
+TPA = ["tpa_ibrl", "tpa_ibrl_qsrc", "tpa_ibrl_qsrc_m001",
+       "tpa_dynaibrl", "tpa_dynaibrl_m001", "tpa_dynaibrl_dynens_m001",
+       "tpa_iql", "tpa_rlpd"]
+KNOWN = set(SQCOF) | set(THREADING) | set(TPA)
 
 def done(arm: str, seed: int, override: str | None) -> bool:
     log = os.path.join(override or exp_dir(arm), f"{arm}_seed{seed}", "train.log")
@@ -81,9 +86,11 @@ def main() -> int:
     if len({exp_dir(x) for x in arms}) > 1 and not a.exp_dir:
         # sq_ and cof_ share a job script, so mixing them is fine. Mixing either
         # with a Threading arm is not: they are different job scripts.
-        if any(x in THREADING for x in arms) and any(x in SQCOF for x in arms):
-            print("Threading arms and sq_/cof_ arms use DIFFERENT job scripts -- "
-                  "generate two lists.", file=sys.stderr)
+        fams = [f for f in (THREADING, SQCOF, TPA) if any(x in f for x in arms)]
+        if len(fams) > 1:
+            print("arms from different job scripts (Threading / sq_+cof_ / tpa_) "
+                  "cannot share one list -- generate one per script.",
+                  file=sys.stderr)
             return 1
 
     tail = [x.strip() for x in a.tail_arms.split(",") if x.strip()]

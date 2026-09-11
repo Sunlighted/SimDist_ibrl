@@ -41,8 +41,11 @@ def _split(state_dim: int):
     return [("robot0_eef_pos", 0, 3), ("robot0_eef_quat", 3, 7),
             ("robot0_gripper_qpos", 7, 9), ("object", 9, state_dim)]
 
+# ThreePieceAssembly_D0 packs the same way at state_dim 51 (9 prop + 42 object);
+# verified element-wise against tpa_d0_target_expert_n50, which carries both the
+# packed `state` and the per-key obs.
 SPLITS = {"Threading_D0": _split(37), "Square_D0": _split(23),
-          "Coffee_D0": _split(66)}
+          "Coffee_D0": _split(66), "ThreePieceAssembly_D0": _split(51)}
 
 
 def _write_episode(dst_grp, i, obs: dict, actions, rewards, success):

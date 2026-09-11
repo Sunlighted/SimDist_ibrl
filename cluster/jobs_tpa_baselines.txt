@@ -1,0 +1,10 @@
+tpa_iql 1
+tpa_rlpd 1
+tpa_iql 101
+tpa_rlpd 101
+tpa_iql 201
+tpa_rlpd 201
+tpa_iql 301
+tpa_rlpd 301
+tpa_iql 401
+tpa_rlpd 401
