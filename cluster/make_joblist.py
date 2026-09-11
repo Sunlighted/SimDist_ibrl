@@ -32,13 +32,16 @@ def exp_dir(arm: str) -> str:
 SQCOF = [f"{t}_dynaibrl{s}" for t in ("sq", "cof")
          for s in ("", "_m0", "_m001", "_sgft", "_plain", "_plain_m0",
                    "_plain_m001", "_plain_sgft")]
+SQCOF += [f"{t}_valabl_{a}" for t in ("sq", "cof")
+          for a in ("dyn", "joint", "v2d", "d2v", "marg")]
 SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference
           "cof_plain",
           "sq_ibrl_m001", "cof_ibrl_m001",              # model-free, no world model
           "sq_ibrl_m001_qsrc", "cof_ibrl_m001_qsrc",   # ... + source-expert critic warm-start
           "sq_ibrl_m0_qsrc", "cof_ibrl_m0_qsrc",       # ... same, margin 0
           "sq_ibrl_m0", "cof_ibrl_m0"]                 # margin 0, NO warm-start
-THREADING = ["plain_h5", "plain_nobc", "plain_anch", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
+THREADING = ["plain_h5", "plain_nobc", "plain_anch",
+             "valabl_dyn", "valabl_joint", "valabl_v2d", "valabl_d2v", "valabl_marg", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
              "dynaibrl_plain_sgft",

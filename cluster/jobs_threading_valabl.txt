@@ -1,0 +1,15 @@
+valabl_dyn 1
+valabl_joint 1
+valabl_v2d 1
+valabl_d2v 1
+valabl_marg 1
+valabl_dyn 101
+valabl_joint 101
+valabl_v2d 101
+valabl_d2v 101
+valabl_marg 101
+valabl_dyn 201
+valabl_joint 201
+valabl_v2d 201
+valabl_d2v 201
+valabl_marg 201

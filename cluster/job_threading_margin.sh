@@ -229,6 +229,10 @@ echo "[$(date)] task $SLURM_ARRAY_TASK_ID -> arm=$ARM seed=$SEED"
 # read-only properties -- --wb_* are NOT CLI args and argparse rejects them).
 EXP_DIR=${EXP_DIR:-exps/simdist_threading_3arm}
 SUFFIX=${SUFFIX:-}                 # e.g. SUFFIX=_v2 if a name would collide
+# The value-adapt ablation gets its OWN wandb project: it is a self-contained
+# 5-arm table, and dropping 15 more groups into simdist_threading_3arm (which
+# already holds 100+) makes both harder to read. Override with VALABL_DIR.
+case $ARM in valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_threading} ;; esac
 OUT=$EXP_DIR/${ARM}${SUFFIX}_seed${SEED}
 DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
 
@@ -314,6 +318,56 @@ if [ "$NEED_BC" = 1 ] && [ ! -f "$BC_PRIOR" ]; then
 fi
 
 case $ARM in
+  valabl_dyn|valabl_joint|valabl_v2d|valabl_d2v|valabl_marg)
+    # ---- value-adapt ablation (docs/on-policy-adaptation.md 2) --------------
+    #   valabl_dyn     (i)   dynamics only          -- the existing pipeline
+    #   valabl_joint   (ii)  value + dynamics, 100k, together
+    #   valabl_v2d     (iii) value 100k THEN dynamics 100k
+    #   valabl_d2v     (iv)  dynamics 100k THEN value 100k
+    #   valabl_marg    (v)   marginal (residual) value + dynamics, 100k
+    #
+    # Every arm shares this run's stage-1, demos, planner and eval; the only thing
+    # that varies is which heads move and in what order. The sequential arms run
+    # BOTH phases inside one job (2 x 100k ~= 4.6h) -- phase A writes into
+    # $OUT.phaseA and phase B warm-starts from it via --init_ckpt while keeping
+    # --stage1_ckpt, since that path reads dirname/cfg.yaml as a MainConfig and an
+    # adapt run writes an AdaptConfig there.
+    #
+    # ⚠️ (v) fits its residual by MSE on Monte-Carlo returns while (ii)-(iv) use
+    # the value head's two-hot CE. That is inherent: the head is categorical
+    # (discrete_heads=1, 101 bins) and a scalar residual has no logit-space
+    # counterpart, so the residual sits on the DECODED scalar -- exactly the
+    # quantity MPPI ranks with. Read (v) against (ii) knowing the loss differs.
+    #
+    # ⚠️ Expected outcome is negative: on-policy-adaptation 2 already measured all
+    # three orders collapsing on Threading, and findings 33 gives the mechanism
+    # (MPPI's whole candidate-discrimination signal is std_i(gamma^H V)=0.0068).
+    # This batch is the three-task confirmation, not a search.
+    VA_COMMON="--stage1_ckpt $STAGE1_PLAIN --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.0 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1"
+    case $ARM in
+      *_dyn)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode dyn   --max_transitions 100000 ;;
+      *_joint) $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode both  --max_transitions 100000 ;;
+      *_marg)  $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode both  --marginal_value 1 --max_transitions 100000 ;;
+      *_v2d)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT.phaseA \
+                 --adapt_mode value --max_transitions 100000 \
+               && $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode dyn   --max_transitions 100000 \
+                 --init_ckpt $OUT.phaseA/latest.pt ;;
+      *_d2v)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT.phaseA \
+                 --adapt_mode dyn   --max_transitions 100000 \
+               && $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode value --max_transitions 100000 \
+                 --init_ckpt $OUT.phaseA/latest.pt ;;
+    esac ;;
   plain_nobc|plain_anch)
     # Stage-2 ablation on the PLANNING reference, all three arms otherwise
     # identical to plain_h5 (same single-head stage-1, same sat_160000 demos,

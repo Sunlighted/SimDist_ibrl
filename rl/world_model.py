@@ -471,6 +471,42 @@ class WorldModel(nn.Module):
             return two_hot_inv(out, self.cfg.num_bins, self.cfg.vmin, self.cfg.vmax)
         return out.squeeze(-1)
 
+    def attach_value_residual(self, hidden: int = 256, scale: float = 1.0):
+        """Add the "marginal value" head: V(z) = V_base(z).detach() + scale*mlp(z).
+
+        Ported from scripts/square_value_iter.py --arm residual. The last layer is
+        zero-initialised, so at attach time predict_value is BIT-IDENTICAL to the
+        distilled value and every later change is an explicit departure rather
+        than a free refit.
+
+        Why it sits after the decode rather than inside the head: this model's
+        value head is two-hot categorical (discrete_heads=1, 101 bins), so a
+        scalar residual has no meaning in logit space. The residual is therefore
+        applied to the DECODED scalar -- which is exactly the quantity MPPI ranks
+        with (gamma^H * V(z_H)) -- and is trained by MSE on Monte-Carlo returns,
+        not by the two-hot CE the non-residual value arms use. That loss
+        difference is inherent to the parameterisation, not an oversight.
+
+        Idempotent: calling twice keeps the first residual.
+        """
+        if getattr(self, "value_residual", None) is not None:
+            return
+        cfg = self.cfg
+        act = getattr(cfg, "activation", "elu")
+        ln = cfg.layer_norm
+        # The value head's own input width -- correct for both the latent and the
+        # raw-state model without re-deriving either.
+        zdim = next(m for m in self.value.modules()
+                    if isinstance(m, nn.Linear)).in_features
+        net = mlp(zdim, hidden, 1, 2, ln, act_out="none", act=act)
+        with torch.no_grad():
+            last = [m for m in net.modules() if isinstance(m, nn.Linear)][-1]
+            last.weight.zero_()
+            if last.bias is not None:
+                last.bias.zero_()
+        self.value_residual = net
+        self.value_residual_scale = float(scale)
+
     def predict_value(self, z: torch.Tensor, target: bool = False,
                       reduce: str | None = None) -> torch.Tensor:
         """Scalar terminal value [B]. With a value ensemble, `reduce` (default
@@ -479,15 +515,28 @@ class WorldModel(nn.Module):
         if self.num_value_heads() == 1 and len(self.value_prior) == 0:
             out = self.value_logits(z, target=target)
             if self.cfg.discrete_heads:
-                return two_hot_inv(out, self.cfg.num_bins, self.cfg.vmin, self.cfg.vmax)
-            return out.squeeze(-1)
+                base = two_hot_inv(out, self.cfg.num_bins, self.cfg.vmin, self.cfg.vmax)
+            else:
+                base = out.squeeze(-1)
+            return self._add_value_residual(base, z)
         v = self.predict_value_all(z, target=target)           # [N, B]
         how = reduce or getattr(self.cfg, "value_reduce", "mean")
         if how == "min":
-            return v.min(0).values
-        if how == "mean":
-            return v.mean(0)
-        raise ValueError(f"unknown value_reduce: {how}")
+            base = v.min(0).values
+        elif how == "mean":
+            base = v.mean(0)
+        else:
+            raise ValueError(f"unknown value_reduce: {how}")
+        return self._add_value_residual(base, z)
+
+    def _add_value_residual(self, base: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """No-op unless attach_value_residual() was called. The BASE is detached:
+        the residual is the only thing that learns, which is what makes the
+        departure from the distilled value explicit and measurable."""
+        net = getattr(self, "value_residual", None)
+        if net is None:
+            return base
+        return base.detach() + self.value_residual_scale * net(z).squeeze(-1)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Reconstruct the state from a dynamics latent (for the MPPI proposal).

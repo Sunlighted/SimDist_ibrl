@@ -97,6 +97,7 @@ class SimDistAgent(nn.Module):
         self._bc_opt = None
         self._dyn_opt = None
         self._dynval_opt = None
+        self._dynres_opt = None
         self._dynvalenc_opt = None
         self._val_opt = None
 
@@ -660,6 +661,67 @@ class SimDistAgent(nn.Module):
             self.model.dynamics.parameters(), cfg.grad_clip)
         self._dyn_opt.step()
         return {"adapt/consistency": float(vaml_l.item()), "adapt/grad_norm": float(gnorm)}
+
+    def update_dynamics_residual_value(self, states, actions, value_targets,
+                                       lr: float = 3e-4, value_coef: float = 1.0
+                                       ) -> dict[str, float]:
+        """Stage-3 adapt, dynamics + the MARGINAL (residual) value head.
+
+        Same dynamics term as update_dynamics_value. The value term differs: the
+        trainable parameter is the residual mlp of
+        `V(z) = V_base(z).detach() + scale * mlp(z)` (world_model
+        attach_value_residual), and it is fit by MSE on the Monte-Carlo
+        return-to-go -- NOT the two-hot CE the categorical head uses, because a
+        scalar residual has no logit-space counterpart. The distilled value head
+        itself never moves, so the departure from V_src is exactly
+        `scale * mlp(z)` and is directly readable.
+        """
+        m = self.model
+        assert getattr(m, "value_residual", None) is not None, \
+            "attach_value_residual() must be called before this update"
+        if self._dynres_opt is None:
+            params = list(m.dynamics.parameters()) + list(m.value_residual.parameters())
+            self._dynres_opt = torch.optim.Adam(params, lr=lr)
+        cfg = self.cfg.world_model
+        B = states.shape[0]
+        H = states.shape[1] - 1
+        rho = cfg.rho
+        with torch.no_grad():
+            z = m.encode(states[:, 0])
+        cons_l, wsum = 0.0, 0.0
+        for t in range(H):
+            with torch.no_grad():
+                z_next_enc = m.encode(states[:, t + 1])
+            z_next_pred = m.next(z, actions[:, t])
+            w = rho ** t
+            wsum += w
+            cons_l = cons_l + w * F.mse_loss(z_next_pred, z_next_enc)
+            z = z_next_pred
+        cons_l = cons_l / wsum
+
+        with torch.no_grad():
+            z_all = m.encode(states.reshape(B * (H + 1), -1))      # frozen encoder
+        v_tgt = value_targets.reshape(-1)
+        v_pred = m.predict_value(z_all)                            # base.detach() + residual
+        val_l = F.mse_loss(v_pred, v_tgt)
+
+        loss = cfg.consistency_coef * cons_l + value_coef * val_l
+        self._dynres_opt.zero_grad()
+        loss.backward()
+        params = list(m.dynamics.parameters()) + list(m.value_residual.parameters())
+        gnorm = nn.utils.clip_grad_norm_(params, cfg.grad_clip)
+        self._dynres_opt.step()
+        with torch.no_grad():
+            delta = m.value_residual_scale * m.value_residual(z_all).squeeze(-1)
+        return {
+            "adapt/dyn_cons_loss": float(cons_l),
+            "adapt/value_loss": float(val_l),
+            "adapt/gnorm": float(gnorm),
+            # how far the marginal value has moved off the distilled one; this is
+            # the quantity the residual parameterisation exists to expose.
+            "adapt/value_delta_absmean": float(delta.abs().mean()),
+            "adapt/value_delta_std": float(delta.std()),
+        }
 
     def update_dynamics_value(self, states, actions, value_targets,
                               lr: float = 3e-4, value_coef: float = 1.0

@@ -310,6 +310,30 @@ class AdaptConfig(common_utils.RunConfig):
     # only), the value learns from failures too -> the RL-like "avoid bad states"
     # signal. When on, Stage-3 trains dynamics + value.
     adapt_value: int = 0
+    # Which stage-3 heads train. "dyn" = dynamics only (the default pipeline,
+    # equivalent to adapt_value=0); "value" = value head only, dynamics FROZEN;
+    # "both" = the joint update (equivalent to adapt_value=1). Exists so the
+    # update-order ablation -- value-then-dynamics vs dynamics-then-value vs
+    # jointly (docs/on-policy-adaptation.md 2) -- can be run as three arms of one
+    # script instead of three forks. "" = defer to adapt_value, so every existing
+    # config reproduces bit-for-bit.
+    adapt_mode: str = ""
+    # Weights-only warm start ON TOP of stage1_ckpt, for the second phase of a
+    # sequential ablation: phase A writes latest.pt, phase B passes it here while
+    # keeping the SAME --stage1_ckpt (the config, env and heads all come from
+    # stage-1; only the tensors are replaced). Loading it as --stage1_ckpt would
+    # not work -- that path reads dirname/cfg.yaml as a MainConfig and an adapt
+    # run writes an AdaptConfig there.
+    init_ckpt: str = ""
+    # "Marginal" value parameterisation for the value head, from
+    # scripts/square_value_iter.py's --arm residual:
+    #     V(z) = V_frozen(z).detach() + marginal_value_scale * mlp(z)
+    # with the mlp's last layer zero-init, so day 0 is bit-identical to the
+    # distilled V and every later change is an explicit, penalisable departure
+    # rather than a free refit. Only meaningful when the value head trains.
+    marginal_value: int = 0
+    marginal_value_scale: float = 1.0
+    marginal_value_hidden: int = 256
     # dynamics adapt loss: "mse"(latent 一致性, 原样) | "vaml"(只惩罚影响 value 评估的误差,
     # ||V(next(z,a))-sg V(encode(s'))||^2)。只在 adapt_value=0 时生效。用于"只改 loss"对照。
     dyn_loss: str = "mse"
@@ -434,6 +458,20 @@ class AdaptWorkspace:
         self.agent = self.ws.agent
         print(f"loading stage-1 ckpt: {cfg.stage1_ckpt}")
         self.agent.load_state_dict(torch.load(cfg.stage1_ckpt))
+        if cfg.init_ckpt:
+            # Phase B of a sequential ablation: same architecture and config as
+            # stage-1, tensors from a finished adapt run. Strict load on purpose --
+            # a shape mismatch here means the two phases disagree about the model,
+            # which would silently produce a half-warm-started run.
+            print(f"[adapt] init_ckpt (weights-only warm start): {cfg.init_ckpt}")
+            self.agent.load_state_dict(torch.load(cfg.init_ckpt))
+        if cfg.marginal_value:
+            # AFTER both loads: the residual is new parameters that no checkpoint
+            # carries, and attaching it first would make those loads non-strict.
+            self.agent.model.attach_value_residual(
+                hidden=cfg.marginal_value_hidden, scale=cfg.marginal_value_scale)
+            print(f"[adapt] marginal value ON: V = V_base.detach() + "
+                  f"{cfg.marginal_value_scale} * mlp(z) (zero-init => day-0 identical)")
         self.agent = self.agent.to("cuda")
 
         self.eval_env = self.ws.eval_env                 # TARGET env (eval_domain_shift)
@@ -934,6 +972,14 @@ class AdaptWorkspace:
             self.agent.planner.cfg.dynamics_disagree_coef = prev_coef
         pbar.close()
 
+    def _adapt_mode(self) -> str:
+        """"dyn" | "value" | "both" -- explicit adapt_mode wins, else adapt_value."""
+        m = (self.cfg.adapt_mode or "").strip().lower()
+        if m:
+            assert m in ("dyn", "value", "both"), f"bad adapt_mode {m!r}"
+            return m
+        return "both" if self.cfg.adapt_value else "dyn"
+
     def _train_dynamics(self):
         if self._total_transitions < self.cfg.dyn_start_transitions:
             print(f"[adapt] buffer {self._total_transitions} < "
@@ -945,8 +991,27 @@ class AdaptWorkspace:
                   "skipping dynamics update this round")
             return
         self.agent.train()
+        mode = self._adapt_mode()
         for _ in range(self.cfg.dyn_update_steps):
-            if self.cfg.adapt_value:
+            if mode == "value":
+                # Value head ONLY, dynamics frozen -- the phase that makes
+                # "value-then-dynamics" different from running the joint arm twice.
+                # Reuses the existing head-ablation updater; the MC return-to-go
+                # targets are [B, H+1], so both are flattened to per-state.
+                s, _a, _, vt = self.adapt_replay.sample(
+                    self.cfg.adapt_batch_size, self.H, "cuda",
+                    return_value=True, discount=self.base_cfg.discount,
+                    recency_alpha=self.cfg.recency_alpha)
+                self.stat.append(self.agent.update_value_only(
+                    s.reshape(-1, s.shape[-1]), vt.reshape(-1), lr=self.cfg.dyn_lr))
+            elif mode == "both" and self.cfg.marginal_value:
+                s, a, _, vt = self.adapt_replay.sample(
+                    self.cfg.adapt_batch_size, self.H, "cuda",
+                    return_value=True, discount=self.base_cfg.discount,
+                    recency_alpha=self.cfg.recency_alpha)
+                self.stat.append(self.agent.update_dynamics_residual_value(
+                    s, a, vt, lr=self.cfg.dyn_lr, value_coef=self.cfg.value_coef))
+            elif mode == "both":
                 s, a, _, vt = self.adapt_replay.sample(
                     self.cfg.adapt_batch_size, self.H, "cuda",
                     return_value=True, discount=self.base_cfg.discount,

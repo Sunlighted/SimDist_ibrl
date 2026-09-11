@@ -171,6 +171,14 @@ case $ARM in
         ANCHOR_PATH=release/data/mimicgen/coffee_anchor_pool_4k/dataset.hdf5 ;;
   *) echo "unknown arm '$ARM' (expected sq_* or cof_*)"; exit 1 ;;
 esac
+# The value-adapt ablation gets its own PER-TASK wandb project (see
+# job_threading_margin.sh). Per task, not one shared project: comparing the five
+# arms WITHIN a task is the question; Square and Coffee scores do not belong on
+# the same chart. Override with VALABL_DIR.
+case $ARM in
+  sq_valabl_*)  EXP_DIR=${VALABL_DIR:-exps/valabl_square} ;;
+  cof_valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_coffee} ;;
+esac
 OUT=$EXP_DIR/${ARM}${SUFFIX:-}_seed${SEED}
 
 for f in "$DEMOS"; do
@@ -213,6 +221,59 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  sq_valabl_dyn|sq_valabl_joint|sq_valabl_v2d|sq_valabl_d2v|sq_valabl_marg|cof_valabl_dyn|cof_valabl_joint|cof_valabl_v2d|cof_valabl_d2v|cof_valabl_marg)
+    # ---- value-adapt ablation (docs/on-policy-adaptation.md 2) --------------
+    #   valabl_dyn     (i)   dynamics only          -- the existing pipeline
+    #   valabl_joint   (ii)  value + dynamics, 100k, together
+    #   valabl_v2d     (iii) value 100k THEN dynamics 100k
+    #   valabl_d2v     (iv)  dynamics 100k THEN value 100k
+    #   valabl_marg    (v)   marginal (residual) value + dynamics, 100k
+    #
+    # Every arm shares this run's stage-1, demos, planner and eval; the only thing
+    # that varies is which heads move and in what order. The sequential arms run
+    # BOTH phases inside one job (2 x 100k ~= 4.6h) -- phase A writes into
+    # $OUT.phaseA and phase B warm-starts from it via --init_ckpt while keeping
+    # --stage1_ckpt, since that path reads dirname/cfg.yaml as a MainConfig and an
+    # adapt run writes an AdaptConfig there.
+    #
+    # ⚠️ (v) fits its residual by MSE on Monte-Carlo returns while (ii)-(iv) use
+    # the value head's two-hot CE. That is inherent: the head is categorical
+    # (discrete_heads=1, 101 bins) and a scalar residual has no logit-space
+    # counterpart, so the residual sits on the DECODED scalar -- exactly the
+    # quantity MPPI ranks with. Read (v) against (ii) knowing the loss differs.
+    #
+    # ⚠️ Expected outcome is negative: on-policy-adaptation 2 already measured all
+    # three orders collapsing on Threading, and findings 33 gives the mechanism
+    # (MPPI's whole candidate-discrimination signal is std_i(gamma^H V)=0.0068).
+    # This batch is the three-task confirmation, not a search.
+    # Square needs its planner trust region; Coffee uses defaults (see sq_plain).
+    case $ARM in sq_*) VA_PSET='--planner_set init_std=0.15,base_policy_std=0.0' ;;
+                 *)    VA_PSET='' ;; esac
+    VA_COMMON="--stage1_ckpt $STAGE1_PLAIN --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.0 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 $VA_PSET"
+    case $ARM in
+      *_dyn)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode dyn   --max_transitions 100000 ;;
+      *_joint) $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode both  --max_transitions 100000 ;;
+      *_marg)  $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode both  --marginal_value 1 --max_transitions 100000 ;;
+      *_v2d)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT.phaseA \
+                 --adapt_mode value --max_transitions 100000 \
+               && $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode dyn   --max_transitions 100000 \
+                 --init_ckpt $OUT.phaseA/latest.pt ;;
+      *_d2v)   $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT.phaseA \
+                 --adapt_mode dyn   --max_transitions 100000 \
+               && $PY train_simdist_adapt.py $VA_COMMON --save_dir $OUT \
+                 --adapt_mode value --max_transitions 100000 \
+                 --init_ckpt $OUT.phaseA/latest.pt ;;
+    esac ;;
   sq_plain_d600000|sq_plain_d400000|cof_plain)
     # SimDist MPPI adapt on the single-head stage-1 -- the PLANNING reference the
     # dyna/model-free arms are measured against. Deliverable IS the planner, so
