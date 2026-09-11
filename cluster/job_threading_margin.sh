@@ -391,17 +391,42 @@ case $ARM in
     # Categories 2 and 3 of the old split are merged: both ask "anchor toward
     # what, measured on which data", and anch_es_dat is the cell where they meet.
     #
-    # ⚠️⚠️ THE COEFFICIENTS BELOW ARE NOT CALIBRATED FOR THIS HARNESS.
-    # Every value comes from Phase 0 of simdist 43/44c, which ran on the
-    # SINGLE-head stage-1 at 40k with collect_disagree_coef 0 and the demo pinned
-    # to s201. D_SRC(lambda) depends on the stage-2 starting point, i.e. on the
-    # stage-1 policy head -- so on the 5-head stage-1 these lambdas land at
-    # DIFFERENT working points and the comparison would conflate form with
-    # strength, which is the one thing 43 was built to avoid (its gotcha #1:
-    # F5 first ran 1400x too strong because saturating stiffness is lambda/tau).
-    # Run the calibration grid FIRST:
-    #     CAL=1 ... --array=...        (stage-2 + round-0 only, ~8 min/cell)
-    # then set ANCH_<ARM>_COEF from the lambda whose D_SRC matches F1's.
+    # ---- CALIBRATED on THIS harness, 2026-09-11 (28 cells, exps/anchor_cal) ----
+    # Rebuild with: bash scripts/calibrate_anchor_forms.sh
+    #               python scripts/report_anchor_cal.py exps/anchor_cal
+    # Each cell = stage-2 + round-0 only (~8 min). Target = F1's working point on
+    # the 5-HEAD stage-1: D_SRC 0.0265, bc_loss 0.01069. (simdist 43 measured
+    # 0.0246 / 0.00993 on the single-head one -- 8% apart, which is why the
+    # published lambdas could not simply be reused.)
+    #
+    #   form    lambda   D_SRC    bc_loss   vs F1 bc_loss
+    #   F1      1.0      0.0265   0.01069   --          (= dynens_h5_slow_anchor)
+    #   f5      0.013    0.0266   0.01081   +1%
+    #   es_src  1.0      0.0267   0.01046   -2%
+    #   f4a     0.3      0.0273   0.01139   +7%
+    #   f3l2    0.25     0.0231   0.03477   +225%   <- the Fisher-vs-identity cost;
+    #                                                  simdist 43 measured +3.4x on
+    #                                                  the single-head stage-1, so
+    #                                                  3.25x here is an independent
+    #                                                  reproduction of that constant
+    #   es_dat  30       0.0287   0.03108   +191%   (8% off target, best reachable)
+    #   f4b     100      0.0302   0.02579   +141%   (eps 0.20 is looser than the
+    #                                                typical deviation, so the hinge
+    #                                                barely binds and D_SRC floors
+    #                                                near 0.030 regardless of lambda)
+    #
+    # ⚠️ TWO FORMS CANNOT REACH THE WORKING POINT AT ALL -- this is a property of
+    # the form, not a calibration failure, and their closed-loop score must be
+    # reported as "measured at a different D_SRC", never as "this form is worse":
+    #   f2wd  floor 0.2036 (7.7x target), falling only slowly with wd
+    #         (1e-5 -> 0.2777, 1e-4 -> 0.2443, 1e-3 -> 0.2036). Mechanism: theta->0
+    #         => a->0, and the distance from the zero action to pi_src is
+    #         mean|pi_src(s)| = 0.3420 (printed by [anchor]). A generic capacity
+    #         control cannot produce a policy NEAR pi_src.
+    #   dat   floor 0.1530 (5.8x target) over lambda 0.3..3 -- reproducing the
+    #         0.151 floor simdist 44 measured independently. Note es_dat REACHES
+    #         0.0287: restricting the pool to expert AND success steps removes the
+    #         floor, which is exactly 44c's finding.
     # ============================================================================
     CAL=${CAL:-0}
     if [ "$CAL" = 1 ]; then
@@ -413,14 +438,14 @@ case $ARM in
       CAL_ARGS=(--max_transitions 100000)
     fi
     case $ARM in
-      anch_f2wd)   A=(--bc_anchor_coef 0.0 --bc_weight_decay ${ANCH_WD:-1e-4} --bc_measure_dsrc 1) ;;
+      anch_f2wd)   A=(--bc_anchor_coef 0.0 --bc_weight_decay ${ANCH_WD:-1e-3} --bc_measure_dsrc 1) ;;
       anch_f3l2)   A=(--bc_anchor_coef 0.0 --bc_l2init_coef ${ANCH_L2:-0.25} --bc_measure_dsrc 1) ;;
-      anch_f4a)    A=(--bc_anchor_coef ${ANCH_F4A:-0.5}   --bc_anchor_eps 0.05) ;;
+      anch_f4a)    A=(--bc_anchor_coef ${ANCH_F4A:-0.3}   --bc_anchor_eps 0.05) ;;
       anch_f4b)    A=(--bc_anchor_coef ${ANCH_F4B:-100}   --bc_anchor_eps 0.20) ;;
       anch_f5)     A=(--bc_anchor_coef ${ANCH_F5:-0.013}  --bc_anchor_sat 0.03) ;;
-      anch_dat)    A=(--bc_anchor_coef ${ANCH_DAT:-0.3}   --bc_anchor_data_actions 1) ;;
-      anch_es_src) A=(--bc_anchor_coef ${ANCH_ES:-0.3}    --bc_anchor_expert_only 1 --bc_anchor_success_only 1) ;;
-      anch_es_dat) A=(--bc_anchor_coef ${ANCH_ES:-0.3}    --bc_anchor_expert_only 1 --bc_anchor_success_only 1 \
+      anch_dat)    A=(--bc_anchor_coef ${ANCH_DAT:-3.0}   --bc_anchor_data_actions 1) ;;
+      anch_es_src) A=(--bc_anchor_coef ${ANCH_ES_SRC:-1.0} --bc_anchor_expert_only 1 --bc_anchor_success_only 1) ;;
+      anch_es_dat) A=(--bc_anchor_coef ${ANCH_ES_DAT:-30}  --bc_anchor_expert_only 1 --bc_anchor_success_only 1 \
                       --bc_anchor_data_actions 1) ;;
       *) echo "unknown anchor arm '$ARM'"; exit 1 ;;
     esac

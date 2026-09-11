@@ -43,6 +43,8 @@ CELLS=(
   "f3l2_0.1|--bc_anchor_coef 0.0 --bc_l2init_coef 0.1 --bc_measure_dsrc 1"
   "f3l2_0.25|--bc_anchor_coef 0.0 --bc_l2init_coef 0.25 --bc_measure_dsrc 1"
   "f3l2_1.0|--bc_anchor_coef 0.0 --bc_l2init_coef 1.0 --bc_measure_dsrc 1"
+  "f4a_0.15|--bc_anchor_coef 0.15 --bc_anchor_eps 0.05"
+  "f4a_0.3|--bc_anchor_coef 0.3 --bc_anchor_eps 0.05"
   "f4a_0.5|--bc_anchor_coef 0.5 --bc_anchor_eps 0.05"
   "f4a_2|--bc_anchor_coef 2 --bc_anchor_eps 0.05"
   "f4a_10|--bc_anchor_coef 10 --bc_anchor_eps 0.05"
@@ -60,6 +62,8 @@ CELLS=(
   "es_dat_0.3|--bc_anchor_coef 0.3 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_1.0|--bc_anchor_coef 1.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_3.0|--bc_anchor_coef 3.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
+  "es_dat_10|--bc_anchor_coef 10 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
+  "es_dat_30|--bc_anchor_coef 30 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
 )
 
 run_cell() {  # run_cell <gpu> <tag> <flags...>
