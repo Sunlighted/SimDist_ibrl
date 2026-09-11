@@ -1,0 +1,10 @@
+dynens_nobc 1
+dynens_nobc 101
+dynens_nobc 201
+dynens_nobc 301
+dynens_nobc 401
+dynens_nobc 501
+dynens_nobc 601
+dynens_nobc 701
+dynens_nobc 801
+dynens_nobc 901

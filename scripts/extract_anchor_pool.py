@@ -35,6 +35,13 @@ def main():
     ap.add_argument("dst")
     ap.add_argument("--episodes", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
+    # _build_bc_anchor reads only obs/state by default, but three knobs need more:
+    #   bc_anchor_data_actions=1  -> `actions` (the regression target)
+    #   bc_anchor_expert_only=1   -> `expert_flags` (asserts the key exists)
+    #   bc_anchor_success_only=1  -> the per-episode `success` attribute
+    # Off by default so the existing state-only extracts stay byte-identical.
+    ap.add_argument("--with_actions", type=int, default=0)
+    ap.add_argument("--with_expert_flags", type=int, default=0)
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.dst), exist_ok=True)
@@ -49,7 +56,8 @@ def main():
             d = g.create_group("data")
             total = 0
             for j, i in enumerate(pick):
-                st = np.asarray(f[f"data/{keys[i]}"]["obs"]["state"], dtype=np.float32)
+                src_ep = f[f"data/{keys[i]}"]
+                st = np.asarray(src_ep["obs"]["state"], dtype=np.float32)
                 # Renumber to demo_0..demo_{n-1}: the loader only needs the keys to
                 # sort by their integer suffix, and dense numbering keeps it obvious
                 # that this file is a derived subset, not the original indices.
@@ -57,12 +65,31 @@ def main():
                 g_ep.create_group("obs").create_dataset("state", data=st,
                                                         compression="gzip",
                                                         compression_opts=4)
+                if args.with_actions:
+                    g_ep.create_dataset(
+                        "actions",
+                        data=np.asarray(src_ep["actions"], dtype=np.float32),
+                        compression="gzip", compression_opts=4)
+                if args.with_expert_flags:
+                    assert "expert_flags" in src_ep, \
+                        f"{args.src} has no expert_flags -- cannot build an " \
+                        f"expert-subset pool from it"
+                    g_ep.create_dataset(
+                        "expert_flags", data=np.asarray(src_ep["expert_flags"]),
+                        compression="gzip", compression_opts=4)
+                # success is an ATTRIBUTE, and bc_anchor_success_only reads it with
+                # a default of False -- so it must be carried or every episode is
+                # silently dropped.
+                g_ep.attrs["success"] = bool(src_ep.attrs.get("success", False))
+                g_ep.attrs["num_samples"] = int(len(st))
                 total += len(st)
                 if (j + 1) % 500 == 0:
                     print(f"  {j + 1}/{n} episodes, {total} states", flush=True)
             d.attrs["num_demos"] = n
             d.attrs["source_file"] = os.path.abspath(args.src)
             d.attrs["extract_seed"] = args.seed
+            d.attrs["with_actions"] = int(args.with_actions)
+            d.attrs["with_expert_flags"] = int(args.with_expert_flags)
     size = os.path.getsize(args.dst) / 1e6
     print(f"[extract] wrote {args.dst}: {n} episodes, {total} states, {size:.0f} MB")
 

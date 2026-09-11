@@ -1,0 +1,8 @@
+anch_f2wd 1
+anch_f3l2 1
+anch_f4a 1
+anch_f4b 1
+anch_f5 1
+anch_dat 1
+anch_es_src 1
+anch_es_dat 1

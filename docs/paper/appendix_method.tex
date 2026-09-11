@@ -1,0 +1,219 @@
+\section{Method details}
+\label{app:method}
+
+\subsection{Algorithm}
+\label{app:algorithm}
+
+SimOAED runs in three stages. Stage~1 happens entirely in the source domain and
+is paid for once. Stages~2 and 3 are the adaptation proper and are the only
+parts that consume the target budget of Def.~\ref{def:budget}.
+
+\paragraph{Stage 1: distil the source into a world model (source domain, no
+target data).}
+We first train an IBRL agent to convergence in the source simulator, which gives
+us an expert policy $\pi_s$ and its critic $Q_s$. We then roll out that expert
+together with a set of weaker checkpoints saved along its training curve, and
+collect a large replay of source trajectories. Using both the expert and the
+weaker policies matters: a dataset collected by a single converged policy covers
+a narrow tube of states, and the world model is later asked about states outside
+that tube.
+
+We then distil this replay into a latent world model with four heads --- an
+encoder, a dynamics head, a reward head and a value head --- plus a policy head
+that clones the expert's actions. All of them are trained jointly with the
+multi-step loss of Eq.~\ref{eq:simdist-distill}: the model encodes a state,
+rolls its dynamics forward $H$ steps in latent space, and at each step is asked
+to predict the next latent, the reward, the value and the action. The value
+targets are relabelled by the frozen source critic, so the value head learns
+$V^{\pi_s}$ rather than a return estimate from sparse rewards.
+
+Two details of this stage are load-bearing. The dynamics head is an
+\emph{ensemble} of $K$ heads that share the encoder but are independently
+initialised and trained on independent bootstrap subsets of each batch, so they
+disagree off the data manifold. And the gradient of the policy-cloning term is
+stopped before it reaches the encoder, so the policy cannot reshape the latent
+space that the dynamics depends on.
+
+\paragraph{Stage 2: warm up the proposal on target demonstrations, anchored to
+the source.}
+Stage~2 is offline: it uses the $n \le 20$ target demonstrations and no target
+interaction. We fine-tune only the policy head, minimising the cloning loss on
+the demonstrations plus the source-anchor penalty of Eq.~\ref{eq:anchor}. The
+encoder, the dynamics, the reward and the value heads are all frozen.
+
+The anchor is what makes this stage safe. The demonstrations are few enough that
+an unregularised fit revisits them for hundreds of effective epochs, which pulls
+the policy far away from the states where the frozen dynamics and value are
+still accurate. The anchor pool is a fixed set of source states with
+$\pi_s$'s actions precomputed on them, so the penalty costs no target
+interaction and adds no wall-clock beyond one extra forward pass per step.
+
+\paragraph{Stage 3: repair the dynamics on the agent's own distribution (target
+domain, the budget).}
+Stage~3 alternates collection and dynamics fitting in rounds. In each round the
+agent acts in the target environment with the MPPI planner for a fixed number of
+transitions, appends them to a replay buffer, and then takes a number of
+gradient steps on the dynamics heads only --- using the same latent-consistency
+loss as stage~1, restricted to the dynamics term. The encoder, the reward head,
+the value head and the policy head all stay frozen for the entire stage.
+
+Collection uses an optimistic variant of the planner: the return is augmented
+with a bonus proportional to the cross-head disagreement, so the agent steers
+toward states where its ensemble is uncertain and therefore where the fit has
+the most to gain. Evaluation always uses the plain planner with no such bonus.
+
+Freezing the value here is a decision, not an omission: Sec.~\ref{sec:planner-adapt}
+shows that adapting it degrades the system in every update order we tried.
+Freezing the policy head is what makes the loop on-policy in the sense that
+matters --- the states the dynamics is fitted on are exactly the states the
+deployed controller will visit, because the controller that collected them is
+the controller that will be evaluated.
+
+\begin{algorithm}[h]
+\caption{SimOAED}
+\label{alg:simoaed}
+\begin{algorithmic}[1]
+\Require source simulator $\mathcal{M}_s$, target simulator $\mathcal{M}_t$,
+         target demonstrations $\mathcal{D}_t$, budget $N$
+\Statex \textbf{Stage 1 --- source distillation}
+\State train an IBRL expert $(\pi_s, Q_s)$ in $\mathcal{M}_s$
+\State collect source replay $\mathcal{D}_s$ with $\pi_s$ \emph{and} weaker checkpoints of it
+\State distil $\{E_\theta, \hat p_\theta^{1..K}, \hat r_\theta, \hat V_\theta, \pi_\theta\}$
+       on $\mathcal{D}_s$ with Eq.~\ref{eq:simdist-distill}; relabel values with $Q_s$
+\State build anchor pool $\mathcal{B} = \{(s, \pi_s(s))\}$ from $\mathcal{D}_s$, frozen
+\Statex \textbf{Stage 2 --- proposal warm-up (offline, no target interaction)}
+\State fine-tune $\pi_\theta$ only, on $\mathcal{D}_t$ with the $\mathcal{B}$-anchor (Eq.~\ref{eq:anchor})
+\Statex \textbf{Stage 3 --- dynamics repair (spends the budget)}
+\State $\mathcal{R} \gets \mathcal{D}_t$; \; $t \gets 0$
+\While{$t < N$}
+  \State collect $m$ transitions in $\mathcal{M}_t$ with MPPI, ensemble-mean rollout,
+         optimistic disagreement bonus; append to $\mathcal{R}$; \; $t \gets t + m$
+  \State take $u$ gradient steps on $\hat p_\theta^{1..K}$ only, latent-consistency
+         loss on $\mathcal{R}$ \Comment{$E_\theta, \hat r_\theta, \hat V_\theta, \pi_\theta$ frozen}
+\EndWhile
+\State \Return planner using $\{E_\theta, \hat p_\theta^{1..K}, \hat r_\theta, \hat V_\theta, \pi_\theta\}$, no bonus
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Model structure}
+\label{app:model}
+
+Every component is a small MLP; there are no convolutions and no recurrence,
+because all of our tasks are state-based.
+
+The \textbf{encoder} maps the raw state to a $512$-dimensional latent. Its output
+passes through SimNorm~\citep{hansen2024tdmpc2}, which splits the latent into
+groups of $8$ and applies a softmax within each group. This keeps every latent on
+a fixed simplex, which is what prevents the magnitude drift that otherwise
+accumulates over a multi-step rollout.
+
+The \textbf{dynamics} is an ensemble of $K$ heads, each taking the latent and the
+action and predicting the next latent, again SimNorm'd. The heads are separate
+MLPs over a shared encoder. At planning time the rollout advances on their mean;
+the spread across heads is used only as the collection bonus of stage~3.
+
+The \textbf{reward} and \textbf{value} heads are MLPs on the latent (and the
+action, for reward). Both predict a distribution over $101$ bins spanning
+$[-10, 10]$ rather than a scalar, and are trained with a two-hot cross-entropy.
+The scalar used by the planner is the expectation under that distribution.
+
+The \textbf{policy head} maps the latent to an action. It shares the encoder with
+the dynamics, but the cloning gradient is stopped before the encoder, so it reads
+the latent without shaping it.
+
+A small \textbf{decoder} maps a latent back to a state. It is trained on
+detached encodings only, so it inverts the encoder without influencing it. The
+planner does not need it when the policy shares the encoder, which is our default
+configuration.
+
+\subsection{Hyperparameters}
+\label{app:hparams}
+
+Table~\ref{tab:app-hparams} lists the settings. They are shared across all four
+manipulation tasks except for the planner's search parameters, which we re-tune
+per task --- we found them not to transfer, including between a learned and an
+oracle dynamics model, and we report the swept values in
+Table~\ref{tab:app-planner}.
+
+\begin{table}[h]
+\centering
+\caption{SimOAED hyperparameters. Shared across tasks unless noted.}
+\label{tab:app-hparams}
+\small
+\begin{tabular}{llc}
+\toprule
+Stage & Parameter & Value \\
+\midrule
+\multirow{12}{*}{1 (distillation)}
+ & latent dimension & $512$ \\
+ & SimNorm group size & $8$ \\
+ & MLP hidden size / layers & $512$ / $2$ \\
+ & rollout horizon $H$ & $5$ \\
+ & per-step loss discount $\rho$ & $0.5$ \\
+ & dynamics ensemble size $K$ & $5$ \\
+ & reward/value bins, range & $101$, $[-10, 10]$ \\
+ & loss weights (dyn.\ / rew.\ / val.\ / BC / dec.) & $20$ / $0.1$ / $0.1$ / $10$ / $1$ \\
+ & learning rate & $3\times10^{-4}$ \\
+ & batch size & $256$ \\
+ & gradient steps & $800$k \\
+ & source replay size & $\sim$$55$k episodes \\
+\midrule
+\multirow{4}{*}{2 (proposal warm-up)}
+ & target demonstrations $n$ & $20$ \\
+ & gradient steps & $1000$ \\
+ & learning rate, batch size & $3\times10^{-4}$, $256$ \\
+ & anchor coefficient $\lambda$ & $0.1$--$1.0$ (task-dependent) \\
+ & anchor pool & $40$k states from $2000$ source episodes \\
+\midrule
+\multirow{6}{*}{3 (dynamics repair)}
+ & target budget $N$ & $100$k transitions \\
+ & transitions per round $m$ & $1000$ \\
+ & dynamics steps per round $u$ & $1000$ \\
+ & learning rate, batch size & $3\times10^{-4}$, $256$ \\
+ & collection disagreement bonus & $0.5$ \\
+ & adapted components & dynamics heads only \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{MPPI search parameters. \texttt{init\_std} and the base-policy noise
+were re-swept per task; the remaining entries are the same everywhere.}
+\label{tab:app-planner}
+\small
+\begin{tabular}{lc}
+\toprule
+Parameter & Value \\
+\midrule
+candidate sequences per iteration & $350$ ($100$ from the proposal, $250$ random) \\
+planning horizon & $5$ \\
+CEM iterations & $3$ \\
+elites & $64$ \\
+softmax temperature & $0.4$ \\
+discount & $0.99$ \\
+initial std / minimum std & $0.15$--$1.0$ (swept) / $0.05$ \\
+base-policy noise std & $0$--$0.1$ (swept) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% PROVENANCE: every number above was read out of a cfg.yaml of a run that is
+% actually reported, not from a dataclass default:
+%   stage 1  exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/cfg.yaml
+%   stage 2+3 exps/square_rotw1_6arm/sq_dynens_anch_d400000_seed2/cfg.yaml
+%
+% TODO(check): lambda is 0.1 in the Square run above but ~1.0 in the Coffee and
+% Threading recipes. Fill the per-task column before submission -- the table
+% currently hides a real per-task difference behind a range.
+% TODO(check): init_std is 0.15 in the Square adapt run (planner_set override)
+% but 1.0 in the "original MPPI" recipe the adapt script applies first. State
+% the FINAL value per task; the override order (original_mppi, then planner_set)
+% is a known source of confusion.
+% TODO(check): stage-1 gradient steps (800k) and source replay size are from the
+% Threading cfg. Verify they are the same for the other three tasks; if not,
+% split the row per task rather than quoting one.
+% TODO(algo): Alg.~\ref{alg:simoaed} needs \usepackage{algorithm} +
+% \usepackage{algpseudocode} in the preamble.
+% ---------------------------------------------------------------------------

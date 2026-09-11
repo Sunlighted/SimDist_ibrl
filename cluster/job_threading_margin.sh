@@ -368,6 +368,111 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  anch_*)
+    # ============ anchor-loss ablation, all relative to dynens_h5_slow_anchor ===
+    # That group IS the full method and already has 10 seeds (0.971 +- 0.005):
+    # 5-head stage-1, source anchor coef 1.0, sat_160000 per-seed demos, 100k,
+    # collect_disagree_coef 0.5. Every arm here copies it field-for-field and
+    # changes ONE thing -- the additional loss term. So the F1 cell of the table
+    # is the existing group; do not re-run it.
+    #
+    # The arms (docs/simdist.md 43 / 44 / 44c):
+    #   anch_f2wd     Adam weight_decay on the policy head   -- NOT a divergence,
+    #                 the attractor is theta=0. Phase 0 measured its D_SRC floor
+    #                 at 0.2045 (8.3x the working point) and RISING with wd, so it
+    #                 is structurally unable to reach the operating point; run
+    #                 closed-loop anyway to have the number rather than an argument.
+    #   anch_f3l2     c*||theta - theta_src||^2  -- KL with Fisher replaced by I
+    #   anch_f4a/f4b  hinge relu(d-eps)^2        -- hard trust region (TRPO)
+    #   anch_f5       1-exp(-d^2/tau)            -- Hellinger^2, saturating
+    #   anch_dat      target = dataset-recorded action instead of pi_src(s)
+    #   anch_es_src   anchor pool = expert AND success steps, target pi_src
+    #   anch_es_dat   the same pool, target = raw expert actions
+    # Categories 2 and 3 of the old split are merged: both ask "anchor toward
+    # what, measured on which data", and anch_es_dat is the cell where they meet.
+    #
+    # ⚠️⚠️ THE COEFFICIENTS BELOW ARE NOT CALIBRATED FOR THIS HARNESS.
+    # Every value comes from Phase 0 of simdist 43/44c, which ran on the
+    # SINGLE-head stage-1 at 40k with collect_disagree_coef 0 and the demo pinned
+    # to s201. D_SRC(lambda) depends on the stage-2 starting point, i.e. on the
+    # stage-1 policy head -- so on the 5-head stage-1 these lambdas land at
+    # DIFFERENT working points and the comparison would conflate form with
+    # strength, which is the one thing 43 was built to avoid (its gotcha #1:
+    # F5 first ran 1400x too strong because saturating stiffness is lambda/tau).
+    # Run the calibration grid FIRST:
+    #     CAL=1 ... --array=...        (stage-2 + round-0 only, ~8 min/cell)
+    # then set ANCH_<ARM>_COEF from the lambda whose D_SRC matches F1's.
+    # ============================================================================
+    CAL=${CAL:-0}
+    if [ "$CAL" = 1 ]; then
+      # Calibration: stage-2 + the round-0 eval only. max_transitions 0 makes
+      # n_rounds 0, and bc_measure_dsrc prints D_SRC even for arms whose anchor
+      # coef is 0 (f2wd).
+      CAL_ARGS=(--max_transitions 0 --bc_measure_dsrc 1)
+    else
+      CAL_ARGS=(--max_transitions 100000)
+    fi
+    case $ARM in
+      anch_f2wd)   A=(--bc_anchor_coef 0.0 --bc_weight_decay ${ANCH_WD:-1e-4} --bc_measure_dsrc 1) ;;
+      anch_f3l2)   A=(--bc_anchor_coef 0.0 --bc_l2init_coef ${ANCH_L2:-0.25} --bc_measure_dsrc 1) ;;
+      anch_f4a)    A=(--bc_anchor_coef ${ANCH_F4A:-0.5}   --bc_anchor_eps 0.05) ;;
+      anch_f4b)    A=(--bc_anchor_coef ${ANCH_F4B:-100}   --bc_anchor_eps 0.20) ;;
+      anch_f5)     A=(--bc_anchor_coef ${ANCH_F5:-0.013}  --bc_anchor_sat 0.03) ;;
+      anch_dat)    A=(--bc_anchor_coef ${ANCH_DAT:-0.3}   --bc_anchor_data_actions 1) ;;
+      anch_es_src) A=(--bc_anchor_coef ${ANCH_ES:-0.3}    --bc_anchor_expert_only 1 --bc_anchor_success_only 1) ;;
+      anch_es_dat) A=(--bc_anchor_coef ${ANCH_ES:-0.3}    --bc_anchor_expert_only 1 --bc_anchor_success_only 1 \
+                      --bc_anchor_data_actions 1) ;;
+      *) echo "unknown anchor arm '$ARM'"; exit 1 ;;
+    esac
+    # All arms read the SAME pool file so the state distribution is identical
+    # across the table. threading_anchor_pool_ex4k is a 159 MB extract of the
+    # 4.3 GB source-diverse set carrying obs/state + actions + expert_flags + the
+    # per-episode success attr -- i.e. everything the anchor knobs touch
+    # (state-only extracts cannot serve anch_es_* : bc_anchor_expert_only asserts
+    # expert_flags exists, and bc_anchor_success_only reads an attribute that
+    # defaults to False, silently dropping every episode).
+    # Verified on a 2000-episode draw: expert AND success yields 63977 states
+    # (15.0%, matching simdist 44c's 14.6%) > the 40000 bc_anchor_states needs.
+    # The FULL source-diverse set, same file the existing 10-seed
+    # dynens_h5_slow_anchor baseline used -- so every cell of the table draws its
+    # anchor states from the same pool. simdist 44c measured that shrinking the
+    # anchor's state coverage costs -0.123, so pool provenance is not a detail:
+    # a 4000-episode extract would put the new arms on a different footing from
+    # the F1 baseline. ANCH_PATH can point at an extract for a cheap smoke test.
+    APATH=${ANCH_PATH:-release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5}
+    [ -f "$APATH" ] || { echo "MISSING anchor source: $APATH"; exit 1; }
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      "${A[@]}" --bc_anchor_path $APATH "${CAL_ARGS[@]}" \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynens_nobc)
+    # Completes the stage-2 three-way ON THE ACTUAL METHOD (5-head stage-1),
+    # where the other two cells already have 10 seeds:
+    #   dynens_h5_slow_anchor  BC + source anchor   0.971 +- 0.005
+    #   dynens_h5_slow         BC, no anchor        0.888 +- 0.015
+    #   dynens_nobc (this)     no stage-2 at all
+    # Harness copied field-for-field from dynens_h5_slow -- same 5-head stage-1,
+    # sat_160000, 20 demos, 100k, eval_every_rounds 5, 100 episodes,
+    # original_mppi 1, AND collect_disagree_coef 0.5 (the dynens arms collect with
+    # the geometric-disagreement penalty; the plain arms cannot, a single head has
+    # no disagreement). Only --bc_steps 0 differs.
+    #
+    # ⚠️ The plain_nobc/plain_anch arms below are the same three-way on the
+    # SINGLE-head stage-1. Per simdist 44 the anchor is worth +0.055 there vs
+    # +0.172 on dynens (interaction t=4.2), so the two three-ways answer
+    # different questions -- do not merge them into one table row.
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      --bc_steps 0 \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   plain_nobc|plain_anch)
     # Stage-2 ablation on the PLANNING reference, all three arms otherwise
     # identical to plain_h5 (same single-head stage-1, same sat_160000 demos,

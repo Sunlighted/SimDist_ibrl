@@ -237,11 +237,25 @@ def main():
     # ----------------------------------------------------------- diagnostics
     print(common_utils.wrap_ruler("CRITIC QUALITY DIAGNOSTICS (go/no-go gate)"))
     critic.eval(); vf.eval()
-    with torch.no_grad():
-        v_demo = vf(demo["s"]).cpu().numpy()
-        q_demo = critic(demo["s"], demo["a"]).min(-1).values.cpu().numpy()
-        v_roll = vf(roll["s"]).cpu().numpy()
-        q_roll = critic(roll["s"], roll["a"]).min(-1).values.cpu().numpy()
+
+    def _chunked(fn, *tensors, bs: int = 65536):
+        """Evaluate fn over a big tensor in slices.
+
+        The rollout set is the whole offline buffer -- 2.1M transitions on TPA --
+        and a single 5-head critic forward over it asked for 40 GB and OOMed
+        AFTER training had finished and the checkpoint was already saved. The
+        diagnostics are a read-only gate, so the batch size is free to pick.
+        """
+        out = []
+        with torch.no_grad():
+            for i in range(0, len(tensors[0]), bs):
+                out.append(fn(*[t[i:i + bs] for t in tensors]).cpu())
+        return torch.cat(out).numpy()
+
+    v_demo = _chunked(vf, demo["s"])
+    q_demo = _chunked(lambda s, a: critic(s, a).min(-1).values, demo["s"], demo["a"])
+    v_roll = _chunked(vf, roll["s"])
+    q_roll = _chunked(lambda s, a: critic(s, a).min(-1).values, roll["s"], roll["a"])
 
     print(f"[A] range   V(demo) [{v_demo.min():.3f}, {v_demo.max():.3f}]  "
           f"Q(demo) [{q_demo.min():.3f}, {q_demo.max():.3f}]")

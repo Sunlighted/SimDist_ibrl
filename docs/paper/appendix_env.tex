@@ -1,0 +1,102 @@
+\subsection{Environmental details}
+\label{app:env}
+
+\paragraph{Sim-to-sim tasks.}
+We use four contact-rich manipulation tasks from MimicGen~\citep{mandlekar2023mimicgen}
+--- Threading, Square, Coffee and ThreePieceAssembly --- and one locomotion task
+from IsaacLab~\citep{mittal2023orbit}. All five are simulated, which is what lets
+us run several hundred evaluation episodes per condition and, more importantly,
+run the same controller with the \emph{true} target simulator in place of the
+learned model (the oracle-dynamics arm of Sec.~\ref{sec:planner-adapt}). Neither
+is possible on hardware.
+
+Each task gives us a source domain and a target domain. The source domain is the
+nominal simulator as shipped. The target domain is the same simulator with a
+fixed perturbation applied to its physical parameters: we scale object mass and
+inertia, the sliding friction of the manipulated object and of the fixture it
+must be inserted into, the stiffness of the gripper actuator, and the geometric
+clearance of the insertion. The task, the assets, the observation space and the
+success predicate are untouched. This is a deliberate choice: because the two
+domains differ only in physics, a policy that fails after transfer fails for a
+dynamics reason and not because it is looking at a different scene or being
+scored by a different rule.
+
+Two consequences of that choice are worth stating explicitly. First, the success
+predicate is a fixed geometric tolerance on the object pose and is \emph{not}
+re-derived from the perturbed model, so shrinking an insertion clearance makes
+the task physically harder without quietly redefining what counts as a success.
+Second, the object's initial pose is drawn from the same distribution in both
+domains, so the gap is not a perception or registration problem in disguise.
+
+\paragraph{Target domain settings.}
+Table~\ref{tab:app-targets} lists the perturbation for each task. Every entry is
+a multiplicative scale on the corresponding field of the MuJoCo model, so
+$1.0$ means unchanged. The scales were chosen per task to produce a large but
+not insurmountable drop: the frozen source expert loses most of its success rate
+in the target domain, while a policy trained directly in the target domain can
+still solve the task, which is what makes the remaining gap attributable to
+adaptation rather than to task difficulty.
+
+\begin{table}[h]
+\centering
+\caption{Target-domain physical perturbations. Values are multiplicative scales
+on the nominal simulator ($1.0$ = unchanged; \texttt{---} = not applicable to
+that task). ``fixture friction'' and ``clearance'' refer to the part the object
+is inserted into --- the ring for Threading, the peg for Square, the pod holder
+for Coffee, and the base hole for ThreePieceAssembly. $\sigma$ is the standard
+deviation of a Gaussian perturbation added to the robot's initial joint
+configuration, applied identically in both domains.}
+\label{tab:app-targets}
+\small
+\begin{tabular}{lcccc}
+\toprule
+ & Threading & Square & Coffee & ThreePiece \\
+\midrule
+object mass \& inertia      & $3.0$   & ---     & $8.0$   & ---     \\
+object friction             & $0.5$   & ---     & $0.2$   & ---     \\
+fixture friction            & $2.0$   & $2.0$   & $5.0$   & $2.0$   \\
+insertion clearance         & $0.85$  & $1.2$\textsuperscript{$\dagger$} & --- & $0.96$ \\
+gripper stiffness           & $0.12$  & $0.3$   & $0.3$   & $0.25$  \\
+lid hinge damping           & ---     & ---     & $5.0$   & ---     \\
+\midrule
+episode length              & $400$   & $400$   & $400$   & $1000$  \\
+initial-pose noise $\sigma$ & $0.1$   & $0.1$   & $0.1$   & $0$     \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textsuperscript{$\dagger$}For Square the scale is applied to the peg rather
+than to the hole, so a value \emph{above} one shrinks the clearance; the effect
+is the same as the sub-one scales elsewhere in that row.
+
+Square additionally restricts the square nut's initial yaw to $120$--$180^{\circ}$
+in both domains. This is a narrower initial distribution than the default full
+circle, and it is applied to the source and the target alike; it makes the task
+tractable within our interaction budget without changing the gap between the two
+domains. The other three tasks use the benchmark's default initial distribution.
+
+% ---------------------------------------------------------------------------
+% TODO(locomotion): the IsaacLab target is not fixed yet. When it is, add a
+% short paragraph here rather than a fifth column -- the knobs are not the same
+% quantities (no insertion clearance, no gripper) and forcing them into one
+% table would invent correspondences that do not exist. State at minimum: which
+% robot, which terrain/command distribution, what is perturbed in the target,
+% the episode length, and whether the budget is counted in environment steps or
+% in transitions (IsaacLab runs massively parallel environments, so "100k
+% transitions" is not the same operating point as in the MimicGen tasks).
+%
+% TODO(consistency): ThreePieceAssembly currently runs with sigma = 0 while the
+% other three use sigma = 0.1, and its episodes are 1000 steps rather than 400.
+% Both are real differences in the setup, not typos -- either align them before
+% the camera-ready or keep the row in the table as it is now. Do not silently
+% report it as "the same protocol across four tasks".
+%
+% SOURCE OF TRUTH for every number above: the eval_domain_shift block of each
+% task's SimDist stage-1 cfg.yaml, which is the env the adaptation runs actually
+% instantiate (docs/infra.md 13). Threading:
+% threading_simdist_dynens_diversev2_h5_seed1; Square:
+% square_simdist_rotw1_dynens_h5_seed1; Coffee: coffee_s1g5x_dynens; TPA:
+% tpa_simdist_diversev1_h5_seed1. Note Coffee has a second, older stage-1 with a
+% DIFFERENT target (C50) whose directory name does not say so -- re-verify
+% against stage1_ckpt, never against a directory name.
+% ---------------------------------------------------------------------------
