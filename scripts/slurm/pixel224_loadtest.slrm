@@ -1,0 +1,68 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix224_load
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=180G
+#SBATCH --time=1:59:00
+#SBATCH --output=logs/pix224_load_%j.out
+#SBATCH --error=logs/pix224_load_%j.out
+# No GPU: this measures HOST RAM and hdf5 load time only.
+#
+# Before committing a 200G ask and ~35 h of L40S to the real 224 run, measure
+# what the buffer actually costs. The pixel buffer is CPU-RAM resident, so RAM --
+# not disk -- is what bounds `seq_replay_max_transitions`, and stage-1 self-chunks
+# (it RELOADS the replay every chunk), so load time is paid 3x.
+#
+# Extrapolates from 2 shards to the 8-shard target.
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"; source set_env_drac.sh
+python - <<'PY'
+import glob, os, time, resource
+import torch
+from rl.sequence_replay import SequenceReplayBuffer, load_source_replay_to_sequence_buffer, JpegFrames
+
+shards = sorted(glob.glob("/scratch/yifanr/simdist/data/thr_d0_src_pix224/shard_*/dataset.hdf5"))
+use = shards[:2]
+print(f"{len(shards)} shards on disk; loading {len(use)}")
+for s in use:
+    print(f"  {s}  {os.path.getsize(s)/1e9:.1f} GB")
+
+cams = ("agentview", "robot0_eye_in_hand")
+buf = SequenceReplayBuffer(max_episodes=200000, device="cpu",
+                           image_keys=cams, max_transitions=0)
+t0 = time.time()
+for s in use:
+    load_source_replay_to_sequence_buffer(buf, s, num_data=-1, reward_scale=1.0)
+dt = time.time() - t0
+rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6   # GB on Linux (KB units)
+n = buf.num_transitions()
+print(f"\nloaded {buf.size()} episodes / {n} transitions in {dt/60:.1f} min")
+print(f"peak RSS {rss:.1f} GB  =>  {rss*1e9/max(n,1):.0f} B/transition resident")
+
+# a JpegFrames episode should be 2 objects per camera, not one per frame
+ep = buf.episodes[0]
+o = ep["obs"][cams[0]]
+print(f"frame store: {type(o).__name__}, {len(o)} frames, "
+      f"{o.nbytes_encoded()/1e6:.1f} MB encoded, blob objects=1")
+assert isinstance(o, JpegFrames), "expected JPEG store -- did the codec attr survive?"
+
+# decode a real batch and time it
+torch.manual_seed(0)
+dev = "cpu"
+t0 = time.time()
+for _ in range(3):
+    out = buf.sample(64, horizon=5, device=dev, return_obs=True)
+print(f"sample(64,H=5) CPU decode: {(time.time()-t0)/3*1000:.0f} ms/batch "
+      f"(GPU nvJPEG measured 110 ms/step at batch 256)")
+imgs = out[-1][cams[0]]
+print(f"decoded batch: {tuple(imgs.shape)} {imgs.dtype}")
+assert imgs.shape[-1] == 224, f"expected 224 frames, got {imgs.shape}"
+
+per_shard = n / len(use)
+for target in (4_000_000, 8_000_000, 18_000_000):
+    print(f"  {target/1e6:>4.0f}M transitions => {rss*1e9/max(n,1)*target/1e9:6.0f} GB RSS, "
+          f"{dt/n*target/60:5.1f} min to load")
+print(f"\n8 shards would total ~{per_shard*8/1e6:.1f}M transitions")
+PY
+echo "loadtest rc=$?"

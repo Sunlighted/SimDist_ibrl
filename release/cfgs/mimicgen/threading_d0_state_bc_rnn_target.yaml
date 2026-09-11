@@ -6,7 +6,7 @@
 # Head/hparams identical to threading_d0_state_bc_rnn.yaml (open-loop RNN, K=5
 # GMM, low_noise_eval, lr=1e-3); only the data + in-training eval domain change.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 10        # = Tp (matches MimicGen seq_length=10)
   build_state_chunk: 0      # open-loop RNN; doesn't need state_chunk

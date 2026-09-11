@@ -10,7 +10,7 @@
 # Reference (robomimic v0.5): low_dim BC-RNN-GMM uses lr=1e-3, batch=100,
 # rnn_hidden_dim=400, seq_length=10. We keep those values.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 10        # = Tp (matches MimicGen seq_length=10)
   build_state_chunk: 0      # open-loop RNN; doesn't need state_chunk

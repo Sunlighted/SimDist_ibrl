@@ -42,7 +42,9 @@ from tqdm import tqdm
 import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
+from env.robosuite_wrapper import PROP_DIM
 from rl.sequence_replay import SequenceReplayBuffer, load_demos_to_sequence_buffer
+from rl.sequence_replay import read_frames_array, HISTORY_KEY
 from train_simdist import MainConfig, Workspace
 
 
@@ -63,6 +65,10 @@ class AdaptConfig(common_utils.RunConfig):
     # dynamics adapt to a higher MPPI ceiling than the weak 20-demo policy (~0.40).
     target_demo_path: Optional[str] = None
     target_num_data: Optional[int] = None
+    # ★ DISJOINT demo draw per seed. None = inherit stage-1 (which defaults to 0 =
+    # the legacy "first N"). §48 uses 0/20/40/60/80 over the 200-episode pool so
+    # the 5 adapt seeds do NOT all train on the same 20 demos.
+    target_demo_offset: Optional[int] = None
     # SOURCE ANCHOR on stage-2 (0.0 = OFF => legacy path byte-identical). Adds
     # `bc_anchor_coef * MSE(pi_theta(s_src), pi_src(s_src))` on SOURCE states, with
     # pi_src's actions captured BEFORE stage-2 begins. Makes the policy's distance
@@ -72,6 +78,10 @@ class AdaptConfig(common_utils.RunConfig):
     # DIRECTED way: the demo term still fully fits the target actions where the
     # demos live, the anchor only pins states the demos never cover.
     bc_anchor_coef: float = 0.0
+    # Stage-2 escape hatch for the PIXEL arm (findings.md §30): also train the
+    # encoder during BC. Requires bc_anchor_coef=0 (a cached latent anchor pool
+    # goes stale the moment the encoder moves).
+    bc_train_encoder: int = 0
     bc_anchor_path: str = "release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5"
     bc_anchor_episodes: int = 2000   # source episodes to sample the anchor states from
     bc_anchor_states: int = 40000    # anchor pool size
@@ -466,6 +476,8 @@ class AdaptWorkspace:
             self.base_cfg.state_only_no_render = 1
             print("[adapt] state_only_no_render = 1 (no offscreen GL context)")
         self.ws = Workspace(self.base_cfg, from_main=False)
+        self._hist_k = int(getattr(self.base_cfg.simdist.world_model,
+                                   "history_length", 0) or 0)
         self.agent = self.ws.agent
         print(f"loading stage-1 ckpt: {cfg.stage1_ckpt}")
         self.agent.load_state_dict(torch.load(cfg.stage1_ckpt))
@@ -534,7 +546,7 @@ class AdaptWorkspace:
         # Applied to BOTH the collection env (self.eval_env) and the mp-eval params.
         if cfg.needle_scale != 1.0:
             from env.domain_shift import InitDistConfig
-            from env.robosuite_wrapper import PixelRobosuite
+            from env.robosuite_wrapper import PixelRobosuite, PROP_DIM
             PI = 3.141592653589793
             s = cfg.needle_scale
             ncx, ncy, nhx, nhy = -0.125, 0.2, 0.075 * s, 0.05 * s
@@ -561,13 +573,23 @@ class AdaptWorkspace:
         if cfg.target_num_data is not None:
             self.base_cfg.target_num_data = cfg.target_num_data
             print(f"[adapt] override target_num_data = {cfg.target_num_data}")
+        if cfg.target_demo_offset is not None:
+            self.base_cfg.target_demo_offset = cfg.target_demo_offset
+        # ALWAYS logged (not just when overridden) so every run is auditable:
+        # a silent 0 here is exactly the failure mode this flag exists to prevent.
+        print(f"[adapt] target_demo_offset = "
+              f"{getattr(self.base_cfg, 'target_demo_offset', 0)}  "
+              f"(draw = demos [{getattr(self.base_cfg, 'target_demo_offset', 0)}, "
+              f"{getattr(self.base_cfg, 'target_demo_offset', 0) + self.base_cfg.target_num_data}))")
 
         # --- TARGET demos (stage-2 BC) ---
-        self.demo_replay = SequenceReplayBuffer(max_episodes=10000, device="cpu")
+        self.demo_replay = SequenceReplayBuffer(
+            max_episodes=10000, device="cpu", image_keys=self._img_keys)
         load_demos_to_sequence_buffer(
             self.demo_replay, self.base_cfg.target_demo_path,
             num_data=self.base_cfg.target_num_data,
             reward_scale=self.base_cfg.env_reward_scale,
+            demo_offset=getattr(self.base_cfg, "target_demo_offset", 0),
         )
         assert self.demo_replay.can_sample(self.H), "no TARGET demo >= horizon"
 
@@ -592,8 +614,10 @@ class AdaptWorkspace:
 
         # --- TARGET rollout buffer (stage-3 dynamics adaptation) ---
         self.adapt_replay = SequenceReplayBuffer(
+            image_keys=self._img_keys,
             max_episodes=cfg.adapt_buffer_max_episode, device="cpu")
         self._obs = None  # persistent rollout episode state (see _collect)
+        self._anchor_is_latent = False   # set by _build_source_anchor (pixel)
         self._total_transitions = 0  # for the self-distill warmup gate
 
         # dump the resolved adapt cfg
@@ -630,6 +654,44 @@ class AdaptWorkspace:
         return float(np.mean(scores))
 
     # -------------------------------------------------- stage 2: policy BC
+
+    # ------------------------------------------------------------------ pixel
+    @property
+    def _img_keys(self) -> tuple:
+        """Cameras to carry in the adapt buffers. () on the state arm."""
+        if self.base_cfg.use_state:
+            return ()
+        return tuple(self.ws.rl_cameras)
+
+    def _wm_obs(self, states, sampled_obs):
+        """What the world model consumes. State arm: the tensor. Pixel arm: an obs
+        dict of uint8 frames + prop, with prop sliced from the SAME state tensor
+        (its first 9 dims are PROP_KEYS) so it stays index-aligned with the frames.
+        The raw state tensor is still used wherever a STATE quantity is needed."""
+        if self.base_cfg.use_state:
+            return states
+        assert sampled_obs is not None, "pixel arm needs sample(return_obs=True)"
+        obs = dict(sampled_obs)
+        # HISTORY: when the buffer supplied one, it REPLACES the bare 9-d prop --
+        # the encoder's prop_dim was sized for it (rl/history.py). Otherwise the
+        # legacy slice. Never both.
+        if HISTORY_KEY in obs:
+            obs["prop"] = obs.pop(HISTORY_KEY)
+        else:
+            obs["prop"] = states[..., :PROP_DIM]
+        return obs
+
+    @staticmethod
+    def _cat_obs(a, b, n_keep):
+        """torch.cat([a[:n_keep], b], 0) for a tensor OR an obs dict (per key)."""
+        if isinstance(a, dict):
+            return {k: torch.cat([a[k][:n_keep], b[k]], 0) for k in a}
+        return torch.cat([a[:n_keep], b], 0)
+
+    def _pack_obs(self, env_obs):
+        """The per-step obs dict to hand the replay buffer during collection."""
+        return {k: env_obs[k] for k in self._img_keys} if self._img_keys else None
+
     def _build_source_anchor(self):
         """Sample SOURCE states and snapshot pi_src's actions on them BEFORE stage-2
         touches the policy head. Returns (states, frozen pi_src actions) or (None,
@@ -641,57 +703,156 @@ class AdaptWorkspace:
             return None, None, None, None
         import h5py
         rng = np.random.RandomState(self.cfg.seed)
+        cams = self._img_keys
         want_data = bool(self.cfg.bc_anchor_data_actions)
+        if cams:
+            # The PIXEL anchor pool is a cached LATENT pool, so every state-space
+            # anchor variant below (dataset-action targets, provenance subsets,
+            # source-agent targets, the held-out D_SRC controller) has no meaning
+            # on it -- fail loudly instead of silently ignoring the flag.
+            assert not (want_data or self.cfg.bc_anchor_expert_only
+                        or self.cfg.bc_anchor_success_only
+                        or self.cfg.bc_anchor_source_agent
+                        or self.cfg.bc_anchor_target_dsrc > 0
+                        or self.cfg.bc_anchor_holdout), (
+                "state-arm anchor variants are not supported on the PIXEL arm "
+                "(cached latent pool); leave them at their defaults")
+        S_hold = hold = None
         with h5py.File(self.cfg.bc_anchor_path, "r") as f:
             keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
-            # When the D_SRC controller is on, draw once and split: the held-out
-            # episodes are disjoint from the anchor's by construction. n_hold=0 keeps
-            # `pick` bit-identical to the legacy draw (same rng, same call, same size).
-            n_hold = (self.cfg.bc_anchor_holdout_episodes
-                      if (self.cfg.bc_anchor_target_dsrc > 0
-                          or self.cfg.bc_anchor_holdout) else 0)
-            n_take = min(self.cfg.bc_anchor_episodes + n_hold, len(keys))
-            take = rng.choice(len(keys), n_take, replace=False)
-            hold, pick = take[:n_hold], take[n_hold:]
-            # held-out pool: ALWAYS the full uniform draw (never provenance-subset),
-            # so D_SRC keeps one fixed meaning across every arm.
-            S_hold = (np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
-                                      for i in hold]) if n_hold else None)
-            sub = bool(self.cfg.bc_anchor_expert_only or self.cfg.bc_anchor_success_only)
-            if not sub:
+            if cams:
+                pick = rng.choice(len(keys), min(self.cfg.bc_anchor_episodes, len(keys)),
+                                  replace=False)
                 S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
                                     for i in pick])
-                # (axis 2) the dataset's own actions at those states. In this dataset
-                # state and action arrays are the SAME length per episode (verified),
-                # so the concatenation is aligned index-for-index with S and the state
-                # pool is IDENTICAL to the legacy arm -- the target is the only change.
-                A = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["actions"])
-                                    for i in pick]) if want_data else None
-            else:
-                Ss, As, n_tot = [], [], 0
-                for i in pick:
-                    g = f[f"data/{keys[i]}"]
-                    st = np.asarray(g["obs"]["state"], dtype=np.float32)
-                    ac = np.asarray(g["actions"], dtype=np.float32)
-                    n = min(len(st), len(ac)); n_tot += n
-                    st, ac = st[:n], ac[:n]
-                    if self.cfg.bc_anchor_success_only and not bool(
-                            g.attrs.get("success", False)):
+                sel = None
+                if len(S) > self.cfg.bc_anchor_states:
+                    sel = rng.choice(len(S), self.cfg.bc_anchor_states, replace=False)
+                # PIXEL: the pool must live in the space the policy consumes. Store
+                # LATENTS, not frames: 40k x 2 x 27 KB = 2.2 GB of images (8.9 GB as
+                # float) would otherwise be re-encoded every BC step, versus
+                # 40k x latent_dim x 4 B ~= 82 MB encoded ONCE. Exact because the
+                # encoder is frozen in stage 2 and deterministic.
+                # Read ONLY the frames the subsample keeps. Materialising every
+                # frame of all `bc_anchor_episodes` first and indexing afterwards
+                # is 108 GB of host RAM at 224x224x3x2cam x 2000 episodes -- it
+                # OOMs the node before the encoder is reached. At 96 it was ~2 GB
+                # and the waste was invisible.
+                per = [np.asarray(f[f"data/{keys[i]}"]["obs"]["state"]).shape[0]
+                       for i in pick]
+                offs = np.concatenate([[0], np.cumsum(per)])
+                gidx = np.arange(len(S)) if sel is None else np.sort(sel)
+                ep_of = np.searchsorted(offs, gidx, side="right") - 1
+                parts = {c: [] for c in cams}
+                hist_parts = []          # HISTORY, aligned row-for-row with S
+                for e in range(len(pick)):
+                    rows = gidx[ep_of == e] - offs[e]
+                    if rows.size == 0:
                         continue
-                    keep = np.ones(n, bool)
-                    if self.cfg.bc_anchor_expert_only:
-                        assert "expert_flags" in g, \
-                            f"{self.cfg.bc_anchor_path} has no expert_flags"
-                        keep &= np.asarray(g["expert_flags"])[:n].astype(bool)
-                    if keep.any():
-                        Ss.append(st[keep]); As.append(ac[keep])
-                assert Ss, "anchor provenance subset is empty"
-                S = np.concatenate(Ss)
-                A = np.concatenate(As) if want_data else None
-                print(f"[anchor-subset] expert_only={self.cfg.bc_anchor_expert_only} "
-                      f"success_only={self.cfg.bc_anchor_success_only} | "
-                      f"{len(S)}/{n_tot} transitions kept "
-                      f"({100 * len(S) / max(1, n_tot):.1f}%)")
+                    ep = f[f"data/{keys[pick[e]]}"]
+                    g = ep["obs"]
+                    for c in cams:
+                        parts[c].append(read_frames_array(g[f"{c}_image"], idx=rows))
+                    if self._hist_k > 0:
+                        # The anchor pool is encoded through the SAME frozen
+                        # encoder, so its prop slot must be the history vector,
+                        # not the bare 9-d prop -- otherwise the shapes disagree
+                        # (and if they ever did agree, the anchor would pin the
+                        # policy using a DIFFERENT input convention).
+                        from rl.history import build_batch
+                        _st = np.asarray(g["state"], dtype=np.float32)
+                        _ac = np.asarray(ep["actions"], dtype=np.float32)
+                        _pe = torch.from_numpy(_st[:, :PROP_DIM])
+                        _ae = torch.from_numpy(_ac)
+                        for _r in rows:
+                            hist_parts.append(
+                                build_batch(_pe, _ae, int(_r), 0, self._hist_k)[0])
+                frames = {c: np.concatenate(v) for c, v in parts.items()}
+                HIST = torch.stack(hist_parts) if hist_parts else None
+                S = S[gidx]          # keep states aligned with the frames read
+                sel = None           # subsample already applied
+            else:
+                # When the D_SRC controller is on, draw once and split: the held-out
+                # episodes are disjoint from the anchor's by construction. n_hold=0 keeps
+                # `pick` bit-identical to the legacy draw (same rng, same call, same size).
+                n_hold = (self.cfg.bc_anchor_holdout_episodes
+                          if (self.cfg.bc_anchor_target_dsrc > 0
+                              or self.cfg.bc_anchor_holdout) else 0)
+                n_take = min(self.cfg.bc_anchor_episodes + n_hold, len(keys))
+                take = rng.choice(len(keys), n_take, replace=False)
+                hold, pick = take[:n_hold], take[n_hold:]
+                # held-out pool: ALWAYS the full uniform draw (never provenance-subset),
+                # so D_SRC keeps one fixed meaning across every arm.
+                S_hold = (np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
+                                          for i in hold]) if n_hold else None)
+                sub = bool(self.cfg.bc_anchor_expert_only or self.cfg.bc_anchor_success_only)
+                if not sub:
+                    S = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["obs"]["state"])
+                                        for i in pick])
+                    # (axis 2) the dataset's own actions at those states. In this dataset
+                    # state and action arrays are the SAME length per episode (verified),
+                    # so the concatenation is aligned index-for-index with S and the state
+                    # pool is IDENTICAL to the legacy arm -- the target is the only change.
+                    A = np.concatenate([np.asarray(f[f"data/{keys[i]}"]["actions"])
+                                        for i in pick]) if want_data else None
+                else:
+                    Ss, As, n_tot = [], [], 0
+                    for i in pick:
+                        g = f[f"data/{keys[i]}"]
+                        st = np.asarray(g["obs"]["state"], dtype=np.float32)
+                        ac = np.asarray(g["actions"], dtype=np.float32)
+                        n = min(len(st), len(ac)); n_tot += n
+                        st, ac = st[:n], ac[:n]
+                        if self.cfg.bc_anchor_success_only and not bool(
+                                g.attrs.get("success", False)):
+                            continue
+                        keep = np.ones(n, bool)
+                        if self.cfg.bc_anchor_expert_only:
+                            assert "expert_flags" in g, \
+                                f"{self.cfg.bc_anchor_path} has no expert_flags"
+                            keep &= np.asarray(g["expert_flags"])[:n].astype(bool)
+                        if keep.any():
+                            Ss.append(st[keep]); As.append(ac[keep])
+                    assert Ss, "anchor provenance subset is empty"
+                    S = np.concatenate(Ss)
+                    A = np.concatenate(As) if want_data else None
+                    print(f"[anchor-subset] expert_only={self.cfg.bc_anchor_expert_only} "
+                          f"success_only={self.cfg.bc_anchor_success_only} | "
+                          f"{len(S)}/{n_tot} transitions kept "
+                          f"({100 * len(S) / max(1, n_tot):.1f}%)")
+        if cams:
+            if sel is not None:
+                S = S[sel]
+                frames = {c: v[sel] for c, v in frames.items()}
+            # Encode chunk must scale with RESOLUTION, not be a constant: 2048
+            # frames x 2 cameras is ~2.5 GB of float input at 224 (plus ResNet
+            # activations) and OOMs an L40S. 2048 was tuned at 96x96; hold
+            # chunk*H*W roughly constant.
+            _h, _w = frames[cams[0]].shape[-2:]
+            _chunk = max(64, int(2048 * (96 * 96) / max(_h * _w, 1)))
+            print(f"[anchor] encoding {len(S)} states at {_h}x{_w} in chunks of {_chunk}")
+            with torch.no_grad():
+                zs, tg = [], []
+                for i in range(0, len(S), _chunk):
+                    ob = {c: torch.as_tensor(v[i:i + _chunk], device="cuda")
+                          for c, v in frames.items()}
+                    ob["prop"] = (HIST[i:i + _chunk].to("cuda") if HIST is not None
+                                  else torch.as_tensor(S[i:i + _chunk, :PROP_DIM],
+                                                       dtype=torch.float32, device="cuda"))
+                    z = self.agent.model.encode(ob)
+                    zs.append(z)
+                    tg.append(self.agent.model.policy(z))
+            pool, tgt = torch.cat(zs), torch.cat(tg)
+            print(f"[anchor] PIXEL latent pool: {len(pool)} x {pool.shape[-1]} "
+                  f"({pool.numel() * 4 / 1e6:.0f} MB) encoded once")
+            self._anchor_is_latent = True
+            print(f"[anchor] coef={self.cfg.bc_anchor_coef} | {len(pick)} source "
+                  f"episodes -> {len(pool)} states | pi_src targets frozen "
+                  f"(|a| mean {float(tgt.abs().mean()):.4f})")
+            self._anchor_holdout = None
+            # ref == tgt: the pixel anchor always regresses onto pi_src itself, and
+            # the far-weighting (axis 2) is defined on STATE distances -> uniform.
+            return pool, tgt, tgt, None
         if len(S) > self.cfg.bc_anchor_states:
             j = rng.choice(len(S), self.cfg.bc_anchor_states, replace=False)
             S = S[j]
@@ -831,26 +992,75 @@ class AdaptWorkspace:
             return None, None, None
         import h5py
         rng = np.random.RandomState(self.cfg.seed)
+        cams = self._img_keys
         S, A = [], []
+        FR = {c: [] for c in cams}
         with h5py.File(self.cfg.dyn_anchor_path, "r") as f:
             keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
             pick = rng.choice(len(keys), min(self.cfg.dyn_anchor_episodes, len(keys)),
                               replace=False)
+            # PASS 1: states/actions only (small). Frames are read in PASS 2,
+            # AFTER the subsample, so we never materialise every frame of every
+            # episode -- 108 GB of host RAM at 224x224x3 x 2 cameras x 2000
+            # episodes, versus ~2 GB at 96 where the waste was invisible.
+            per = []
             for i in pick:
                 g = f[f"data/{keys[i]}"]
                 st = np.asarray(g["obs"]["state"], dtype=np.float32)
                 ac = np.asarray(g["actions"], dtype=np.float32)
                 n = min(len(st), len(ac))
-                S.append(st[:n]); A.append(ac[:n])
-        S = np.concatenate(S); A = np.concatenate(A)
-        if len(S) > self.cfg.dyn_anchor_states:
-            j = rng.choice(len(S), self.cfg.dyn_anchor_states, replace=False)
-            S, A = S[j], A[j]
+                S.append(st[:n]); A.append(ac[:n]); per.append(n)
+            S = np.concatenate(S); A = np.concatenate(A)
+            gidx = np.arange(len(S))
+            if len(S) > self.cfg.dyn_anchor_states:
+                gidx = np.sort(rng.choice(len(S), self.cfg.dyn_anchor_states,
+                                          replace=False))
+                S, A = S[gidx], A[gidx]
+            # PASS 2: read ONLY the kept rows, per episode.
+            if cams:
+                offs = np.concatenate([[0], np.cumsum(per)])
+                ep_of = np.searchsorted(offs, gidx, side="right") - 1
+                dyn_hist = []
+                for e in range(len(pick)):
+                    rows = gidx[ep_of == e] - offs[e]
+                    if rows.size == 0:
+                        continue
+                    ep = f[f"data/{keys[pick[e]]}"]
+                    g = ep["obs"]
+                    for c in cams:
+                        FR[c].append(read_frames_array(g[f"{c}_image"], idx=rows))
+                    if self._hist_k > 0:
+                        from rl.history import build_batch
+                        _pe = torch.from_numpy(
+                            np.asarray(g["state"], dtype=np.float32)[:, :PROP_DIM])
+                        _ae = torch.from_numpy(np.asarray(ep["actions"], dtype=np.float32))
+                        for _r in rows:
+                            dyn_hist.append(
+                                build_batch(_pe, _ae, int(_r), 0, self._hist_k)[0])
+                FR = {c: np.concatenate(v) for c, v in FR.items()}
+                DHIST = torch.stack(dyn_hist) if dyn_hist else None
         s_t = torch.as_tensor(S, device="cuda")
         a_t = torch.as_tensor(A, device="cuda")
         with torch.no_grad():
-            z = torch.cat([self.agent.model.encode(s_t[i:i + 8192])
-                           for i in range(0, len(s_t), 8192)])
+            if cams:
+                # PIXEL: encode frames (+prop from the same state rows) ONCE. This
+                # anchor was ALREADY latent-cached on the state arm for exactly this
+                # reason -- the encoder is frozen for the whole adapt -- so the pixel
+                # version only changes what gets encoded, not the caching argument.
+                # chunk scales with RESOLUTION (see _build_source_anchor)
+                _h, _w = FR[cams[0]].shape[-2:]
+                _chunk = max(64, int(2048 * (96 * 96) / max(_h * _w, 1)))
+                zs = []
+                for i in range(0, len(s_t), _chunk):
+                    ob = {c: torch.as_tensor(v[i:i + _chunk], device="cuda")
+                          for c, v in FR.items()}
+                    ob["prop"] = (DHIST[i:i + _chunk].to("cuda") if DHIST is not None
+                                  else s_t[i:i + _chunk, :PROP_DIM])
+                    zs.append(self.agent.model.encode(ob))
+                z = torch.cat(zs)
+            else:
+                z = torch.cat([self.agent.model.encode(s_t[i:i + 8192])
+                               for i in range(0, len(s_t), 8192)])
             tgt = torch.cat([self.agent.model.next(z[i:i + 8192], a_t[i:i + 8192])
                              for i in range(0, len(z), 8192)])
         print(f"[dyn-anchor] coef={self.cfg.dyn_anchor_coef} | {len(pick)} source "
@@ -897,8 +1107,11 @@ class AdaptWorkspace:
                                         self.cfg.bc_anchor_lam_min,
                                         self.cfg.bc_anchor_lam_max))
                 self.stat.append({"bc/lam": lam, "bc/D_SRC_holdout": d_now})
-            states, actions, _ = self.demo_replay.sample(
-                self.cfg.bc_batch_size, self.H, "cuda")
+            _w = bool(self._img_keys)
+            _s = self.demo_replay.sample(
+                self.cfg.bc_batch_size, self.H, "cuda", return_obs=_w, history=self._hist_k)
+            states, actions = _s[0], _s[1]
+            bc_obs = self._wm_obs(states, _s[-1] if _w else None)
             a_s = a_a = None
             if anchor_pool is not None and lam > 0:
                 if anchor_w is None:
@@ -909,13 +1122,15 @@ class AdaptWorkspace:
                                           replacement=True)
                 a_s, a_a = anchor_pool[j], anchor_tgt[j]
             metrics = self.agent.update_bc_policy(
-                states, actions, lr=self.cfg.bc_lr,
+                bc_obs, actions, lr=self.cfg.bc_lr,
                 anchor_states=a_s, anchor_actions=a_a,
                 anchor_coef=lam,
                 anchor_eps=self.cfg.bc_anchor_eps,
                 anchor_sat=self.cfg.bc_anchor_sat,
                 l2init_coef=self.cfg.bc_l2init_coef,
-                weight_decay=self.cfg.bc_weight_decay)
+                weight_decay=self.cfg.bc_weight_decay,
+                anchor_is_latent=self._anchor_is_latent,
+                train_encoder=bool(self.cfg.bc_train_encoder))
             self.stat.append(metrics)
             pbar.update(1)
             if (step + 1) % max(self.cfg.bc_steps // 10, 1) == 0:
@@ -928,7 +1143,10 @@ class AdaptWorkspace:
             # 0.0246/0.0182 for lambda=0/0.1/1/3 vs the tabulated 0.2354/0.0517/
             # 0.0248/0.0179). This is the axis F1..F4 are matched on.
             with torch.no_grad():
-                cur = torch.cat([self.agent.model.policy_action(anchor_pool[i:i + 8192])
+                # the PIXEL pool is already ENCODED -> `policy`, not `policy_action`
+                _pf = (self.agent.model.policy if self._anchor_is_latent
+                       else self.agent.model.policy_action)
+                cur = torch.cat([_pf(anchor_pool[i:i + 8192])
                                  for i in range(0, len(anchor_pool), 8192)])
                 d = cur - anchor_ref          # ALWAYS measured against pi_src
                 d_src = float(d.abs().mean())
@@ -958,7 +1176,8 @@ class AdaptWorkspace:
         episodes spanning a round boundary are not discarded."""
         if self._obs is None:  # first call: start the first episode
             self._obs, _ = self.eval_env.reset()
-            self.adapt_replay.new_episode(self._obs["state"])
+            self.adapt_replay.new_episode(self._obs["state"],
+                                          obs=self._pack_obs(self._obs))
         collected = 0
         pbar = tqdm(total=n_transitions, desc="collect (target MPPI)",
                     dynamic_ncols=True, mininterval=1.0, leave=False)
@@ -974,12 +1193,15 @@ class AdaptWorkspace:
                     # MPPI action (use_planner forced on); deterministic planning
                     action = self.agent.act(self._obs, eval_mode=True, stddev=0.0, cpu=True)
                     self._obs, reward, terminal, success, _ = self.eval_env.step(action)
-                    self.adapt_replay.add(self._obs["state"], action, reward, terminal, success)
+                    self.adapt_replay.add(
+                        self._obs["state"], action, reward, terminal, success,
+                        next_obs=self._pack_obs(self._obs))
                     collected += 1
                     pbar.update(1)
                     if terminal:
                         self._obs, _ = self.eval_env.reset()
-                        self.adapt_replay.new_episode(self._obs["state"])
+                        self.adapt_replay.new_episode(self._obs["state"],
+                                          obs=self._pack_obs(self._obs))
         finally:
             self.agent.planner.cfg.dynamics_disagree_coef = prev_coef
         pbar.close()
@@ -1032,11 +1254,15 @@ class AdaptWorkspace:
                     s, a, vt, lr=self.cfg.dyn_lr, value_coef=self.cfg.value_coef))
             else:
                 B = self.cfg.adapt_batch_size
-                states, actions, _ = self.adapt_replay.sample(
-                    B, self.H, "cuda", recency_alpha=self.cfg.recency_alpha)
+                _w3 = bool(self._img_keys)
+                _s3 = self.adapt_replay.sample(
+                    B, self.H, "cuda", recency_alpha=self.cfg.recency_alpha,
+                    return_obs=_w3, history=self._hist_k)
+                states, actions = _s3[0], _s3[1]
+                wm_obs = self._wm_obs(states, _s3[-1] if _w3 else None)
                 if self.cfg.dyn_loss == "vaml":
                     self.stat.append(self.agent.update_dynamics_vaml(
-                        states, actions, lr=self.cfg.dyn_lr))
+                        wm_obs, actions, lr=self.cfg.dyn_lr))
                 else:
                     # (B) mix in TARGET demos: cleanest contact-phase (s,a,s') so the
                     # dynamics consistency loss learns the success-path contact
@@ -1044,7 +1270,9 @@ class AdaptWorkspace:
                     # Both mixes carve out of the SAME batch of B, so the batch
                     # size (and therefore the per-step gradient scale) is unchanged
                     # no matter how the fractions are set. The on-policy adapt
-                    # rollouts keep whatever is left over.
+                    # rollouts keep whatever is left over. `wm_obs` is rebuilt
+                    # through _cat_obs in lockstep so the pixel arm's frames stay
+                    # row-aligned with `states`/`actions`.
                     nd = (int(B * self.cfg.dyn_demo_frac)
                           if self.cfg.dyn_demo_frac > 0
                           and self.demo_replay.can_sample(self.H) else 0)
@@ -1053,15 +1281,25 @@ class AdaptWorkspace:
                             and self.src_replay is not None else 0)
                     assert nd + nsrc <= B, \
                         f"dyn_demo_frac + dyn_src_frac > 1 (nd={nd} nsrc={nsrc} B={B})"
+                    assert not (nsrc and _w3), (
+                        "dyn_src_frac carries no frames -- the SOURCE replay is "
+                        "state-only, so it cannot be mixed into the PIXEL arm")
                     if nd or nsrc:
-                        s_parts = [states[:B - nd - nsrc]]
-                        a_parts = [actions[:B - nd - nsrc]]
+                        keep = B - nd - nsrc
+                        s_parts = [states[:keep]]
+                        a_parts = [actions[:keep]]
                         if nd:
-                            ds, da, _ = self.demo_replay.sample(nd, self.H, "cuda")
+                            _d = self.demo_replay.sample(
+                                nd, self.H, "cuda",
+                                return_obs=_w3, history=self._hist_k)
+                            ds, da = _d[0], _d[1]
+                            wm_obs = self._cat_obs(
+                                wm_obs, self._wm_obs(ds, _d[-1] if _w3 else None), keep)
                             s_parts.append(ds); a_parts.append(da)
                         if nsrc:
                             s_src, a_src, _ = self.src_replay.sample(
                                 nsrc, self.H, "cuda")
+                            wm_obs = self._cat_obs(wm_obs, s_src, keep + nd)
                             s_parts.append(s_src); a_parts.append(a_src)
                         states = torch.cat(s_parts, 0)
                         actions = torch.cat(a_parts, 0)
@@ -1073,7 +1311,7 @@ class AdaptWorkspace:
                         az, aa, at = (self._dyn_anchor[0][k], self._dyn_anchor[1][k],
                                       self._dyn_anchor[2][k])
                     self.stat.append(self.agent.update_dynamics_only(
-                        states, actions, lr=self.cfg.dyn_lr,
+                        wm_obs, actions, lr=self.cfg.dyn_lr,
                         anchor_z=az, anchor_a=aa, anchor_tgt=at,
                         anchor_coef=self.cfg.dyn_anchor_coef))
         # self-distill the policy on the planner's SUCCESSFUL rollouts, ANCHORED to
@@ -1085,17 +1323,24 @@ class AdaptWorkspace:
             if n_succ > 0:
                 nd = int(self.cfg.adapt_batch_size * self.cfg.selfdistill_demo_frac)
                 ns = self.cfg.adapt_batch_size - nd
+                _wsd = bool(self._img_keys)
                 for _ in range(self.cfg.selfdistill_steps):
-                    ps, pa = [], []
+                    ps, pa, pobs = [], [], []
                     if nd > 0:
-                        ds, da, _ = self.demo_replay.sample(nd, self.H, "cuda")
-                        ps.append(ds); pa.append(da)
+                        _d = self.demo_replay.sample(nd, self.H, "cuda", return_obs=_wsd, history=self._hist_k)
+                        ps.append(_d[0]); pa.append(_d[1])
+                        pobs.append(self._wm_obs(_d[0], _d[-1] if _wsd else None))
                     if ns > 0:
-                        ss, sa, _ = self.adapt_replay.sample(
-                            ns, self.H, "cuda", success_only=True)
-                        ps.append(ss); pa.append(sa)
+                        _p = self.adapt_replay.sample(
+                            ns, self.H, "cuda", success_only=True, return_obs=_wsd, history=self._hist_k)
+                        ps.append(_p[0]); pa.append(_p[1])
+                        pobs.append(self._wm_obs(_p[0], _p[-1] if _wsd else None))
                     s = torch.cat(ps, 0); a = torch.cat(pa, 0)
-                    m = self.agent.update_bc_policy(s, a, lr=self.cfg.bc_lr)
+                    if _wsd:
+                        sd_obs = {k: torch.cat([o[k] for o in pobs], 0) for k in pobs[0]}
+                    else:
+                        sd_obs = s
+                    m = self.agent.update_bc_policy(sd_obs, a, lr=self.cfg.bc_lr)
                     self.stat["selfdistill/policy_loss"].append(m["bc/policy_loss"])
 
     def _eval_mppi(self, seed: int):

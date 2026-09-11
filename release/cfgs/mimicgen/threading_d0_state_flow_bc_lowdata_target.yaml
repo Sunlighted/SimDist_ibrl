@@ -7,7 +7,7 @@
 # Normalization (state z-score + action min/max→[-1,1]) is ON by default in
 # StateFlowPolicy and fit from these 20 demos automatically.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 16        # = flow_policy.pred_horizon
   num_data: 20

@@ -160,6 +160,11 @@ class PixelRobosuite:
         init_distribution: Optional[InitDistConfig] = None,
         state_only_no_render: bool = False,
         stage_reward: float = 0.0,
+        # PIXEL arm: also emit rl_obs["state"] when use_state=False. The pixel
+        # world model consumes images, but the frozen PRIVILEGED STATE teacher
+        # reads the 37-dim state to produce V_src labels, and the sequence buffer
+        # stores it alongside the frames. Costs 37 floats/step.
+        extra_state: bool = False,
     ):
         assert isinstance(camera_names, list)
         self.camera_names = camera_names
@@ -175,6 +180,7 @@ class PixelRobosuite:
         # makes multi-process eval deadlock. Default False = byte-for-byte the old
         # rendering path. Incompatible with video recording (no high_res_images).
         self.state_only_no_render = bool(state_only_no_render)
+        self.extra_state = bool(extra_state) and not use_state
         if self.state_only_no_render:
             assert use_state, "state_only_no_render requires use_state=True"
 
@@ -333,6 +339,12 @@ class PixelRobosuite:
         return total
 
     @property
+    def state_shape(self):
+        """The 37-dim state layout, regardless of use_state. Needed so a pixel run
+        can build a PRIVILEGED STATE teacher (train_rl.load_frozen_agent)."""
+        return self._state_shape
+
+    @property
     def observation_shape(self):
         if self.use_state:
             return self._state_shape
@@ -478,7 +490,7 @@ class PixelRobosuite:
         high_res_images = {}
         rl_obs = {}
 
-        if self.use_state:
+        if self.use_state or self.extra_state:
             states = []
             for key in self.state_keys:
                 if key == "object":

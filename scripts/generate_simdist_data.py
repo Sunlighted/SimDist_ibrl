@@ -118,7 +118,35 @@ def parse_args():
                    help="rollout domain: 'expert' = the expert's own training env "
                         "(cfg.train_domain_shift; source expert=>source, target "
                         "expert=>its target shift), 'source' = force nominal (mode=none).")
+    # PIXEL arm: render + record camera frames alongside the state. Empty (default)
+    # = state-only, byte-for-byte the legacy behaviour. The state vector is ALWAYS
+    # recorded even with cameras on, because stage-1's value distillation queries
+    # the frozen STATE critic (train_simdist.py:354-367).
+    p.add_argument("--rl_cameras", type=str, default="",
+                   help='"+"- or comma-separated, e.g. '
+                        '"agentview+robot0_eye_in_hand". Prefer "+": sbatch '
+                        '--export splits values on commas.')
+    # PIXEL resolution overrides. Both default to 0 = "use the expert cfg's value"
+    # (byte-for-byte legacy). The expert cfg carries image_size=224 / rl_image_size=96,
+    # i.e. we ALREADY render at 224 and throw it away in the wrapper's resize; setting
+    # --rl_image_size 224 stores the native render at NO extra render cost.
+    p.add_argument("--image_size", type=int, default=0,
+                   help="0 = use expert cfg.image_size (offscreen render size)")
+    p.add_argument("--rl_image_size", type=int, default=0,
+                   help="0 = use expert cfg.rl_image_size (STORED frame size). "
+                        "Set 224 for the ResNet-18 arm.")
+    p.add_argument("--jpeg_quality", type=int, default=0,
+                   help="0 = store raw uint8 arrays (legacy). 1-100 = JPEG-encode each "
+                        "frame and store variable-length bytes; the loader decodes. "
+                        "224x224x3x2cam raw is 301,056 B/transition (6.1 TB at 100k "
+                        "traj), which neither the quota nor RAM can hold.")
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--flush_mb", type=int, default=2000,
+                   help="flush a worker's buffer once it holds this many MB, in "
+                        "ADDITION to --flush_every. Trajectory count is the wrong "
+                        "unit for pixels: 500 traj at 224^2x2cam is ~31 GB/worker, "
+                        "x10 workers = OOM. State runs never reach 2 GB, so this is "
+                        "inert for the legacy arm.")
     p.add_argument("--flush_every", type=int, default=500,
                    help="每个 worker 每攒够这么多条轨迹就 append 写盘并释放内存 "
                         "(峰值 RAM 与总轨迹数无关; 防 150k OOM)")
@@ -134,7 +162,22 @@ def resolve_checkpoints(args):
     return ckpts
 
 
-def build_source_env(cfg, hand_init_sigma, domain_shift=None):
+def _cams(args):
+    """Parse --rl_cameras into a list. () => state-only (legacy behaviour)."""
+    # Accept BOTH separators. "+" is the repo convention (MainConfig.rl_camera is
+    # "a+b") and is also the only one safe through `sbatch --export=ALL,K=V`,
+    # which itself splits on commas -- passing "a,b" there silently delivers just
+    # "a" (this cost one smoke-test run).
+    raw = str(getattr(args, "rl_cameras", "") or "").replace("+", ",")
+    return [c for c in raw.split(",") if c]
+
+
+# Set once per process from argparse before any env is built. Empty => legacy.
+_RES_OVERRIDE: dict = {}
+_JPEG_Q = [0]   # list so worker processes can mutate it after argparse
+
+
+def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=()):
     """Build a NO-RENDER state env directly from cfg.
 
     Two reasons this does NOT go through train_rl.load_model (the old path):
@@ -160,10 +203,10 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None):
         robots=cfg.robots,
         episode_length=cfg.episode_length,
         reward_shaping=False,
-        image_size=cfg.image_size,
-        rl_image_size=cfg.rl_image_size,
-        camera_names=[],            # use_state => no cameras (Workspace._setup_env)
-        rl_cameras=[],
+        image_size=_RES_OVERRIDE.get("image_size") or cfg.image_size,
+        rl_image_size=_RES_OVERRIDE.get("rl_image_size") or cfg.rl_image_size,
+        camera_names=list(rl_cameras),   # [] => state-only (legacy)
+        rl_cameras=list(rl_cameras),
         use_state=cfg.use_state,
         obs_stack=cfg.obs_stack,
         state_stack=cfg.state_stack,
@@ -173,7 +216,10 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None):
         hand_init_perturb=None,
         hand_init_perturb_joint_sigma=hand_init_sigma,
         init_distribution=cfg.eval_init_dist,
-        state_only_no_render=True,  # kills the per-worker EGL context (state mode)
+        # state_only_no_render kills the per-worker EGL context, which is a large
+        # speedup -- but it is only legal with no cameras (it asserts use_state and
+        # renders nothing). Must be OFF for the pixel arm.
+        state_only_no_render=not rl_cameras,
     )
     env = PixelRobosuite(**env_params)  # type: ignore
     return env, env_params
@@ -203,7 +249,7 @@ def full_ensemble_value(agent, enabled):
 
 def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
                          args, num_traj, prefix="", pbar=None, counter=None,
-                         writer=None, flush_every=500):
+                         writer=None, flush_every=500, flush_mb=2000):
     """Run `num_traj` episodes (Algorithm 2). Returns a list of (ep_dict, success).
 
     Progress reporting (mutually preferred, in order):
@@ -212,6 +258,7 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
                     process can drive a single tqdm bar over all workers;
       * otherwise — a periodic textual print every 50 trajectories (fallback).
     """
+    cams = _cams(args)   # [] => state-only
     action_dim = env.action_dim
     p_expert = 1.0 if not subopt_agents else args.p_expert
 
@@ -220,6 +267,7 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
         return int(rng.integers(lo, hi + 1))
 
     accepted = []
+    _pending_mb = 0.0
     n_success = 0
     for j in range(num_traj):
         use_expert_ep = bool(rng.random() < p_expert)
@@ -230,6 +278,7 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
 
         obs, _img = env.reset()
         states, actions, rewards, eflags = [], [], [], []
+        frames = {c: [] for c in cams}   # index-aligned with `states`
         terminal = succ = False
         steps = 0
         with torch.no_grad(), utils.eval_mode(pol):
@@ -238,6 +287,11 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
                     noise_on = not noise_on
                     steps_left = sample_interval(noise_on)
                 states.append(obs["state"].cpu().numpy().astype(np.float32))
+                for c in cams:
+                    # uint8 CHW straight from the wrapper; appended in the SAME
+                    # iteration as `states`, so frame[t] and state[t] are the same
+                    # timestep (the alignment the world model depends on).
+                    frames[c].append(obs[c].cpu().numpy())
                 a = pol.act(obs, eval_mode=True)
                 if noise_on:
                     eps = torch.from_numpy(rng.normal(0.0, sigma).astype(np.float32)).to(a.device)
@@ -255,6 +309,8 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
             "rewards": np.asarray(rewards, dtype=np.float32),
             "expert_flags": np.asarray(eflags, dtype=np.int8),
         }
+        for c in cams:
+            ep[f"img::{c}"] = np.asarray(frames[c], dtype=np.uint8)
         if args.save_values:
             with torch.no_grad(), full_ensemble_value(value_agent, args.value_full_ensemble):
                 sv = torch.from_numpy(ep["state"]).to("cuda")
@@ -274,13 +330,47 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
         elif (j + 1) % 50 == 0 or j == num_traj - 1:
             print(f"  {prefix}[{j + 1}/{num_traj}] success={n_success} (running)", flush=True)
         # periodic flush -> bound peak RAM (else 150k traj OOMs, see ShardWriter)
-        if writer is not None and len(accepted) >= flush_every:
+        _pending_mb += sum(v.nbytes for v in ep.values()
+                           if isinstance(v, np.ndarray)) / 1e6
+        if writer is not None and (len(accepted) >= flush_every
+                                   or _pending_mb >= flush_mb):
             writer.add_batch(accepted)
             accepted = []
+            _pending_mb = 0.0
     if writer is not None:
         writer.add_batch(accepted)   # tail
         return []                    # already persisted incrementally
     return accepted
+
+
+def _encode_jpeg_stack(arr, quality: int):
+    """[T,3,H,W] uint8 -> list of 1-D uint8 byte arrays (one JPEG per frame).
+
+    Lossy, so it is OPT-IN (`--jpeg_quality 0` keeps raw). At 224x224x3x2cam the
+    raw store is 301,056 B/transition = 6.1 TB for the 100k-trajectory reference
+    recipe, which exceeds both the /scratch quota and any node's RAM."""
+    import torchvision.io as tvio
+    out = []
+    for t in range(arr.shape[0]):
+        buf = tvio.encode_jpeg(torch.from_numpy(arr[t]), quality=int(quality))
+        out.append(buf.numpy())
+    return out
+
+
+def _write_image_dataset(d, name, arr, quality: int):
+    """Store frames either raw (legacy) or as per-frame JPEG byte strings."""
+    if not quality:
+        d.create_dataset(name, data=arr, dtype="uint8")
+        return
+    enc = _encode_jpeg_stack(arr, quality)
+    vl = h5py.vlen_dtype(np.dtype("uint8"))
+    ds = d.create_dataset(name, shape=(len(enc),), dtype=vl)
+    for i, b in enumerate(enc):
+        ds[i] = b
+    # the loader needs the decoded shape + a codec flag; keep them ON the dataset
+    ds.attrs["codec"] = "jpeg"
+    ds.attrs["frame_shape"] = np.asarray(arr.shape[1:], dtype=np.int32)  # (3,H,W)
+    ds.attrs["jpeg_quality"] = int(quality)
 
 
 def write_episodes(accepted, h5_path):
@@ -292,6 +382,11 @@ def write_episodes(accepted, h5_path):
         for i, (ep, success) in enumerate(accepted):
             d = g.create_group(f"demo_{i}")
             d.create_dataset("obs/state", data=ep["state"])
+            for k, v in ep.items():
+                if k.startswith("img::"):
+                    # `obs/<camera>_image`, matching the layout
+                    # rl/replay.py::add_demos_to_replay and the collector use.
+                    _write_image_dataset(d, f"obs/{k[5:]}_image", v, _JPEG_Q[0])
             d.create_dataset("actions", data=ep["actions"])
             d.create_dataset("rewards", data=ep["rewards"])
             d.create_dataset("expert_flags", data=ep["expert_flags"])
@@ -312,8 +407,9 @@ class ShardWriter:
     unchanged. (The old accumulate-everything-then-write path OOM'd at ~7-12k
     trajectories with 20 workers, especially with value_full_ensemble.)"""
 
-    def __init__(self, path):
+    def __init__(self, path, jpeg_quality: int = 0):
         self.path = path
+        self.jpeg_quality = int(jpeg_quality)
         self.n = 0
         self.n_success = 0
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -328,6 +424,9 @@ class ShardWriter:
             for ep, success in batch:
                 d = g.create_group(f"demo_{self.n}")
                 d.create_dataset("obs/state", data=ep["state"])
+                for k, v in ep.items():
+                    if k.startswith("img::"):
+                        _write_image_dataset(d, f"obs/{k[5:]}_image", v, self.jpeg_quality)
                 d.create_dataset("actions", data=ep["actions"])
                 d.create_dataset("rewards", data=ep["rewards"])
                 d.create_dataset("expert_flags", data=ep["expert_flags"])
@@ -353,16 +452,10 @@ def merge_shards(shard_paths, out_path):
                 sg = sf["data"]
                 for k in sorted(sg.keys(), key=lambda x: int(x.split("_")[1])):
                     src = sg[k]
-                    dst = g.create_group(f"demo_{total}")
-                    for ds in src.keys():
-                        item = src[ds]
-                        if isinstance(item, h5py.Group):  # obs/
-                            for sub in item.keys():
-                                dst.create_dataset(f"{ds}/{sub}", data=item[sub][()])
-                        else:
-                            dst.create_dataset(ds, data=item[()])
-                    for ak, av in src.attrs.items():
-                        dst.attrs[ak] = av
+                    # h5py's native copy preserves DATASET attrs (the jpeg `codec` /
+                    # `frame_shape` flags live there) and streams instead of pulling
+                    # every frame through Python. The old manual walk dropped both.
+                    sg.copy(k, g, name=f"demo_{total}")
                     n_success += int(bool(src.attrs.get("success", False)))
                     total += 1
         g.attrs["num_demos"] = total
@@ -425,7 +518,18 @@ def _load_all(args, ckpts):
     (env, env_params, expert_agent, subopt_agents)."""
     cfg = pyrallis.load(  # type: ignore
         train_rl.MainConfig, open(os.path.join(os.path.dirname(args.expert), "cfg.yaml"), "r"))
-    env, env_params = build_source_env(cfg, args.hand_init_sigma, resolve_domain_shift(args, cfg))
+    # spawn-safe: `args` is pickled into each worker, so每个进程各自设置一次
+    if getattr(args, "image_size", 0):
+        _RES_OVERRIDE["image_size"] = int(args.image_size)
+    if getattr(args, "rl_image_size", 0):
+        _RES_OVERRIDE["rl_image_size"] = int(args.rl_image_size)
+    _JPEG_Q[0] = int(getattr(args, "jpeg_quality", 0) or 0)
+    if _RES_OVERRIDE:
+        print(f"[res] override {_RES_OVERRIDE} (cfg had image_size={cfg.image_size}, "
+              f"rl_image_size={cfg.rl_image_size})", flush=True)
+    env, env_params = build_source_env(cfg, args.hand_init_sigma,
+                                       resolve_domain_shift(args, cfg),
+                                       rl_cameras=_cams(args))
     expert_agent = train_rl.load_frozen_agent(args.expert, env, cfg, "cuda")
     subopt_agents = [train_rl.load_frozen_agent(c, env, cfg, "cuda") for c in ckpts]
     if args.expert_hybrid:
@@ -470,10 +574,11 @@ def _worker(rank, args, ckpts, n_traj, shard_path, counter=None):
     common_utils.set_all_seeds(args.seed * 100000 + rank)
     rng = np.random.default_rng(args.seed * 100000 + rank)
     env, _env_params, expert_agent, subopt_agents = _load_all(args, ckpts)
-    writer = ShardWriter(shard_path)   # incremental flush -> bounded RAM
+    writer = ShardWriter(shard_path, jpeg_quality=args.jpeg_quality)  # bounded RAM
     rollout_trajectories(env, expert_agent, subopt_agents, expert_agent,
                          rng, args, n_traj, prefix=f"[w{rank}] ", counter=counter,
-                         writer=writer, flush_every=args.flush_every)
+                         writer=writer, flush_every=args.flush_every,
+                         flush_mb=args.flush_mb)
     print(f"[w{rank}] done: {writer.n} traj, {writer.n_success} success -> {shard_path}", flush=True)
 
 

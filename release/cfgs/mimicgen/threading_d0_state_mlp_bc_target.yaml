@@ -9,7 +9,7 @@
 # Head = StateBcPolicy (deterministic MLP, single action per step, MSE). No
 # action chunking → fully closed-loop reactive control (re-predicts every step).
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 1         # single-step (StateBcPolicy is NOT chunked)
   num_data: 20              # 20 (all) target demos; set 10 for the 10-demo run

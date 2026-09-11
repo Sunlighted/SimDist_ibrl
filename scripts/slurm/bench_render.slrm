@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=bench_render
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=0:30:00
+#SBATCH --output=logs/bench_render_%j.out
+#SBATCH --error=logs/bench_render_%j.out
+#
+# ★ SLURM SIZING (walltime tiers on this cluster, measured 2026-08-26):
+#     b1 <= 3:00:00   168 nodes      b2 <= 12:00:00
+#     b3 <= 1-00:00:00  84 nodes     b4 <= 3-00:00:00   42 nodes
+#   Requesting just OVER a boundary is very expensive: a 4h job priced into the
+#   12h tier waited 15h23m, where 2:59:00 would have gone to b1 and started in
+#   minutes. Our 3-day jobs waited 8-15h; the group median is ~1 minute.
+#   So: always sit just UNDER a boundary (2:59:00 / 11:59:00 / 23:59:00), and
+#   keep CPU/mem small -- large asks shrink the set of nodes with a free slot
+#   next to an idle GPU. Right-size from `sacct -o Elapsed,MaxRSS`, not guesses.
+#   This job: needs 10 mp workers, so 12 CPUs; runtime is minutes
+#
+# Offscreen-render throughput benchmark -- the pixel-mode go/no-go measurement.
+# See scripts/bench_render.py and the plan's "Rendering throughput" section.
+#
+# L40S, not H100, on purpose: this is CPU-and-render bound, not tensor bound.
+# The benchmark spawns 10 worker processes each holding its own MuJoCo env and
+# EGL context, mirroring `mp_eval=1, num_eval_proc=10`. L40S nodes allow ~16
+# CPU cores/GPU; H100 nodes only ~6 (8 GPUs over 48 cores), which cannot host
+# 10 workers.
+#
+# Submit from the repo root (NOT from /home -- jobs may not run there):
+#   mkdir -p logs && sbatch scripts/slurm/bench_render.slrm
+
+set -euo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+echo "=== node: $(hostname)  gpus: ${SLURM_GRES:-?}  cpus: ${SLURM_CPUS_PER_TASK:-?} ==="
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+
+python scripts/bench_render.py --n_steps 300 --n_proc 10
+
+echo "=== done rc=$? ==="

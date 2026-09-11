@@ -1,0 +1,93 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=bench_enc
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --time=0:20:00
+#SBATCH --output=logs/bench_enc_%j.out
+#SBATCH --error=logs/bench_enc_%j.out
+#
+# ★ SLURM SIZING: 0:20:00 -> b1, tiny footprint.
+#
+# Which image encoder is cheapest at OUR working point?
+#
+# The pixel world model's cost is dominated by the conv encoder, not by
+# parameters (measured: spatial_softmax cut params 4x and changed step time by
+# <2%). So the question is which backbone is cheapest per FRAME, at the batch
+# the distill loop actually uses: 7 encode calls/step x (batch 256 x N cameras).
+#
+# Candidates:
+#   ResNet96Encoder  -- what the pixel arm uses now; 96-native, and the only one
+#                       with timings recorded in docs/findings.md
+#   VitEncoder       -- what the UPSTREAM ibrl pixel configs used for IBRL
+#                       (embed_style=embed2, depth=1). Hardcoded to 96x96.
+#   ResNetEncoder    -- what bc/multiview_encoder.py uses (224-oriented stem)
+#   DrQEncoder       -- DrQ-v2 stack; internally resizes to 84x84
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+python - <<'PY'
+import time, torch
+from networks.encoder import (ResNet96Encoder, ResNet96EncoderConfig,
+                              VitEncoder, VitEncoderConfig,
+                              ResNetEncoder, ResNetEncoderConfig,
+                              DrQEncoder)
+
+SHAPE = [3, 96, 96]
+B = 512            # batch 256 x 2 cameras, the real per-encode-call size
+CALLS = 7          # encode calls per gradient step after the dedup
+
+def bench(name, enc, n=10, warm=3):
+    enc = enc.cuda()
+    p = sum(q.numel() for q in enc.parameters())
+    x = torch.randint(0, 256, (B, *SHAPE), dtype=torch.uint8, device="cuda").float()
+    # forward-only (6 of the 7 calls are no_grad)
+    with torch.no_grad():
+        for i in range(n):
+            if i == warm:
+                torch.cuda.synchronize(); t0 = time.time()
+            enc(x, flatten=True)
+        torch.cuda.synchronize()
+    fwd = (time.time() - t0) / (n - warm)
+    # forward+backward (1 of the 7 carries the graph)
+    for i in range(n):
+        if i == warm:
+            torch.cuda.synchronize(); t0 = time.time()
+        enc(x, flatten=True).sum().backward()
+        enc.zero_grad(set_to_none=True)
+    torch.cuda.synchronize()
+    fwdbwd = (time.time() - t0) / (n - warm)
+    with torch.no_grad():
+        repr_dim = enc(x[:2], flatten=True).shape[-1]
+    # a step is ~6 no_grad calls + 1 with backward
+    step = 6 * fwd + fwdbwd
+    print(f"{name:24s} {p:10,d} {repr_dim:8d} {1000*fwd:8.1f} {1000*fwdbwd:9.1f} "
+          f"{1000*step:9.1f} {step*800_000/3600:8.1f}")
+    del enc, x; torch.cuda.empty_cache()
+    return step
+
+print(f"{'encoder':24s} {'params':>10s} {'repr':>8s} {'fwd ms':>8s} {'f+b ms':>9s} "
+      f"{'enc/step':>9s} {'800k h':>8s}")
+print("-" * 82)
+res = {}
+res["resnet96"] = bench("ResNet96 (current)", ResNet96Encoder(SHAPE, ResNet96EncoderConfig()))
+res["resnet96_shallow"] = bench("ResNet96 shallow", ResNet96Encoder(SHAPE, ResNet96EncoderConfig(shallow=1)))
+res["vit_embed2_d1"] = bench("ViT embed2 depth1", VitEncoder(SHAPE, VitEncoderConfig(embed_style="embed2", depth=1)))
+res["vit_embed1_d3"] = bench("ViT embed1 depth3", VitEncoder(SHAPE, VitEncoderConfig()))
+res["resnet_mv"] = bench("ResNetEncoder (bc/mv)", ResNetEncoder(SHAPE, ResNetEncoderConfig()))
+res["resnet_mv_shallow"] = bench("ResNetEncoder shallow", ResNetEncoder(SHAPE, ResNetEncoderConfig(shallow=1)))
+res["drq"] = bench("DrQEncoder (84x84)", DrQEncoder(SHAPE))
+
+base = res["resnet96"]
+print("\nrelative to ResNet96 (lower is cheaper):")
+for k, v in sorted(res.items(), key=lambda kv: kv[1]):
+    print(f"  {k:22s} {v/base:5.2f}x")
+print("\nNOTE: encoder time only. The full pixel step measured 202 ms, of which "
+      "this is the dominant part; MLP heads + optimizer add the rest.")
+PY
+echo "bench rc=$?"

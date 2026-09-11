@@ -14,7 +14,7 @@
 # the dataset automatically — this is the single biggest low-data fix.
 # Backbone stays UNet1D per request.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 16   # = flow_policy.pred_horizon
   num_data: 20         # LOW-DATA: only 20 demos

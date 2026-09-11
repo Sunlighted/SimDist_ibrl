@@ -16,7 +16,7 @@
 seed: 1
 
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/square_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/square_d0/processed_data96.hdf5
   num_data: -1                # all 1000 demos
   use_state: 1
   state_stack: 1

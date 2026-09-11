@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=probe_pose
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=48G
+#SBATCH --time=0:59:00
+#SBATCH --output=logs/probe_pose_%j.out
+#SBATCH --error=logs/probe_pose_%j.out
+#
+# Tests the §43 claim DIRECTLY and can refute it: does the frozen stage-1 latent
+# retain the 28-d object pose (needle + tripod) that insertion needs?
+# Runs BOTH arms so the pixel number has a paired reference -- the state arm is
+# HANDED that pose as encoder input, so it bounds what "retained" looks like here.
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"; source set_env_drac.sh
+
+echo "############ PIXEL arm (must EXTRACT pose from images) ############"
+python scripts/probe_latent_pose.py \
+    --ckpt exps/mimicgen/threading_pixel_stage1_seed1/model0.pt \
+    --replay release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5 \
+    --episodes 400 --frames 20000 2>&1 | grep -vE "robosuite|ROBOMIMIC|macro|task_zoo|^\s*$"
+
+echo; echo "############ STATE arm (pose is GIVEN as input) ############"
+python scripts/probe_latent_pose.py \
+    --ckpt exps/mimicgen/threading_state_stage1_seed1/model0.pt \
+    --replay release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5 \
+    --episodes 400 --frames 20000 2>&1 | grep -vE "robosuite|ROBOMIMIC|macro|task_zoo|^\s*$"
+echo "=== done ==="

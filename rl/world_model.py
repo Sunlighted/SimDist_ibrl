@@ -31,11 +31,17 @@ This module holds only the networks + forward helpers. The distillation /
 finetune losses and the optimizers live in rl/simdist_agent.py.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# PIXEL arm config. Imported at module level (no cycle: pixel_obs_encoder only
+# pulls from networks/) because pyrallis resolves dataclass type hints eagerly --
+# a forward-reference string annotation fails to decode with
+# "cannot create weak reference to 'str' object".
+from rl.pixel_obs_encoder import PixelObsEncoderConfig
 
 
 class SimNorm(nn.Module):
@@ -129,6 +135,9 @@ class WorldModelConfig:
     # state is already compact) while costing the whole §17 stability saga
     # (SimNorm / enc_pi / decoder bridge / policy-vs-consistency fight) — this arm
     # drops all of that and tests whether the latent helps at all.
+    # "pixel" (NEW): images + prop -> rl/pixel_obs_encoder.py -> the same trunk
+    # MLP -> SimNorm. Requires shared_encoder=1 and decoder_coef=0 (there is no
+    # image decoder, and with shared_encoder the planner never needs decode()).
     encoder_type: str = "latent"
     # NeRF-style Fourier encoding of the raw state at the ENCODER input (latent
     # arm only). 0 = OFF (byte-for-byte unchanged; no input_pe module, no new
@@ -143,6 +152,78 @@ class WorldModelConfig:
     num_layer: int = 2
     layer_norm: int = 1
     simnorm_dim: int = 8        # SimNorm group size (latent_dim must be divisible by it)
+    # PIXEL arm only (encoder_type=="pixel"). Default-constructed and unused
+    # otherwise, so it adds no parameters and no state_dict keys to the state
+    # arms -- old ckpts still load strict.
+    pixel: PixelObsEncoderConfig = field(default_factory=PixelObsEncoderConfig)
+    # ENCODER GRADIENT STARVATION mitigation (pixel arm; default 0 = legacy).
+    # With shared_encoder=1, detach_pi=1 and decoder_coef=0 -- the pixel recipe --
+    # the encoder's ONLY gradient source is the t=0 latent flowing into
+    # consistency + reward + value. The dominant loss (policy_coef=10) is
+    # detached and the consistency target is stop-grad, so a CONSTANT encoder is a
+    # feasible consistency solution (SimNorm keeps it bounded); only reward and
+    # value at t=0 penalise collapse. That is thin supervision for a
+    # from-scratch ~21M-param conv on a sparse task.
+    #
+    # pi_grad_t0=1 routes the t=0 policy-BC term through the GRAD latent instead
+    # of the detached cache, injecting the strong BC signal into the encoder. The
+    # backward through those B frames is already paid for by the consistency
+    # loss, so this costs ~0 extra time and memory. Steps t>=1 stay detached.
+    # (The heavier alternative is detach_pi=0, which back-props BC through all H
+    # steps -- several GB and a large step-time hit.)
+    pi_grad_t0: int = 0
+
+    # ★ AUXILIARY PRIVILEGED-STATE PREDICTION (docs/simdist.md §43).
+    # The pixel arm's stage-2 BC is capped because the SimNorm latent is trained
+    # by the VALUE objective: it keeps value structure and DISCARDS the mm-level
+    # geometry a policy needs (findings.md §30). The state arm falls back to raw
+    # 37-d state; pixels have no fallback. Measured: pixel policy_only 0.07-0.10
+    # vs state 0.360, and NOT underfitting (BC loss went 3x BELOW state's with no
+    # score change). Unfreezing the encoder in stage 2 recovers +0.14 but breaks
+    # the frozen value head MPPI ranks with, so the fix has to be here in stage 1
+    # where latent+value+reward train together.
+    # This adds coef * MSE(aux_head(z_t0), z-scored privileged state) at t=0 ONLY,
+    # i.e. through the GRAD latent, so it actually shapes the encoder (t>=1 latents
+    # are detached and would train only the head). Source stage-1 runs in the
+    # source sim where the privileged state is available for free -- the replay
+    # already stores it beside the frames for the value teacher.
+    # ★ AUGMENTATION (pixel arm; ALL default 0 = off, so every state arm and every
+    # existing pixel ckpt is byte-for-byte unchanged). The reference recipe uses
+    # four kinds; the `augment_fn` hook has existed in pixel_obs_encoder.forward
+    # since the port but NO caller ever passed one, so we have trained with zero
+    # augmentation on a replay we do 461 epochs over (docs/simdist.md §45).
+    #
+    # Applied ONCE to the whole [B,H+1,C,H,W] block in update_distill, with ONE
+    # shift per (sample, camera) SHARED across all H+1 frames. Independent
+    # per-frame shifts would inject apparent camera jitter into the transition the
+    # dynamics head is learning, and would also desynchronise the network input
+    # from the detached consistency target built from the same frame.
+    # ★ HISTORY (rl/history.py). 0 = off, byte-for-byte legacy. >0 feeds the
+    # encoder [prop_t..prop_{t-K+1}, a_{t-1}..a_{t-K}] alongside the most recent
+    # image, which is the reference recipe's input contract (§44: the paper uses a
+    # history encoder; our port had obs_stack/state_stack/prop_stack all = 1).
+    # Requires the env to be built with prop_stack=K AND cond_action=K so the ACT
+    # path can supply the same vector; the agent asserts that.
+    # NOTE this does NOT touch MPPI: the encoder only ever runs on the real current
+    # obs, and the planner rolls in latent space, so history changes encode() only.
+    history_length: int = 0
+    aug_shift_pad: int = 0        # RandomShiftsAug pad; repo's pixel BC/RL use 4
+    aug_prop_noise: float = 0.0   # Gaussian sigma on the proprio vector
+    # ★ §44's remaining two augmentation rows (added 2026-09-11 for §48).
+    # Both default to 0 = OFF, so every state arm and every existing pixel ckpt
+    # is byte-for-byte unchanged (verify with scripts/slurm/dedup_regress.slrm).
+    # They are CONFIG fields, not modules, so unlike iron law #23's head/buffer
+    # case they exist on all three `__init__` branches by construction -- but
+    # read them with getattr() anyway, since old ckpt cfgs lack the attribute.
+    #   aug_color_jitter: single strength s. brightness/contrast/saturation
+    #     factors ~ U(1-s, 1+s); hue shift ~ U(-h, h) turns with h = min(0.5, s/3),
+    #     so s=0.3 reproduces the conventional ColorJitter(0.3, 0.3, 0.3, 0.1).
+    #   aug_blur_sigma_max: sigma ~ U(0, max] px of a separable Gaussian, in
+    #     STORED-frame units (§46⑫: aug runs before PixelObsEncoder's resize_to).
+    aug_color_jitter: float = 0.0
+    aug_blur_sigma_max: float = 0.0
+    aux_state_coef: float = 0.0
+    aux_state_dim: int = 0        # set by the trainer from the replay's state dim
     horizon: int = 5            # H: rollout length for training + planning
     activation: str = "relu"    # "relu" (legacy) or "mish" (TD-MPC2)
     # loss weights
@@ -231,18 +312,31 @@ class WorldModelConfig:
 
 
 class WorldModel(nn.Module):
-    def __init__(self, obs_dim: int, action_dim: int, cfg: WorldModelConfig):
+    def __init__(self, obs_dim: int, action_dim: int, cfg: WorldModelConfig,
+                 *, image_shape=None, prop_dim: int = 0, cameras=()):
+        """image_shape/prop_dim/cameras are PIXEL-arm only and keyword-only, so the
+        six existing `WorldModel(obs_dim, action_dim, cfg)` call sites (train_dynamics,
+        train_joint_dynamics, eval_flow_ug, ...) are untouched."""
         super().__init__()
         self.cfg = cfg
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.raw_state = (cfg.encoder_type == "identity")
+        self.pixel = (cfg.encoder_type == "pixel")
         h = cfg.mlp_hidden_dim
         nl = cfg.num_layer
         ln = cfg.layer_norm
         act = cfg.activation
         out_r = cfg.num_bins if cfg.discrete_heads else 1
         out_v = cfg.num_bins if cfg.discrete_heads else 1
+
+        # ★ Declared before the branches: the raw-state (`identity`) arm returns
+        # from its own branch and never reaches _build_aux_state at the end of the
+        # latent path, and train_simdist.py reads `model.aux_state`
+        # unconditionally. Assigning None registers no parameter and no buffer, so
+        # state_dict is unchanged and strict loads of existing ckpts still pass;
+        # the pixel and latent paths overwrite this via _build_aux_state.
+        self.aux_state = None
 
         if self.raw_state:
             # RAW-STATE arm: z := z-scored raw state (dim = obs_dim). No learned
@@ -255,6 +349,7 @@ class WorldModel(nn.Module):
             self.encoder = None
             self.decoder = None
             self.enc_pi = None
+            self.obs_encoder = None
             self.register_buffer("norm_state_mean", torch.zeros(obs_dim))
             self.register_buffer("norm_state_std", torch.ones(obs_dim))
             self.dynamics = mlp(z + action_dim, h, z, nl, ln, act_out="none", act=act)
@@ -272,6 +367,44 @@ class WorldModel(nn.Module):
         z = cfg.latent_dim
         assert z % cfg.simnorm_dim == 0, "latent_dim must be divisible by simnorm_dim"
         self.simnorm = SimNorm(cfg.simnorm_dim)
+
+        # ---- PIXEL arm: obs dict -> conv features -> the SAME trunk MLP -------
+        if self.pixel:
+            from rl.pixel_obs_encoder import PixelObsEncoder
+            assert image_shape is not None and len(cameras) > 0, (
+                "encoder_type='pixel' needs image_shape=(C,H,W) and cameras=[...]")
+            # shared_encoder: with a dedicated enc_pi the planner needs decode(z)
+            # to bridge back to an observation (simdist_planner.py:182), which is
+            # impossible for images. decoder_coef: there is no image decoder, and
+            # with shared_encoder decode() is unreachable at plan time.
+            assert cfg.shared_encoder, "pixel arm requires shared_encoder=1"
+            assert cfg.decoder_coef == 0, "pixel arm requires decoder_coef=0"
+            assert cfg.input_fourier_l == 0, "input_fourier is a raw-state feature"
+            self.obs_encoder = PixelObsEncoder(image_shape, prop_dim, cameras, cfg.pixel)
+            self.input_pe = None
+            self.encoder = mlp(self.obs_encoder.out_dim, h, z, nl, ln,
+                               act_out="none", act=act)
+            self.dynamics = mlp(z + action_dim, h, z, nl, ln, act_out="none", act=act)
+            self._build_dynamics_extra(z, h, nl, ln, act)
+            self.reward = mlp(z + action_dim, h, out_r, nl, ln, act_out="none", act=act)
+            self.value = mlp(z, h, out_v, nl, ln, act_out="none", act=act)
+            self.decoder = None          # no image decoder; decode() raises
+            self.enc_pi = None           # shared encoder (asserted above)
+            self.policy = mlp(z, h, action_dim, nl, ln, act_out="tanh", act=act)
+            self.value_target = mlp(z, h, out_v, nl, ln, act_out="none", act=act)
+            self.value_target.load_state_dict(self.value.state_dict())
+            for p in self.value_target.parameters():
+                p.requires_grad_(False)
+            self._build_value_extra(z, h, out_v, nl, ln, act)
+            # The pixel branch returns HERE, so it used to skip _build_aux_state
+            # entirely and `self.aux_state` never existed -- train_simdist.py's
+            # unconditional read then raised AttributeError on startup for every
+            # pixel run. With aux_state_coef=0 this only sets the attribute to
+            # None, so no state_dict key is added and strict loads are unaffected.
+            self._build_aux_state(z, h, nl, ln, act)
+            return
+
+        self.obs_encoder = None
         # optional Fourier (PE) encoding of the raw state before the encoder MLP.
         if cfg.input_fourier_l > 0:
             from rl.fourier import FourierFeatures
@@ -311,6 +444,40 @@ class WorldModel(nn.Module):
         for p in self.value_target.parameters():
             p.requires_grad_(False)
         self._build_value_extra(z, h, out_v, nl, ln, act)
+        self._build_aux_state(z, h, nl, ln, act)
+
+    # -------------------------------------------- auxiliary privileged state
+    def _build_aux_state(self, z, h, nl, ln, act):
+        """Head predicting the z-scored PRIVILEGED state from the latent (§43).
+        Built only when aux_state_coef > 0, so every existing checkpoint stays
+        load_state_dict-compatible (strict load would otherwise reject them)."""
+        self.aux_state = None
+        c = getattr(self.cfg, "aux_state_coef", 0.0)
+        d = int(getattr(self.cfg, "aux_state_dim", 0))
+        if c > 0:
+            assert d > 0, "aux_state_coef>0 requires aux_state_dim (the trainer sets it)"
+            self.aux_state = mlp(z, h, d, nl, ln, act_out="none", act=act)
+            # z-scoring stats for the target, filled by set_aux_state_stats().
+            # Registered (not plain tensors) so they travel with the checkpoint --
+            # a run resumed without them would silently regress to raw-scale MSE,
+            # where the large-magnitude state dims dominate the 37-d target.
+            self.register_buffer("aux_state_mean", torch.zeros(d))
+            self.register_buffer("aux_state_std", torch.ones(d))
+
+    def set_aux_state_stats(self, mean, std):
+        """Per-dim mean/std of the privileged state, from the source replay."""
+        if self.aux_state is None:
+            return
+        with torch.no_grad():
+            self.aux_state_mean.copy_(mean.to(self.aux_state_mean.device))
+            self.aux_state_std.copy_(std.clamp_min(1e-6).to(self.aux_state_std.device))
+
+    def aux_state_loss(self, z, priv_state):
+        """MSE on the z-scored privileged state. `z` must be the GRAD latent (t=0),
+        otherwise this trains the head without shaping the encoder -- which is the
+        entire point (§43 ②: the geometry is in the images but not in the latent)."""
+        tgt = (priv_state - self.aux_state_mean) / self.aux_state_std
+        return F.mse_loss(self.aux_state(z), tgt)
 
     # ------------------------------------------------------- value ensemble
     def _build_value_extra(self, z, h, out_v, nl, ln, act):
@@ -440,7 +607,11 @@ class WorldModel(nn.Module):
             pe.set_stats(mean, std)
 
     # ----------------------------------------------------------- forward bits
-    def encode(self, state: torch.Tensor) -> torch.Tensor:
+    def encode(self, state, augment_fn=None) -> torch.Tensor:
+        """state: [B, obs_dim] tensor (state arms) OR an obs DICT
+        {camera: uint8[B,C,H,W], 'prop': float[B,prop_dim]} (pixel arm)."""
+        if self.pixel:
+            return self.simnorm(self.encoder(self.obs_encoder(state, augment_fn=augment_fn)))
         if self.raw_state:
             return (state - self.norm_state_mean) / self.norm_state_std
         if getattr(self, "input_pe", None) is not None:
@@ -543,6 +714,16 @@ class WorldModel(nn.Module):
         Raw-state: the analytic denorm inverse of encode (exact, no params)."""
         if self.raw_state:
             return z * self.norm_state_std + self.norm_state_mean
+        if self.pixel:
+            # Unreachable at plan time with shared_encoder=1: _policy_rollout takes
+            # the policy_from_latent branch (simdist_planner.py:176-179), and the
+            # only other decode() sites are behind external reward_fn/value_fn
+            # hooks. Raise loudly rather than inventing an image decoder.
+            raise RuntimeError(
+                "decode() is not available on the pixel arm (no image decoder). "
+                "This means something requested a raw observation from a latent: "
+                "check that shared_encoder=1 and that no external "
+                "proposal_policy/reward_fn/value_fn is attached to the planner.")
         return self.decoder(z)
 
     def policy_action(self, state: torch.Tensor) -> torch.Tensor:
@@ -567,7 +748,13 @@ class WorldModel(nn.Module):
 
     # ------------------------------------------------------- param groups
     def encoder_parameters(self):
-        return [] if self.encoder is None else list(self.encoder.parameters())
+        """All params that map an observation to z. MUST include the conv stack on
+        the pixel arm, or enc_lr_scale would silently leave it in the full-lr group
+        (and any freeze-by-optimizer-exclusion would silently keep training it)."""
+        p = [] if self.encoder is None else list(self.encoder.parameters())
+        if getattr(self, "obs_encoder", None) is not None:
+            p += list(self.obs_encoder.parameters())
+        return p
 
     def policy_parameters(self):
         p = list(self.policy.parameters())

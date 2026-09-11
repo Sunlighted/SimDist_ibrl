@@ -10,7 +10,7 @@
 #   obs_mlp_layers [128]       → [256]           (default)
 # → ~4.9M params (vs ~1.44M in the small-net config).
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 16
   num_data: 20

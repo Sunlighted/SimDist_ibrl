@@ -140,6 +140,19 @@ def parse_args():
                         "at the very end). write_dataset rewrites the WHOLE file "
                         "each flush, so writing after every demo is O(N^2) and "
                         "kills large collections; batching keeps it fast.")
+    p.add_argument("--rl_image_size", type=int, default=0,
+                   help="0 = inherit the ckpt's rl_image_size (legacy). Set 224 to "
+                        "record the NATIVE render for the ResNet-18 arm; the env "
+                        "already renders at image_size=224 and downsizes, so this "
+                        "only changes what is STORED.")
+    p.add_argument("--rl_cameras", type=str, default="",
+                   help='"+"- or comma-separated cameras to RECORD into the demo '
+                        'obs, e.g. "agentview+robot0_eye_in_hand". Empty (default) '
+                        'inherits the loading ckpt\'s rl_cameras -- which for a '
+                        'STATE ckpt is [] (train_rl.py:465-467 empties it when '
+                        'use_state=1), so NO image keys get written and the demos '
+                        'are silently state-only. Set this for the PIXEL arm. '
+                        'Prefer "+": sbatch --export splits values on commas.')
     p.add_argument("--drop_images", type=int, default=0,
                    help="1 = do not store rendered camera *_image keys in the "
                         "demo obs (state-based downstream ignores them; avoids "
@@ -198,7 +211,23 @@ def build_env(args):
     env_params["domain_shift"] = shift
     env_params["hand_init_perturb"] = None
     env_params["hand_init_perturb_joint_sigma"] = args.hand_init_perturb_joint_sigma
-    if args.record_video > 0:
+    # ★ rl_cameras decides what lands in the demo obs: robosuite_wrapper.py:478
+    # skips any camera not in rl_cameras BEFORE writing rl_obs. A state ckpt
+    # carries rl_cameras=[], so without this override the collector renders
+    # frames for the video and then discards every one of them.
+    if args.rl_cameras:
+        _rlc = [c for c in args.rl_cameras.replace("+", ",").split(",") if c]
+        env_params["rl_cameras"] = _rlc
+        # camera_names must be a SUPERSET of rl_cameras or _extract_images
+        # KeyErrors on obs[f"{cam}_image"].
+        env_params["camera_names"] = sorted(
+            set(env_params.get("camera_names") or []) | set(_rlc))
+        print(f"[pixel] recording rl_cameras={_rlc}")
+    if args.rl_image_size:
+        print(f"[pixel] rl_image_size {env_params.get('rl_image_size')} -> "
+              f"{args.rl_image_size}")
+        env_params["rl_image_size"] = int(args.rl_image_size)
+    elif args.record_video > 0:
         env_params["camera_names"] = [c for c in args.cameras.split(",") if c]
     else:
         # No videos: render only the rl camera (kept in the demo obs), faster.
@@ -538,6 +567,16 @@ def main():
 
     print(common_utils.wrap_ruler("summary"))
     print(f"collected {len(accepted)}/{args.num_demo} demos in {attempt} attempts")
+    if len(accepted) == 0:
+        # Exit NON-ZERO: this script otherwise returns 0 after writing an empty
+        # dataset, so a caller (or an sbatch chain) proceeds on nothing. Seen for
+        # real: a 0.32-success collector against --max_demo_len 150 rejected
+        # 200/200 rollouts as "timeout/no-success", and the job reported rc=0.
+        raise SystemExit(
+            "FATAL: 0 demos collected. Most likely --max_demo_len is shorter than "
+            "this policy needs (a weak/unsaturated collector takes MORE steps than "
+            "a saturated one), or a shift knob makes the task unsolvable. Check the "
+            "[reject] lines above.")
     if lens:
         print(f"demo length: mean={np.mean(lens):.1f}, min={min(lens)}, max={max(lens)}")
     print(f"dataset: {h5_path}")

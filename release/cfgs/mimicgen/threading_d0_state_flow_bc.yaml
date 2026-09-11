@@ -19,7 +19,7 @@
 #   state shape = 37 (eef_pos[3] + eef_quat[4] + gripper_qpos[2] + object[28]).
 #   IMPORTANT: dataset.action_horizon must match flow_policy.pred_horizon.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 16   # = flow_policy.pred_horizon (chunk length for training)
   num_data: -1

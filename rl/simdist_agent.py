@@ -27,6 +27,8 @@ dynamics + policy heads (encoder/reward/value frozen by exclusion from the optim
 
 from dataclasses import dataclass, field
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,15 +56,43 @@ class SimDistAgent(nn.Module):
     def __init__(self, use_state, obs_shape, prop_shape, action_dim, rl_camera,
                  cfg: SimDistConfig, device: str = "cuda"):
         super().__init__()
-        assert use_state, "SimDistAgent is state-only"
         self.cfg = cfg
         self.device = device
-        obs_dim = int(obs_shape[0])
-        self.obs_dim = obs_dim
+        self.use_state = bool(use_state)
         self.action_dim = action_dim
         self.discount = cfg.planner.discount
+        # PIXEL arm: obs_shape is (C,H,W) and the world model consumes an obs DICT.
+        # `rl_camera` is the "a+b" string MainConfig builds; mirror its split.
+        self.pixel = (cfg.world_model.encoder_type == "pixel")
+        self.history_k = 0
+        self.rl_cameras = [c for c in str(rl_camera).split("+") if c] if self.pixel else []
 
-        self.model = WorldModel(obs_dim, action_dim, cfg.world_model)
+        if self.pixel:
+            assert not use_state, "pixel arm expects use_state=0 (obs are images)"
+            assert len(obs_shape) == 3, f"pixel arm needs (C,H,W), got {tuple(obs_shape)}"
+            assert self.rl_cameras, "pixel arm needs rl_camera like 'agentview+robot0_eye_in_hand'"
+            prop_dim = int(prop_shape[0]) if prop_shape is not None else 0
+            self.history_k = int(getattr(cfg.world_model, "history_length", 0) or 0)
+            if self.history_k > 0:
+                from env.robosuite_wrapper import PROP_DIM as _PD
+                from rl.history import history_dim
+                assert prop_dim == _PD * self.history_k, (
+                    f"history_length={self.history_k} needs the env built with "
+                    f"prop_stack={self.history_k} (prop_shape would be "
+                    f"{_PD * self.history_k}), but got {prop_dim}. Set prop_stack "
+                    f"AND cond_action to {self.history_k} in the config.")
+                prop_dim = history_dim(self.history_k, _PD, action_dim)
+                print(f"[history] K={self.history_k} -> encoder prop_dim={prop_dim} "
+                      f"({self.history_k}x{_PD} proprio + {self.history_k}x{action_dim} actions)")
+            self.obs_dim = 0
+            self.model = WorldModel(0, action_dim, cfg.world_model,
+                                    image_shape=tuple(obs_shape), prop_dim=prop_dim,
+                                    cameras=self.rl_cameras)
+        else:
+            assert use_state, "SimDistAgent state arm requires use_state=1"
+            obs_dim = int(obs_shape[0])
+            self.obs_dim = obs_dim
+            self.model = WorldModel(obs_dim, action_dim, cfg.world_model)
         self.to(device)
         # planner holds a ref to the (now on-device) model; no params of its own
         self.planner = MppiPlanner(self.model, cfg.planner, action_dim, device=device)
@@ -127,6 +157,8 @@ class SimDistAgent(nn.Module):
     @torch.no_grad()
     def act(self, obs: dict[str, torch.Tensor], *, eval_mode: bool = False,
             stddev: float = 0.0, cpu: bool = True) -> torch.Tensor:
+        if self.pixel:
+            return self._act_pixel(obs, eval_mode=eval_mode, stddev=stddev, cpu=cpu)
         state = obs["state"].to(self.device).float()
         single = state.dim() == 1
         if not self.cfg.use_planner:
@@ -146,6 +178,56 @@ class SimDistAgent(nn.Module):
         # eval cost). Numerically equivalent to looping `plan` over the rows.
         actions = self.planner.plan_batch(state, eval_mode=eval_mode, stddev=stddev)
         return actions.cpu() if cpu else actions
+
+    def _batch_pixel_obs(self, obs: dict) -> tuple[dict, bool]:
+        """-> (batched obs dict on device, was_single). Returns a NEW dict; never
+        mutates the caller's, which the collection loop reuses across steps
+        (QAgent._maybe_unsqueeze_ mutates in place -- do not copy that here)."""
+        single = obs[self.rl_cameras[0]].dim() == 3          # [C,H,W] vs [B,C,H,W]
+        keys = list(self.rl_cameras)
+        if self.model.obs_encoder.use_prop:
+            keys.append("prop")
+        out = {}
+        for k in keys:
+            v = obs[k].to(self.device)      # uint8 stays uint8; cast happens in the encoder
+            out[k] = v.unsqueeze(0) if single else v
+        if self.history_k > 0 and self.model.obs_encoder.use_prop:
+            # ACT-side history. The env supplies obs["prop"] already stacked
+            # (prop_stack=K, newest-first) and obs["past_action"] as the wrapper's
+            # deque (OLDEST-first, [a_{t-K}..a_{t-1}]). `build_step` reverses the
+            # actions so this matches the TRAINING layout exactly; both paths go
+            # through rl/history.py precisely so they cannot drift apart.
+            from env.robosuite_wrapper import PROP_DIM as _PD
+            from rl.history import build_step
+            assert "past_action" in obs, (
+                "history_length>0 needs the env built with cond_action=K so it "
+                "emits obs['past_action']")
+            pa = obs["past_action"].to(self.device)
+            if single:
+                pa = pa.unsqueeze(0)
+            out["prop"] = build_step(out["prop"], pa, self.history_k,
+                                     _PD, self.action_dim)
+        return out, single
+
+    @torch.no_grad()
+    def _act_pixel(self, obs, *, eval_mode, stddev, cpu):
+        x, single = self._batch_pixel_obs(obs)
+        if not self.cfg.use_planner:
+            action = self.model.policy_action(x)
+            if not eval_mode and stddev > 0:
+                action = (action + torch.randn_like(action) * stddev).clamp(-1, 1)
+        else:
+            # ALWAYS route through plan_batch, even for a single obs. plan() does
+            # `state.view(1,-1)` (simdist_planner.py:227), which is meaningless for
+            # an image dict; plan_batch encodes then calls plan_batch_from_latent,
+            # which is latent-native and needs no raw obs. Its docstring notes it is
+            # the vectorized equivalent of looping plan() over the rows. The only
+            # feature lost is warm_start, which plan_batch does not support and
+            # which every eval/adapt config already sets to 0 (asserted in the
+            # pixel config validation).
+            action = self.planner.plan_batch(x, eval_mode=eval_mode, stddev=stddev)
+        action = action[0] if single else action
+        return action.cpu() if cpu else action
 
     @torch.no_grad()
     def plan_from_latent(self, z: torch.Tensor) -> torch.Tensor:
@@ -220,9 +302,205 @@ class SimDistAgent(nn.Module):
             losses.append(self._bag(per, keep))
         return torch.stack(losses).mean(), preds.mean(0)
 
+    @staticmethod
+    def _obs_at(obs, t):
+        """Slice timestep t out of a batched sequence. Accepts a [B,H+1,...] tensor
+        (state arms) or an obs DICT {key: [B,H+1,...]} (pixel arm), so every loss
+        body indexes uniformly regardless of arm."""
+        if isinstance(obs, dict):
+            return {k: v[:, t] for k, v in obs.items()}
+        return obs[:, t]
+
+    def _augment_obs(self, obs):
+        """Training-only image/proprio augmentation for the PIXEL arm (§44's row).
+
+        ★ THE LOAD-BEARING INVARIANT: ONE augmentation draw per (sample, camera),
+        SHARED across the H+1 frames of that sample. Every parameter -- the shift
+        grid, the four jitter factors, the blur sigma -- is drawn once outside the
+        `t` loop and reused for every timestep. Independent per-frame parameters
+        would inject apparent camera jitter into the very transition the dynamics
+        head is learning, AND desynchronise the network input from the detached
+        consistency target built from the same frame.
+
+        Order is geometric -> photometric -> blur, matching the reference's spirit:
+        shift/crop, then colour jitter, then Gaussian blur.
+
+        Everything runs in FLOAT and is cast back to the stored dtype at the end.
+        The shift alone is lossless in uint8 (whole-pixel offsets land exactly on
+        pixel centres), so the shift-only path is bit-identical to the pre-jitter
+        implementation -- including the RNG stream, because a knob at 0 draws
+        NOTHING. Jitter and blur are inherently float; the extra transient is one
+        [B,C,H,W] slice (154 MB at 224), not the whole [B,H+1,C,H,W] block.
+
+        No-op unless aug_* is configured AND obs is a pixel dict, so the state
+        arms and every existing pixel run are untouched.
+        """
+        wm = self.cfg.world_model
+        pad = int(getattr(wm, "aug_shift_pad", 0) or 0)
+        sigma = float(getattr(wm, "aug_prop_noise", 0.0) or 0.0)
+        jitter = float(getattr(wm, "aug_color_jitter", 0.0) or 0.0)
+        blur = float(getattr(wm, "aug_blur_sigma_max", 0.0) or 0.0)
+        if not isinstance(obs, dict) or (
+                pad <= 0 and sigma <= 0.0 and jitter <= 0.0 and blur <= 0.0):
+            return obs
+        out = dict(obs)
+        if pad > 0 or jitter > 0.0 or blur > 0.0:
+            for k, v in obs.items():
+                if k == "prop" or v.dim() != 5:
+                    continue
+                b, h1, c, hh, ww = v.shape
+                # --- ONE draw per (sample, camera), reused for all H+1 frames ---
+                grid = jit = kern = None
+                if pad > 0:
+                    assert hh == ww, f"shift aug needs square frames, got {hh}x{ww}"
+                    grid = self._shift_grid(b, hh, pad, v.device)
+                if jitter > 0.0:
+                    jit = self._jitter_params(b, jitter, v.device)
+                if blur > 0.0:
+                    kern = self._blur_kernel(b, blur, v.device)
+                aug = torch.empty_like(v)
+                for t in range(h1):
+                    x = v[:, t].float()
+                    if grid is not None:
+                        x = torch.nn.functional.pad(x, (pad,) * 4, "replicate")
+                        x = torch.nn.functional.grid_sample(
+                            x, grid, padding_mode="zeros", align_corners=False)
+                        x = x.round_()      # whole-pixel shift => exact in uint8
+                    if jit is not None:
+                        x = self._apply_jitter(x, jit)
+                    if kern is not None:
+                        x = self._apply_blur(x, kern)
+                    aug[:, t] = x.round_().clamp_(0, 255).to(v.dtype)
+                out[k] = aug
+        if sigma > 0.0 and "prop" in out:
+            out["prop"] = out["prop"] + torch.randn_like(out["prop"]) * sigma
+        return out
+
+    @staticmethod
+    def _shift_grid(n: int, h: int, pad: int, device):
+        """RandomShiftsAug's grid, drawn ONCE so every timestep gets the same shift."""
+        eps = 1.0 / (h + 2 * pad)
+        arange = torch.linspace(-1.0 + eps, 1.0 - eps, h + 2 * pad,
+                                device=device, dtype=torch.float32)[:h]
+        arange = arange.unsqueeze(0).repeat(h, 1).unsqueeze(2)
+        base = torch.cat([arange, arange.transpose(1, 0)], dim=2)
+        base = base.unsqueeze(0).repeat(n, 1, 1, 1)
+        shift = torch.randint(0, 2 * pad + 1, size=(n, 1, 1, 2),
+                              device=device, dtype=torch.float32)
+        shift *= 2.0 / (h + 2 * pad)
+        return base + shift
+
+    # --------------------------------------------------------------- jitter
+    # RGB -> YIQ and back, for the hue rotation. Registered as plain constants
+    # (not buffers) so nothing enters any state_dict.
+    _YIQ = ((0.299, 0.587, 0.114),
+            (0.5959, -0.2746, -0.3213),
+            (0.2115, -0.5227, 0.3112))
+
+    @staticmethod
+    def _jitter_params(n: int, s: float, device):
+        """Four colour-jitter factors, ONE set per (sample, camera).
+
+        brightness / contrast / saturation ~ U(1-s, 1+s) (clamped at 0), and a hue
+        rotation of U(-h, h) turns with h = min(0.5, s/3) -- so s=0.3 reproduces
+        the conventional ColorJitter(0.3, 0.3, 0.3, 0.1). Fixed application order
+        (b -> c -> sat -> hue) so a given seed is reproducible; torchvision
+        shuffles the order, which would make runs unrepeatable.
+        """
+        f = 1.0 + (torch.rand(3, n, device=device) * 2.0 - 1.0) * s
+        f = f.clamp_min(0.0)
+        hue_max = min(0.5, s / 3.0)
+        hue = (torch.rand(n, device=device) * 2.0 - 1.0) * hue_max
+        return f[0], f[1], f[2], hue
+
+    def _apply_jitter(self, x, jit):
+        """x: [B,C,H,W] float in 0..255 (NOT clamped -- the caller clamps once)."""
+        bright, contrast, sat, hue = jit
+        v = lambda t: t.view(-1, 1, 1, 1)
+        x = x * v(bright)
+        gray = self._to_gray(x) if x.shape[1] == 3 else x.mean(1, keepdim=True)
+        m = gray.mean(dim=(1, 2, 3), keepdim=True)
+        x = (x - m) * v(contrast) + m
+        if x.shape[1] == 3:
+            gray = self._to_gray(x)
+            x = (x - gray) * v(sat) + gray
+            x = self._apply_hue(x, hue)
+        return x
+
+    @staticmethod
+    def _to_gray(x):
+        w = torch.tensor([0.299, 0.587, 0.114], device=x.device,
+                         dtype=x.dtype).view(1, 3, 1, 1)
+        return (x * w).sum(1, keepdim=True)
+
+    def _apply_hue(self, x, hue):
+        """Rotate the I/Q chroma plane by `hue` turns, per sample. [B,3,H,W]."""
+        yiq = torch.tensor(self._YIQ, device=x.device, dtype=x.dtype)
+        rgb = torch.linalg.inv(yiq)
+        th = hue.to(x.dtype) * (2.0 * math.pi)
+        cos, sin = th.cos(), th.sin()
+        one, zero = torch.ones_like(cos), torch.zeros_like(cos)
+        rot = torch.stack([
+            torch.stack([one, zero, zero], dim=-1),
+            torch.stack([zero, cos, -sin], dim=-1),
+            torch.stack([zero, sin, cos], dim=-1)], dim=-2)          # [B,3,3]
+        mat = rgb.unsqueeze(0) @ rot @ yiq.unsqueeze(0)               # [B,3,3]
+        return torch.einsum("bij,bjhw->bihw", mat, x)
+
+    # ----------------------------------------------------------------- blur
+    @staticmethod
+    def _blur_kernel(n: int, sigma_max: float, device):
+        """A 1-D Gaussian per sample, sigma ~ U(0, sigma_max]. ONE per (sample, camera).
+
+        The kernel WIDTH is a constant set by sigma_max so the whole batch is one
+        grouped conv; a small sigma simply collapses the kernel toward a delta.
+        sigma is in STORED-frame pixels (§46⑫: this runs before `resize_to`).
+        """
+        sig = (1.0 - torch.rand(n, device=device)) * sigma_max   # (0, sigma_max]
+        r = max(1, int(math.ceil(2.0 * sigma_max)))
+        d = torch.arange(-r, r + 1, device=device, dtype=torch.float32)
+        w = torch.exp(-(d.view(1, -1) ** 2) / (2.0 * sig.view(-1, 1) ** 2))
+        return w / w.sum(dim=1, keepdim=True)                   # [B, 2r+1]
+
+    @staticmethod
+    def _apply_blur(x, kern):
+        """Separable Gaussian with a PER-SAMPLE kernel, via a grouped conv."""
+        b, c, h, w = x.shape
+        k = kern.shape[1]
+        r = k // 2
+        wt = kern.view(b, 1, 1, k).repeat_interleave(c, dim=0)  # [B*C,1,1,k]
+        y = x.reshape(1, b * c, h, w)
+        y = torch.nn.functional.pad(y, (r, r, 0, 0), mode="reflect")
+        y = torch.nn.functional.conv2d(y, wt, groups=b * c)
+        y = torch.nn.functional.pad(y, (0, 0, r, r), mode="reflect")
+        y = torch.nn.functional.conv2d(y, wt.view(b * c, 1, k, 1), groups=b * c)
+        return y.reshape(b, c, h, w)
+
+    @staticmethod
+    def _obs_batch(obs) -> int:
+        """Batch size of a batched obs sequence, tensor or dict."""
+        if isinstance(obs, dict):
+            return next(iter(obs.values())).shape[0]
+        return obs.shape[0]
+
+    @staticmethod
+    def _obs_flat(obs, hi):
+        """Flatten timesteps 0..hi-1 into the batch dim: [B,H+1,...] -> [B*hi,...].
+        Accepts a tensor or an obs dict, so the BC path is arm-agnostic."""
+        if isinstance(obs, dict):
+            return {k: v[:, :hi].reshape(-1, *v.shape[2:]) for k, v in obs.items()}
+        return obs[:, :hi].reshape(-1, obs.shape[-1])
+
+    @staticmethod
+    def _obs_len(obs) -> int:
+        """Sequence length (H+1) of a batched obs sequence, tensor or dict."""
+        if isinstance(obs, dict):
+            return next(iter(obs.values())).shape[1]
+        return obs.shape[1]
+
     def update_distill(self, states, actions, rewards, value_targets=None,
                        policy_mask=None, policy_states=None, policy_actions=None,
-                       policy_states_mask=None) -> dict[str, float]:
+                       policy_states_mask=None, priv_states=None) -> dict[str, float]:
         """states[B,H+1,obs], actions[B,H,act], rewards[B,H].
 
         policy_mask[B,H] (optional): the paper's per-step 1_e(a_{t+i}) indicator,
@@ -249,18 +527,65 @@ class SimDistAgent(nn.Module):
         return Sum gamma^t r + gamma^H V has a real gradient to climb.
         """
         cfg = self.cfg.world_model
-        H = states.shape[1] - 1
+        H = self._obs_len(states) - 1
         rho = cfg.rho
 
         # policy-BC may train on a SEPARATE (pure-expert) batch; default to the
         # main batch (legacy). The policy uses enc_pi and does not touch z, so
         # this only changes what the policy head clones.
+        # TRAINING-ONLY augmentation. Must happen here, before the first encode:
+        # every downstream use (grad latent, detached consistency target, decoder,
+        # policy BC) then reads the SAME augmented frames. No-op when aug_* is 0.
+        states = self._augment_obs(states)
+        if policy_states is not None:
+            policy_states = self._augment_obs(policy_states)
+
         if policy_states is None:
             p_states, p_actions, p_mask = states, actions, policy_mask
         else:
             p_states, p_actions, p_mask = policy_states, policy_actions, policy_states_mask
 
-        z = self.model.encode(states[:, 0])  # [B, z]
+        z = self.model.encode(self._obs_at(states, 0))  # [B, z]
+
+        # ---- encode each timestep EXACTLY ONCE -------------------------------
+        # The original code called encode() up to 3H+2 times per gradient step:
+        # once for z (t=0, with grad), once per step for the consistency target,
+        # again per step for the decoder loss, and again per step for the policy
+        # BC. Every one of those beyond the first is redundant -- the parameters
+        # do not change until the single optimizer step at the end -- so they can
+        # be served from one detached cache. For the state arm this is a modest
+        # saving; for the PIXEL arm it is the difference between ~17 and ~6 conv
+        # forwards of batch B per step, i.e. the dominant training cost.
+        #
+        # `encode(x).detach()` is numerically identical to `with no_grad:
+        # encode(x)` (no_grad only suppresses graph recording), and every encoder
+        # in this repo is per-sample deterministic -- MLP for state, GroupNorm
+        # (never BatchNorm) + no dropout for the pixel encoders -- so the cache
+        # is BIT-identical to the per-site calls it replaces. Verified across 8
+        # config combinations by scripts/test_distill_dedup.py, which compares
+        # post-step weight checksums (loss alone cannot see a detach regression).
+        #
+        # NOTE: deliberately NOT batched into one encode([B*(H+1), ...]) call.
+        # That would change BLAS/cuDNN blocking and hence summation order,
+        # costing exact identity for a ~1e-7 difference. Revisit only with a
+        # measured win and a relaxed tolerance.
+        z_det = [z.detach()]
+        with torch.no_grad():
+            for t in range(1, H + 1):
+                z_det.append(self.model.encode(self._obs_at(states, t)))
+
+        # The policy head may train on a SEPARATE batch, which then needs its own
+        # cache. Only build it on the shared-encoder+detach path; the other paths
+        # call policy_action(ps_t) with grad and cannot use a detached cache.
+        zp_det = None
+        if cfg.shared_encoder and cfg.detach_pi:
+            if policy_states is None:
+                zp_det = z_det                      # same batch -> reuse
+            else:
+                with torch.no_grad():
+                    zp_det = [self.model.encode(self._obs_at(p_states, t))
+                              for t in range(H)]
+
         cons_l = rew_l = val_l = pol_l = dec_l = 0.0
         wsum = 0.0
         for t in range(H):
@@ -269,8 +594,7 @@ class SimDistAgent(nn.Module):
             w = rho ** t
             wsum += w
 
-            with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])
+            z_next_enc = z_det[t + 1]
 
             cons_step, z_next_pred = self._dynamics_cons_loss(z, a_t, z_next_enc)
             cons_l = cons_l + w * cons_step
@@ -306,9 +630,9 @@ class SimDistAgent(nn.Module):
             # (consistency makes z≈encode(s)). Detach the input so this only
             # trains the decoder, not the dynamics encoder. Raw-state arm: decode
             # is the analytic denorm inverse (no params, exact) -> skip (loss==0).
-            if not self.model.raw_state:
+            if not self.model.raw_state and self.model.decoder is not None:
                 dec_l = dec_l + w * F.mse_loss(
-                    self.model.decode(self.model.encode(states[:, t]).detach()), states[:, t])
+                    self.model.decode(z_det[t]), states[:, t])
             # policy BC. Three modes:
             #  - dedicated enc_pi (legacy): policy_action uses its own encoder, the
             #    dynamics z is never touched -> no detach needed.
@@ -318,9 +642,17 @@ class SimDistAgent(nn.Module):
             #    detaches the latent for the policy update). Lets the planner roll
             #    the policy directly in latent (no decode bridge).
             #  - shared encoder, no detach: BC also shapes the shared encoder.
-            ps_t = p_states[:, t]
+            ps_t = self._obs_at(p_states, t)
             if cfg.shared_encoder and cfg.detach_pi:
-                pred_a = self.model.policy_from_latent(self.model.encode(ps_t).detach())
+                if t == 0 and cfg.pi_grad_t0 and policy_states is None:
+                    # Let the BC signal reach the encoder at t=0 only. `z` is still
+                    # the grad latent here (it is reassigned to z_next_pred at the
+                    # end of the loop body), and the backward through it is already
+                    # paid for by the consistency loss -- so this is free. Requires
+                    # policy_states is None, i.e. the policy shares the model batch.
+                    pred_a = self.model.policy_from_latent(z)
+                else:
+                    pred_a = self.model.policy_from_latent(zp_det[t])
             else:
                 pred_a = self.model.policy_action(ps_t)
             pa_t = p_actions[:, t]
@@ -342,6 +674,20 @@ class SimDistAgent(nn.Module):
                 + cfg.value_coef * val_l + cfg.policy_coef * pol_l
                 + cfg.decoder_coef * dec_l)
 
+        # ★ AUXILIARY PRIVILEGED-STATE term (§43). Applied at t=0 ONLY, on the
+        # GRAD latent `z` -- the whole purpose is to shape the ENCODER, and every
+        # t>=1 latent in z_det is detached, so applying it there would train the
+        # head while leaving the encoder untouched. Costs no extra encode: the
+        # t=0 graph is already retained.
+        aux_l = None
+        if getattr(cfg, "aux_state_coef", 0.0) > 0 and priv_states is not None:
+            if self.model.aux_state is None:
+                raise ValueError(
+                    "aux_state_coef>0 but no aux head was built -- the ckpt/cfg pair "
+                    "predates the head. Rebuild stage 1 with aux_state_coef set.")
+            aux_l = self.model.aux_state_loss(z, priv_states[:, 0])
+            loss = loss + cfg.aux_state_coef * aux_l
+
         self.distill_opt.zero_grad()
         loss.backward()
         gnorm = nn.utils.clip_grad_norm_(self.model.trainable_parameters(), cfg.grad_clip)
@@ -353,7 +699,7 @@ class SimDistAgent(nn.Module):
 
         # monitor value-head spread: ~0 std means a collapsed value -> dead MPPI.
         with torch.no_grad():
-            z0 = self.model.encode(states[:, 0])
+            z0 = self.model.encode(self._obs_at(states, 0))
             v0 = self.model.predict_value(z0)
             if self.model.num_value_heads() > 1:
                 # IN-DISTRIBUTION disagreement (real encoded states). With random
@@ -382,6 +728,7 @@ class SimDistAgent(nn.Module):
             "distill/value": val_l.item(),
             "distill/policy": pol_l.item(),
             "distill/decoder": float(dec_l),  # float() handles raw-state (dec_l==0.0)
+            **({"distill/aux_state": float(aux_l)} if aux_l is not None else {}),
             "distill/grad_norm": float(gnorm),
             "distill/value_pred_std": float(v0.std()),
             "distill/value_pred_mean": float(v0.mean()),
@@ -399,10 +746,10 @@ class SimDistAgent(nn.Module):
         """Finetune dynamics + policy on TARGET demos (consistency + policy BC)."""
         assert self.finetune_opt is not None, "no finetune params enabled"
         cfg = self.cfg.world_model
-        H = states.shape[1] - 1
+        H = self._obs_len(states) - 1
         rho = cfg.rho
 
-        z = self.model.encode(states[:, 0])
+        z = self.model.encode(self._obs_at(states, 0))
         cons_l = pol_l = 0.0
         wsum = 0.0
         for t in range(H):
@@ -410,14 +757,15 @@ class SimDistAgent(nn.Module):
             w = rho ** t
             wsum += w
             with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])
+                z_next_enc = self.model.encode(self._obs_at(states, t + 1))
             if self.cfg.finetune_dynamics:
                 cons_step, z_next_pred = self._dynamics_cons_loss(z, a_t, z_next_enc)
                 cons_l = cons_l + w * cons_step
             else:
                 z_next_pred = self.model.next(z, a_t)
             if self.cfg.finetune_policy:
-                pol_l = pol_l + w * F.mse_loss(self.model.policy_action(states[:, t]), a_t)
+                pol_l = pol_l + w * F.mse_loss(
+                    self.model.policy_action(self._obs_at(states, t)), a_t)
             z = z_next_pred
 
         cons_l = cons_l / wsum if self.cfg.finetune_dynamics else torch.zeros((), device=self.device)
@@ -436,11 +784,35 @@ class SimDistAgent(nn.Module):
         }
 
     # ------------------------------------------------ TARGET adaptation phases
+    def _encode_frozen(self, obs, chunk_at_96: int = 2048) -> torch.Tensor:
+        """encode(obs) under no_grad, in chunks sized by image resolution.
+
+        A constant chunk is wrong for pixels: memory scales with H*W, so a value
+        tuned at 96x96 is ~5.4x too large at 224. Holds chunk*H*W constant.
+        Tensor (state-arm) input needs no chunking and takes the direct path, so
+        the state arms are untouched.
+        """
+        if not isinstance(obs, dict):
+            with torch.no_grad():
+                return self.model.encode(obs)
+        cam = next(k for k in obs if k != "prop")
+        h, w = obs[cam].shape[-2:]
+        n = obs[cam].shape[0]
+        step = max(64, int(chunk_at_96 * (96 * 96) / max(h * w, 1)))
+        with torch.no_grad():
+            if n <= step:
+                return self.model.encode(obs)
+            return torch.cat([
+                self.model.encode({k: v[i:i + step] for k, v in obs.items()})
+                for i in range(0, n, step)])
+
     def update_bc_policy(self, states, actions, lr: float = 3e-4,
                          anchor_states=None, anchor_actions=None,
                          anchor_coef: float = 0.0, anchor_eps: float = 0.0,
                          anchor_sat: float = 0.0, l2init_coef: float = 0.0,
-                         weight_decay: float = 0.0) -> dict[str, float]:
+                         weight_decay: float = 0.0,
+                         anchor_is_latent: bool = False,
+                         train_encoder: bool = False) -> dict[str, float]:
         """Stage-2 TARGET BC: train ONLY the policy head, freezing everything else
         (INCLUDING the encoder). The policy is a pure state->action map
         (`policy_action(s) = policy(encode(s))`); the BC loss is a flat MSE over all
@@ -459,20 +831,70 @@ class SimDistAgent(nn.Module):
         that drifts far from pi_src may invalidate the terminal value MPPI ranks
         with. `anchor_coef` sweeps that trade-off directly."""
         if self._bc_opt is None:
-            self._bc_opt = torch.optim.Adam(self.model.policy.parameters(), lr=lr,
+            bc_params = list(self.model.policy.parameters())
+            if train_encoder:
+                # DIAGNOSTIC / pixel escape hatch. findings.md §30: the SimNorm
+                # latent is trained by the VALUE objective, so it keeps value
+                # structure and discards mm-level geometry -- and policy
+                # improvement needs exactly that geometry ("to fix a
+                # hair's-breadth insertion you must know which way the sub-mm
+                # misalignment points"). The state arm can fall back to raw
+                # state; the PIXEL arm cannot, so a frozen pixel latent can cap
+                # stage-2 BC no matter how low the BC loss goes (measured:
+                # bc_loss 0.0119 < state's 0.0226 yet policy_only 0.08 vs 0.360).
+                # Letting BC reshape the encoder tests whether the information is
+                # absent from the LATENT or absent from the IMAGES.
+                bc_params += list(self.model.encoder_parameters())
+            self._bc_opt = torch.optim.Adam(bc_params, lr=lr,
                                             weight_decay=weight_decay)
+            if train_encoder and anchor_coef > 0 and anchor_is_latent:
+                # A cached latent anchor pool is only exact while the encoder is
+                # FROZEN. Training the encoder makes those latents stale and the
+                # anchor would silently pin the policy to a dead latent space.
+                raise ValueError(
+                    "bc_train_encoder=1 is incompatible with a cached LATENT anchor "
+                    "pool: the cached z's assume a frozen encoder. Use "
+                    "bc_anchor_coef=0, or rebuild the anchor from frames.")
             # (F3) theta_src snapshot for the L2-to-init variant. Taken here, i.e.
             # BEFORE the first .step(), so `model.policy` is still exactly pi_src.
             self._bc_init = ([p.detach().clone()
                               for p in self.model.policy.parameters()]
                              if l2init_coef > 0 else None)
-        H = states.shape[1] - 1
-        s_flat = states[:, :H].reshape(-1, states.shape[-1])  # [B*H, obs]
+        H = self._obs_len(states) - 1
+        s_flat = self._obs_flat(states, H)   # [B*H, obs] or dict of [B*H, ...]
         a_flat = actions.reshape(-1, actions.shape[-1])        # [B*H, act]
-        pred = self.model.policy_action(s_flat)
+        if train_encoder or not isinstance(s_flat, dict):
+            # STATE arms keep the exact legacy call. `policy_action` routes through
+            # the DEDICATED enc_pi when shared_encoder=0, so substituting
+            # `policy(encode(s))` there would silently use the DYNAMICS encoder --
+            # a different network, i.e. a wrong policy, not just a slower one.
+            # The pixel arm asserts shared_encoder=1 (world_model.py), where
+            # policy_action IS policy(encode(s)), so the chunked path below is
+            # exactly equivalent for it.
+            pred = self.model.policy_action(s_flat)
+        else:
+            # ENCODER IS FROZEN here (excluded from self._bc_opt), so building an
+            # autograd graph through it is pure waste -- and at 224 it is fatal:
+            # bc_batch_size=256 x H=5 x 2 cameras is 2560 images, whose first conv
+            # activations alone are ~10 GB, which OOMs an L40S before step 1.
+            # Encoding under no_grad in resolution-sized chunks is EXACT, by the
+            # same argument the cached latent anchor pool below already relies on:
+            # this optimizer holds only model.policy.parameters(), so
+            # d/d_theta_policy MSE(policy(z), a) is identical whether z carried a
+            # graph or not. Forward values are unchanged, so the state arm's
+            # numbers are unaffected -- it just stops paying for a discarded graph.
+            pred = self.model.policy(self._encode_frozen(s_flat))
         loss = F.mse_loss(pred, a_flat)
         total, anchor_loss = loss, None
         if anchor_coef > 0 and anchor_states is not None:
+            # anchor_is_latent: the pool is ALREADY ENCODED (pixel arm -- a frame
+            # pool would be 40k x 2 x 27 KB re-encoded every BC step). Exact, not
+            # an approximation: this optimizer holds only model.policy.parameters(),
+            # so d/d_theta_policy MSE(policy(z), tgt) is identical whether z was
+            # computed now or cached -- valid because the encoder is frozen here
+            # AND deterministic (GroupNorm/LayerNorm, no dropout, no BatchNorm).
+            a_pred = (self.model.policy(anchor_states) if anchor_is_latent
+                      else self.model.policy_action(anchor_states))
             if anchor_sat > 0:
                 # (F5) SATURATING anchor -- the mirror image of the hinge on the
                 # g(d) axis. Quadratic for small deviations, capped for large ones,
@@ -480,7 +902,7 @@ class SimDistAgent(nn.Module):
                 # it wants to move a lot. This is exactly Hellinger^2 between the
                 # two fixed-covariance Gaussians (1 - exp(-d^2/8 sigma^2)), i.e. a
                 # real divergence, with anchor_sat playing the role of 8 sigma^2.
-                d = self.model.policy_action(anchor_states) - anchor_actions
+                d = a_pred - anchor_actions
                 anchor_loss = (1.0 - torch.exp(-d.pow(2).sum(-1) / anchor_sat)).mean()
             elif anchor_eps > 0:
                 # (F4) KL as a per-state HARD trust region instead of a penalty:
@@ -488,12 +910,11 @@ class SimDistAgent(nn.Module):
                 # eps = sigma*sqrt(2*delta). Free inside the ball, quadratic
                 # outside. sqrt(.+1e-8) because torch.norm's backward is NaN at 0
                 # and the anchor residual does collapse toward 0 late in stage-2.
-                d = self.model.policy_action(anchor_states) - anchor_actions
+                d = a_pred - anchor_actions
                 dist = torch.sqrt(d.pow(2).sum(-1) + 1e-8)
                 anchor_loss = F.relu(dist - anchor_eps).pow(2).mean()
             else:
-                anchor_loss = F.mse_loss(self.model.policy_action(anchor_states),
-                                         anchor_actions)
+                anchor_loss = F.mse_loss(a_pred, anchor_actions)
             total = loss + anchor_coef * anchor_loss
         l2init_loss = None
         if l2init_coef > 0 and self._bc_init is not None:
@@ -542,15 +963,15 @@ class SimDistAgent(nn.Module):
         if self._dyn_opt is None:
             self._dyn_opt = torch.optim.Adam(self.model.dynamics_parameters(), lr=lr)
         cfg = self.cfg.world_model
-        H = states.shape[1] - 1
+        H = self._obs_len(states) - 1
         rho = cfg.rho
         with torch.no_grad():
-            z = self.model.encode(states[:, 0])  # frozen encoder
+            z = self.model.encode(self._obs_at(states, 0))  # frozen encoder
         cons_l = 0.0
         wsum = 0.0
         for t in range(H):
             with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])  # frozen encoder target
+                z_next_enc = self.model.encode(self._obs_at(states, t + 1))  # frozen target
             # trains ALL ensemble heads (per-head bagged); rolls the ensemble mean.
             cons_step, z_next_pred = self._dynamics_cons_loss(z, actions[:, t], z_next_enc)
             w = rho ** t
@@ -638,15 +1059,15 @@ class SimDistAgent(nn.Module):
         if self._dyn_opt is None:
             self._dyn_opt = torch.optim.Adam(self.model.dynamics.parameters(), lr=lr)
         cfg = self.cfg.world_model
-        H = states.shape[1] - 1
+        H = self._obs_len(states) - 1
         rho = cfg.rho
         with torch.no_grad():
-            z = self.model.encode(states[:, 0])  # frozen encoder
+            z = self.model.encode(self._obs_at(states, 0))  # frozen encoder
         vaml_l = 0.0
         wsum = 0.0
         for t in range(H):
             with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])         # frozen encoder target
+                z_next_enc = self.model.encode(self._obs_at(states, t + 1))  # frozen target
                 v_true = self.model.predict_value(z_next_enc, target=False).detach()
             z_next_pred = self.model.next(z, actions[:, t])              # trains dynamics
             v_pred = self.model.predict_value(z_next_pred, target=False)  # value 头冻结, 但对 z 可导
@@ -739,16 +1160,16 @@ class SimDistAgent(nn.Module):
             params = list(self.model.dynamics.parameters()) + list(self.model.value.parameters())
             self._dynval_opt = torch.optim.Adam(params, lr=lr)
         cfg = self.cfg.world_model
-        B = states.shape[0]
-        H = states.shape[1] - 1
+        B = self._obs_batch(states)
+        H = self._obs_len(states) - 1
         rho = cfg.rho
         with torch.no_grad():
-            z = self.model.encode(states[:, 0])
+            z = self.model.encode(self._obs_at(states, 0))
         cons_l = 0.0
         wsum = 0.0
         for t in range(H):
             with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])
+                z_next_enc = self.model.encode(self._obs_at(states, t + 1))
             z_next_pred = self.model.next(z, actions[:, t])
             w = rho ** t
             wsum += w
@@ -802,15 +1223,15 @@ class SimDistAgent(nn.Module):
                 "encoder arm needs a learned encoder (encoder_type='latent')"
             self._dynvalenc_opt = torch.optim.Adam(params, lr=lr)
         cfg = self.cfg.world_model
-        B = states.shape[0]
-        H = states.shape[1] - 1
+        B = self._obs_batch(states)
+        H = self._obs_len(states) - 1
         rho = cfg.rho
-        z = self.model.encode(states[:, 0])  # encoder TRAINS
+        z = self.model.encode(self._obs_at(states, 0))  # encoder TRAINS
         cons_l = 0.0
         wsum = 0.0
         for t in range(H):
             with torch.no_grad():
-                z_next_enc = self.model.encode(states[:, t + 1])  # stop-grad target
+                z_next_enc = self.model.encode(self._obs_at(states, t + 1))  # stop-grad
             z_next_pred = self.model.next(z, actions[:, t])
             w = rho ** t
             wsum += w

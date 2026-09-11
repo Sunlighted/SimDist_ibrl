@@ -15,7 +15,7 @@
 #   python train_bc.py --config_path release/cfgs/mimicgen/threading_d1_state_flow_bc.yaml \
 #       --save_dir exps/mimicgen/threading_d1_flow_bc_seed1
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d1/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d1/processed_data96.hdf5
   use_state: 1
   action_horizon: 16    # = flow_policy.pred_horizon
   num_data: -1          # all 1000 D1 demos

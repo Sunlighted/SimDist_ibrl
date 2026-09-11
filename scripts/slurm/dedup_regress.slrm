@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=dedup_regress
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=24G
+#SBATCH --time=0:29:00
+#SBATCH --output=logs/dedup_regress_%j.out
+#SBATCH --error=logs/dedup_regress_%j.out
+# Regression gate for the §43 aux-state change: with aux_state_coef=0 the state
+# arm must be BIT-IDENTICAL to before. This harness compares post-step per-module
+# weight checksums across 8 config combinations -- loss values alone cannot see a
+# detach/graph regression (detach_pi 0 vs 1 give the same loss).
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"; source set_env_drac.sh
+python scripts/test_distill_dedup.py 2>&1 | tail -30
+echo "dedup rc=$?"

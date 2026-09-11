@@ -6,7 +6,7 @@
 # eval_hand_init_perturb_joint_sigma=0.1 matches the data-collection init —
 # so the test domain is identical to the training domain.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_sigma0.1/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_source_sigma0.1/dataset.hdf5
   use_state: 1
   action_horizon: 16   # = flow_policy.pred_horizon
   num_data: 200         # train on the first 200 source demos

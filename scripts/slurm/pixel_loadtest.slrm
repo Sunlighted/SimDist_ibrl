@@ -1,0 +1,84 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix_loadtest
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=0:30:00
+#SBATCH --output=logs/pix_loadtest_%j.out
+#SBATCH --error=logs/pix_loadtest_%j.out
+#
+# ★ SLURM SIZING: 0:30:00 -> b1. 64G because the pixel replay is ~24 GB in RAM.
+#
+# End-to-end check of the PIXEL data path on the REAL generated replay, before
+# committing to a multi-chunk stage-1:
+#   1. load a subset through load_source_replay_to_sequence_buffer
+#   2. verify frames arrive uint8, aligned with `state`, at the right shapes
+#   3. run real update_distill steps on real data and time them
+# Everything here is cheap; the point is to fail now rather than 6 h into a run.
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+REPLAY="${REPLAY:-release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5}"
+NUM="${NUM:-300}"
+
+python - "$REPLAY" "$NUM" <<'PY'
+import sys, time, torch, numpy as np
+from rl.sequence_replay import SequenceReplayBuffer, load_source_replay_to_sequence_buffer
+from rl.simdist_agent import SimDistAgent, SimDistConfig
+
+replay, num = sys.argv[1], int(sys.argv[2])
+cams = ("agentview", "robot0_eye_in_hand")
+
+print("=== 1. load ===")
+buf = SequenceReplayBuffer(max_episodes=100000, device="cpu",
+                           image_keys=cams, max_transitions=0)
+t0 = time.time()
+load_source_replay_to_sequence_buffer(buf, replay, num_data=num)
+print(f"loaded in {time.time()-t0:.1f}s | episodes={buf.size()} transitions={buf.num_transitions()}")
+
+print("\n=== 2. sample + alignment ===")
+H = 3
+out = buf.sample(32, H, device="cuda", return_obs=True)
+states, actions, rewards, obs = out
+print(f"states {tuple(states.shape)} actions {tuple(actions.shape)} rewards {tuple(rewards.shape)}")
+for c in cams:
+    print(f"  {c}: {tuple(obs[c].shape)} {obs[c].dtype} "
+          f"min={int(obs[c].min())} max={int(obs[c].max())}")
+    assert obs[c].dtype == torch.uint8
+    assert obs[c].shape[:2] == states.shape[:2], "image/state (B,H+1) mismatch"
+    assert int(obs[c].max()) > 5, "frames look pre-normalised; ResNet96 asserts 0-255"
+print("  alignment + dtype: OK")
+
+print("\n=== 3. real update_distill steps (timed) ===")
+cfg = SimDistConfig(); w = cfg.world_model
+w.encoder_type = "pixel"; w.shared_encoder = 1; w.decoder_coef = 0.0
+w.detach_pi = 1; w.pi_grad_t0 = 1; w.horizon = H
+w.latent_dim = 512; w.mlp_hidden_dim = 512; w.discrete_heads = 1
+w.activation = "mish"; w.enc_lr_scale = 0.3
+cfg.planner.horizon = H
+agent = SimDistAgent(False, (3, 96, 96), (9,), 7, "+".join(cams), cfg, device="cuda")
+print("params:", sum(p.numel() for p in agent.model.parameters()))
+
+B = 256
+for i in range(12):
+    st, ac, rw, ob = buf.sample(B, H, device="cuda", return_obs=True)
+    ob = {k: v for k, v in ob.items()}
+    ob["prop"] = st[:, :, :9]                      # prop is the first 9 state dims
+    if i == 2:
+        torch.cuda.synchronize(); t0 = time.time()
+    m = agent.update_distill(ob, ac, rw, value_targets=torch.zeros_like(rw[:, :1]).repeat(1, H+1))
+torch.cuda.synchronize()
+dt = (time.time() - t0) / 10
+print(f"ms/step  : {1000*dt:.1f}")
+print(f"peak GPU : {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+for k in ("distill/loss","distill/consistency","distill/policy","distill/value","distill/grad_norm"):
+    print(f"  {k:24s} {m[k]:.5f}")
+print(f"\n=> 800k steps would take {800_000*dt/3600:.1f} h "
+      f"({800_000*dt/3600/11.5:.1f} chunks of 11:59)")
+PY
+echo "loadtest rc=$?"

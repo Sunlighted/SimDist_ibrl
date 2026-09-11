@@ -50,7 +50,8 @@ class FrozenAgentBCPolicy(torch.nn.Module):
         return self.agent.act(src_obs, eval_mode=True, stddev=0.0, cpu=cpu)
 
 
-def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig", device: str) -> QAgent:
+def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig",
+                      device: str, *, privileged_state: bool = False) -> QAgent:
     """Rebuild a source-domain QAgent from its own cfg.yaml + weights, frozen.
 
     Reuses `env`'s shapes (source and target are the same task) but the source's
@@ -59,13 +60,39 @@ def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig", 
     the target obs), so the observation space — `use_state` and the stacking —
     MUST match between source and target, else the source net's input dim won't
     line up with the target obs (and load_state_dict would fail cryptically).
+
+    privileged_state=True (PIXEL arm): the frozen agent is a PRIVILEGED STATE
+    TEACHER. It does NOT consume this run's observations -- it reads the env's
+    state vector (rl_obs["state"], which PixelRobosuite emits alongside the
+    frames), so `use_state`/`obs_stack` are deliberately allowed to differ and
+    only the STATE layout has to match. This is what lets a pixel world model be
+    distilled against a state expert's V_src without training a pixel expert.
     """
+
     src_cfg_path = os.path.join(os.path.dirname(weight_file), "cfg.yaml")
     src_cfg = pyrallis.load(MainConfig, open(src_cfg_path, "r"))  # type: ignore
 
+    if privileged_state:
+        assert src_cfg.use_state, (
+            "privileged_state=True needs a STATE-based source ckpt "
+            f"(got use_state={src_cfg.use_state} in {src_cfg_path})")
+        assert not cfg.use_state, (
+            "privileged_state=True is only for a pixel run (use_state=0)")
+        # obs space differs ON PURPOSE; only the STATE layout must line up.
+        # `prop_stack` is deliberately NOT checked here: this branch already
+        # asserts the source is state-based (use_state=1), and a state QAgent
+        # provably never reads obs["prop"] -- every prop access in rl/q_agent.py
+        # is behind `if not self.use_state`. train_simdist's only source-agent
+        # call in the offline arm is value({"state": ...}), which passes no prop
+        # at all. Checking it blocked the PIXEL history arm (prop_stack=K feeds
+        # the world model's own encoder, not the frozen teacher) for no reason.
+        # state_stack DOES matter and is still enforced.
+        attrs = ("state_stack",)
+    else:
+        attrs = ("use_state", "state_stack", "obs_stack", "prop_stack")
     mismatches = [
         (a, getattr(src_cfg, a), getattr(cfg, a))
-        for a in ("use_state", "state_stack", "obs_stack", "prop_stack")
+        for a in attrs
         if getattr(src_cfg, a) != getattr(cfg, a)
     ]
     if mismatches:
@@ -81,8 +108,10 @@ def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig", 
         )
 
     agent = QAgent(
-        cfg.use_state,
-        env.observation_shape,
+        True if privileged_state else cfg.use_state,
+        # privileged: the teacher is a STATE net, so hand it the state shape even
+        # though env.observation_shape is (C,H,W) for this run.
+        env.state_shape if privileged_state else env.observation_shape,
         env.prop_shape,
         env.action_dim,
         cfg.rl_camera,

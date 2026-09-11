@@ -11,7 +11,7 @@
 #   python train_bc.py --config_path release/cfgs/mimicgen/threading_d0_target_flow_bc_n1000.yaml \
 #     --save_dir exps/mimicgen/threading_target_flow_bc_n1000_seed1
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_expert_n1000/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_expert_n1000/dataset.hdf5
   use_state: 1
   action_horizon: 16      # = flow_policy.pred_horizon
   num_data: 1000

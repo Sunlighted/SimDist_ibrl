@@ -1,0 +1,130 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=tripwire_src
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=0:30:00
+#SBATCH --output=logs/tripwire_src_%j.out
+#SBATCH --error=logs/tripwire_src_%j.out
+#
+# ★ SLURM SIZING (walltime tiers on this cluster, measured 2026-08-26):
+#     b1 <= 3:00:00   168 nodes      b2 <= 12:00:00
+#     b3 <= 1-00:00:00  84 nodes     b4 <= 3-00:00:00   42 nodes
+#   Requesting just OVER a boundary is very expensive: a 4h job priced into the
+#   12h tier waited 15h23m, where 2:59:00 would have gone to b1 and started in
+#   minutes. Our 3-day jobs waited 8-15h; the group median is ~1 minute.
+#   So: always sit just UNDER a boundary (2:59:00 / 11:59:00 / 23:59:00), and
+#   keep CPU/mem small -- large asks shrink the set of nodes with a free slot
+#   next to an idle GPU. Right-size from `sacct -o Elapsed,MaxRSS`, not guesses.
+#   This job: measured 9:33 at mp 10; 0:30 lands in b1 (all 168 nodes) instead of b2
+#
+# THE TRIPWIRE -- "the cheapest correctness check in the project"
+# (plan Phase 0.5 / docs/infra.md:363-368).
+#
+# Independently re-evaluates the finished SOURCE expert on BOTH domains at
+# n=300 and EXITS NON-ZERO if the scores are out of range, so that jobs chained
+# `--dependency=afterok` on this one (notably the ~21M-transition source replay
+# generation) cannot start behind a bad expert.
+#
+# Expected, strict success, joint-init sigma 0.1:
+#     source ~= 0.98      target ~= 0.13
+# The failure the docs specifically warn about is 0.98 / 0.40: that means the
+# TARGET recipe is wrong, not the expert, and everything downstream would be
+# uninterpretable. Hence the gate is on the GAP, not just on source quality.
+#
+# n=300 rather than the in-training 50: iron law #2 (±0.1 conclusions need
+# 300-500 episodes) and iron law #14 (a single 50-episode in-training eval is
+# systematically optimistic by 0.06-0.19 -- measured at exactly 0.15 on our own
+# flow-BC prior: score(best) 0.98 vs honest re-eval 0.83). 10 | 300 satisfies the
+# num_eval_proc divisibility assertion (iron law #12); so does 6 | 300.
+#
+# Usage:  SAVE=<expert dir> sbatch --export=ALL,SAVE scripts/slurm/tripwire_source_expert.slrm
+#         SRC_MIN / TGT_MAX override the gate bounds (e.g. for the non-strict arm,
+#         whose printed metric is raw success, not strict).
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+SAVE="${SAVE:-exps/mimicgen/threading_ibrl_source_strict_seed1}"
+CKPT="$SAVE/model0.pt"
+N="${N:-300}"
+SRC_MIN="${SRC_MIN:-0.85}"   # expert must be strong on source
+TGT_MAX="${TGT_MAX:-0.40}"   # target must actually be hard -- the 0.98/0.40 trap
+GATE="${GATE:-1}"            # 0 = report only, do not fail the job
+
+echo "=== node $(hostname) | ckpt=$CKPT | n=$N | gate: src>=$SRC_MIN tgt<=$TGT_MAX ==="
+if [ ! -s "$CKPT" ]; then echo "FATAL: missing $CKPT"; exit 1; fi
+
+# mp 6 (not 10) to match the 8-CPU ask: oversubscribing workers to cores just
+# slows the eval. 6 divides 300, satisfying the divisibility assertion.
+MP="${MP:-6}"
+COMMON="--mode rl --num_game $N --mp $MP --strict_success 1 --hand_init_perturb_joint_sigma 0.1"
+
+echo; echo "########## SOURCE (mode=none) ##########"
+python evaluate/eval.py --weight "$CKPT" $COMMON --shift_mode none 2>&1 | tee /tmp/tw_src_$$.log | grep -E "EVAL ENV|success rate" 
+
+echo; echo "########## TARGET (§12 dynamics-only) ##########"
+# Every knob explicit. Do NOT use --shift_from_cfg here: the strict config's
+# eval_domain_shift is mode=none (it evals on SOURCE so the topk saver ranks by
+# strict-source), so --shift_from_cfg would silently re-measure the SOURCE
+# domain and produce a tripwire that always passes.
+python evaluate/eval.py --weight "$CKPT" $COMMON \
+    --shift_mode fixed \
+    --shift_friction_scale 0.5 \
+    --shift_mass_scale 3.0 \
+    --shift_solref_scale 1.0 \
+    --shift_solimp_scale 1.0 \
+    --shift_gripper_kp_scale 0.12 \
+    --shift_hole_offset "0.0,0.0,0.0" \
+    --shift_ring_size_scale 0.85 \
+    --shift_ring_friction_scale 2.0 \
+    --shift_needle_size_scale 1.0 \
+    --shift_mask_hole_in_obs 0 2>&1 | tee /tmp/tw_tgt_$$.log | grep -E "EVAL ENV|success rate" 
+
+# --- gate -------------------------------------------------------------------
+python - "$SRC_MIN" "$TGT_MAX" "$GATE" /tmp/tw_src_$$.log /tmp/tw_tgt_$$.log <<'PY'
+import re, sys
+src_min, tgt_max, gate = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
+
+def rate(path):
+    # eval.py prints "success rate: XX.XX% (n/N)"; take the LAST occurrence.
+    hits = re.findall(r"success rate:\s*([0-9.]+)%", open(path).read())
+    return float(hits[-1]) / 100.0 if hits else None
+
+s, t = rate(sys.argv[4]), rate(sys.argv[5])
+print("\n" + "=" * 62)
+print(f"TRIPWIRE  source={s}  target={t}   (expected ~0.98 / ~0.13)")
+
+fail = []
+if s is None or t is None:
+    fail.append(f"could not parse a success rate (source={s}, target={t})")
+else:
+    if s < src_min:
+        fail.append(f"source {s:.3f} < {src_min} -- expert too weak to be a teacher")
+    if t > tgt_max:
+        fail.append(f"target {t:.3f} > {tgt_max} -- TARGET RECIPE LIKELY WRONG "
+                    "(the docs' 0.98/0.40 failure mode), not an expert problem")
+    if s is not None and t is not None and s - t < 0.40:
+        fail.append(f"gap {s - t:.3f} < 0.40 -- source/target barely differ, "
+                    "so the shift may not be applied at all")
+
+if fail:
+    print("TRIPWIRE FAILED:")
+    for f in fail:
+        print("  - " + f)
+    print("=" * 62)
+    sys.exit(0 if not gate else 2)
+print("TRIPWIRE PASSED")
+print("=" * 62)
+PY
+rc=$?
+rm -f /tmp/tw_src_$$.log /tmp/tw_tgt_$$.log
+echo "gate rc=$rc"
+echo "NOTE: compare the printed [EVAL ENV] lines -- two numbers are only"
+echo "comparable if task/shift/sigma/strict/ep_len match (iron law #15)."
+exit $rc

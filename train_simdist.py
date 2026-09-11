@@ -38,7 +38,7 @@ from tqdm import tqdm
 import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
-from env.robosuite_wrapper import PixelRobosuite
+from env.robosuite_wrapper import PixelRobosuite, PROP_DIM
 from env.domain_shift import DomainShiftConfig, InitDistConfig
 from env.strict_success import StrictSuccessConfig
 from rl.simdist_agent import SimDistAgent, SimDistConfig
@@ -46,6 +46,7 @@ from rl.sequence_replay import (
     SequenceReplayBuffer,
     load_demos_to_sequence_buffer,
     load_source_replay_to_sequence_buffer,
+    HISTORY_KEY,
 )
 from train_rl import load_frozen_agent, attach_ibrl_prior
 
@@ -62,6 +63,11 @@ class MainConfig(common_utils.RunConfig):
     rl_camera: str = "robot0_eye_in_hand"
     obs_stack: int = 1
     prop_stack: int = 1
+    # Number of PAST ACTIONS the env appends as obs["past_action"]. 0 = off
+    # (legacy). Must equal world_model.history_length (and prop_stack) when
+    # history is on, or the ACT path cannot build the same vector the model
+    # trained on -- rl/simdist_agent asserts this rather than letting it drift.
+    cond_action: int = 0
     state_stack: int = 1  # MUST be 1 (matches the source ckpt obs space)
     use_state: int = 1
     # agent
@@ -74,6 +80,17 @@ class MainConfig(common_utils.RunConfig):
     batch_size: int = 256
     update_freq: int = 2
     seq_replay_max_episode: int = 5000
+    # PIXEL arm: cap the SOURCE buffer by TRANSITIONS as well as episodes. Two
+    # 96x96 uint8 cameras cost 55,296 B/transition (22.1 GB at 400k), so
+    # `max_episodes` is the wrong unit. 0 = unlimited (state-arm default).
+    seq_replay_max_transitions: int = 0
+    # RESUME: path to a resume_state.pt written by a previous run of THIS config.
+    # Restores global_step + optimizer state + weights so an 800k-step distill can
+    # be split into <=12h chunks (b2) instead of needing the 3-day tier (b4, 42
+    # nodes, 8-15h queue waits). Safe for OFFLINE stage-1 only, where the source
+    # replay is reloaded from the hdf5 at startup and so needs no checkpointing --
+    # do NOT use it for an online-collection run, whose replay would be lost.
+    resume_from: str = ""
     # stage-1 data collection: frozen SOURCE expert guides the first
     # `expert_collect_steps` env steps (warm-up included), then MPPI self-explores.
     source_agent: str = ""
@@ -142,6 +159,10 @@ class MainConfig(common_utils.RunConfig):
     # stage-2 target demos
     target_demo_path: str = "release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5"
     target_num_data: int = 20
+    # ★ which slice of the target pool. 0 = the legacy "first N". Non-zero gives
+    # a DISJOINT draw per adapt seed so multi-seed error bars carry §38's
+    # single-draw sigma=0.092 (see load_demos_to_sequence_buffer's docstring).
+    target_demo_offset: int = 0
     # schedule
     num_warm_up_episode: int = 20
     distill_steps: int = 200000   # stage-1 online env steps
@@ -177,7 +198,35 @@ class MainConfig(common_utils.RunConfig):
         self.rl_cameras = self.rl_camera.split("+")
         if self.source_agent in ["none", "None"]:
             self.source_agent = ""
-        assert self.use_state, "SimDist baseline is state-only"
+        if self.use_state:
+            assert self.simdist.world_model.encoder_type != "pixel", (
+                "encoder_type='pixel' needs use_state=0")
+        else:
+            # PIXEL arm. Fail here, at config-parse time, rather than deep inside
+            # a 12-hour job -- every one of these is a silent-degradation trap.
+            wm = self.simdist.world_model
+            assert wm.encoder_type == "pixel", (
+                "use_state=0 requires world_model.encoder_type='pixel'")
+            assert wm.shared_encoder, (
+                "pixel needs shared_encoder=1: a dedicated enc_pi would make the "
+                "planner call decode(z) (simdist_planner.py:182) to bridge back to "
+                "an observation, which is impossible for images")
+            assert wm.decoder_coef == 0, (
+                "pixel needs decoder_coef=0: there is no image decoder")
+            assert wm.input_fourier_l == 0, "input_fourier is a raw-state feature"
+            assert self.obs_stack == 1, "rl/replay.py:267 asserts obs_stack == 1"
+            assert not self.simdist.planner.warm_start, (
+                "pixel act() routes through plan_batch, which has no warm_start")
+            assert not self.simdist.planner.seed_mean_from_policy, (
+                "seed_mean_from_policy needs a RAW obs (simdist_planner.py:389)")
+            assert self.rl_cameras and all(self.rl_cameras), (
+                "pixel needs rl_camera like 'agentview+robot0_eye_in_hand'")
+            assert self.simdist.finetune_steps == 0, (
+                "pixel stage-2 lives in train_simdist_adapt.py, not here")
+            # The offline loaders cannot produce frames yet, so a pixel run must
+            # use an image-bearing source replay written for this arm.
+            assert not (self.expert_demo_path or self.policy_replay_path), (
+                "expert_demo_path / policy_replay_path have no image loader yet")
         self.stddev_min = min(self.stddev_max, self.stddev_min)
         self.robots: list[str] = ["Panda"]
         # keep planner/world-model horizons in sync unless explicitly diverged
@@ -191,6 +240,58 @@ class MainConfig(common_utils.RunConfig):
         return f"linear({self.stddev_max},{self.stddev_min},{self.stddev_step})"
 
 
+def _expand_replay_paths(spec: str) -> list[str]:
+    """"a.hdf5+b.hdf5" or "shards/*/dataset.hdf5" -> [paths]. Single path => [path].
+
+    "+" not "," is the separator: `sbatch --export=ALL,K=V` splits values on
+    commas, a trap this repo has hit before (see gen_source_replay.slrm).
+    """
+    import glob as _glob
+    out: list[str] = []
+    empty: list[str] = []
+    for part in str(spec).split("+"):
+        part = part.strip()
+        if not part:
+            continue
+        if any(c in part for c in "*?["):
+            hits = sorted(_glob.glob(part))
+            # A GLOB may legitimately match nothing: a sharded generation run can
+            # end with some shards merged into dataset.hdf5 and others still as
+            # per-worker _shard_N.hdf5 (a shard job that hits its walltime never
+            # reaches the merge, and the merge is what deletes the worker files).
+            # So a spec may name both layouts and only one will exist per shard.
+            # A LITERAL path that is missing is still a hard error.
+            if not hits:
+                empty.append(part)
+                continue
+        else:
+            # A LITERAL path must exist. Without this a typo'd path sails through
+            # to an h5py error hundreds of lines later, or (worse) to a run that
+            # silently trained on fewer shards than intended.
+            assert os.path.exists(part), f"source_replay_path does not exist: {part!r}"
+            hits = [part]
+        out.extend(hits)
+    if empty:
+        print(f"[seq-buffer] {len(empty)} pattern(s) matched nothing (ok if the "
+              f"other layout matched): {empty}")
+    assert out, (f"source_replay_path matched NOTHING: {spec!r}. Patterns tried: "
+                 f"{empty or [spec]}")
+    # de-dup while keeping order: a merged dataset.hdf5 and its worker shards
+    # would otherwise both load and double-count every episode.
+    seen, uniq = set(), []
+    for h in out:
+        r = os.path.realpath(h)
+        if r not in seen:
+            seen.add(r)
+            uniq.append(h)
+    out = uniq
+    if len(out) > 1:
+        print(f"[seq-buffer] {len(out)} source replay shards:")
+        for h in out:
+            print(f"    {h}")
+    return out
+
+
 class Workspace:
     def __init__(self, cfg: MainConfig, from_main=True):
         self.work_dir = cfg.save_dir
@@ -198,7 +299,13 @@ class Workspace:
 
         if from_main:
             common_utils.set_all_seeds(cfg.seed)
-            sys.stdout = common_utils.Logger(cfg.log_path, print_to_stdout=True)
+            # common_utils.Logger defaults to mode="w" (py/logger.py:6,14), so every
+            # resume chunk TRUNCATED train.log and destroyed all earlier metric
+            # history -- the plain pixel arm's entire 0-500k learning curve was lost
+            # that way, and source_score/distill_* are not echoed anywhere else.
+            # Append when resuming so a chunked 800k run keeps one continuous log.
+            sys.stdout = common_utils.Logger(
+                cfg.log_path, mode=("a" if cfg.resume_from else "w"), print_to_stdout=True)
             pyrallis.dump(cfg, open(cfg.cfg_path, "w"))  # type: ignore
             print(common_utils.wrap_ruler("config"))
             with open(cfg.cfg_path, "r") as f:
@@ -214,6 +321,17 @@ class Workspace:
         self.finetune_step = 0
         self.H = cfg.simdist.world_model.horizon
         self._setup_env()
+
+        # §43 auxiliary privileged-state head: its width must be fixed BEFORE the
+        # model is built, because load_model does a strict load_state_dict. The
+        # privileged state is the 37-d vector the frozen value teacher consumes --
+        # env.state_shape on the pixel arm, observation_shape on the state arm.
+        if getattr(cfg.simdist.world_model, "aux_state_coef", 0.0) > 0:
+            _pd = (self.train_env.state_shape[0] if not cfg.use_state
+                   else self.train_env.observation_shape[0])
+            cfg.simdist.world_model.aux_state_dim = int(_pd)
+            print(f"[aux-state] coef={cfg.simdist.world_model.aux_state_coef} "
+                  f"dim={_pd} (t=0 grad latent only)")
 
         self.agent = SimDistAgent(
             bool(self.cfg.use_state),
@@ -233,7 +351,9 @@ class Workspace:
         self.source_value_ibrl = False
         if cfg.source_agent:
             print(f"loading frozen SOURCE expert for collection: {cfg.source_agent}")
-            self.source_agent = load_frozen_agent(cfg.source_agent, self.train_env, cfg, "cuda")
+            self.source_agent = load_frozen_agent(
+                cfg.source_agent, self.train_env, cfg, "cuda",
+                privileged_state=not bool(cfg.use_state))
             if cfg.source_value_ibrl:
                 # Only the VALUE path becomes hybrid; act_method stays "rl", so the
                 # expert's own act() (stage-1 collection) is byte-for-byte unchanged.
@@ -259,9 +379,13 @@ class Workspace:
             camera_names=self.rl_cameras,
             rl_cameras=self.rl_cameras,
             use_state=bool(self.cfg.use_state),
+            # PIXEL: emit rl_obs["state"] too -- the privileged STATE teacher
+            # needs it for V_src, and the buffer stores it beside the frames.
+            extra_state=not bool(self.cfg.use_state),
             obs_stack=self.cfg.obs_stack,
             state_stack=self.cfg.state_stack,
             prop_stack=self.cfg.prop_stack,
+            cond_action=self.cfg.cond_action,
             strict_success=self.cfg.strict_success,
             # See train_rl.py's field of the same name: skips robosuite's
             # offscreen renderer for state-based runs. Required on MIG-partitioned
@@ -290,23 +414,81 @@ class Workspace:
 
     def _setup_replay(self):
         # SOURCE trajectory buffer (world model distillation)
+        # K for the proprio+action history (rl/history.py); 0 = off (legacy).
+        self._hist_k = int(getattr(self.cfg.simdist.world_model, "history_length", 0) or 0)
+        # ★ The three history knobs must agree, or the failure is SILENT: with
+        # prop_stack=K but history_length=0 the encoder just gets a K-stacked prop
+        # and NO action history, trains happily, and is nothing like the intended
+        # arm. (Caught exactly this on the first history config.)
+        _ps, _ca = int(self.cfg.prop_stack), int(self.cfg.cond_action)
+        if self._hist_k > 0:
+            assert _ps == self._hist_k and _ca == self._hist_k, (
+                f"history_length={self._hist_k} requires prop_stack and "
+                f"cond_action to equal it; got prop_stack={_ps}, cond_action={_ca}")
+        else:
+            assert _ps <= 1 and _ca == 0, (
+                f"prop_stack={_ps}/cond_action={_ca} are set but "
+                f"world_model.history_length=0 -- the model would get stacked "
+                f"proprio with NO action history. Set history_length to match.")
         self.offline_source = bool(self.cfg.source_replay_path)
+        # PIXEL: store camera frames alongside the state. image_keys=() on the
+        # state arms keeps the buffer byte-for-byte legacy. The 37-dim state is
+        # kept in BOTH arms because _source_value_targets queries the frozen
+        # STATE critic with it (train_simdist.py's value distillation).
+        _img_keys = tuple(self.rl_cameras) if not self.cfg.use_state else ()
         self.seq_replay = SequenceReplayBuffer(
-            max_episodes=self.cfg.seq_replay_max_episode, device="cpu"
+            max_episodes=self.cfg.seq_replay_max_episode, device="cpu",
+            image_keys=_img_keys,
+            max_transitions=self.cfg.seq_replay_max_transitions,
         )
         if self.offline_source:
             # 方案 B: fill from a pre-collected MIXED source replay; no online rollout.
-            load_source_replay_to_sequence_buffer(
-                self.seq_replay, self.cfg.source_replay_path,
-                num_data=self.cfg.source_replay_num_data,
-                reward_scale=self.cfg.env_reward_scale,
-            )
+            # `source_replay_path` may name SEVERAL shards, "+"-separated and/or
+            # globbed. The reference recipe is 100k trajectories; generated as one
+            # job that is ~12 h (b2, slow queue) and then merged into a single
+            # ~0.5 TB file, but as N independent shards it is N short b1 jobs and
+            # needs no merge at all. A single path behaves exactly as before.
+            _paths = _expand_replay_paths(self.cfg.source_replay_path)
+            _bad = []
+            for _sp in _paths:
+                # A generation shard that hits its walltime is SIGKILLed mid-write,
+                # so its LAST hdf5 may be truncated (no SWMR). One unreadable file
+                # out of many must not cost the whole run -- but it is reported,
+                # never silently dropped, because "fewer shards than intended" is
+                # exactly the kind of thing that quietly changes a result.
+                try:
+                    load_source_replay_to_sequence_buffer(
+                        self.seq_replay, _sp,
+                        num_data=self.cfg.source_replay_num_data,
+                        reward_scale=self.cfg.env_reward_scale,
+                    )
+                except Exception as e:  # noqa: BLE001 - report and continue
+                    _bad.append((_sp, f"{type(e).__name__}: {e}"))
+                    print(f"[seq-buffer] !! UNREADABLE, skipping: {_sp}\n"
+                          f"             {type(e).__name__}: {e}", flush=True)
+            if _bad:
+                print(f"[seq-buffer] !! {len(_bad)}/{len(_paths)} replay files were "
+                      f"unreadable and were SKIPPED -- the run is training on LESS "
+                      f"data than the config names:", flush=True)
+                for _sp, _e in _bad:
+                    print(f"             {_sp}  ({_e})", flush=True)
+                assert len(_bad) < len(_paths), "every replay file was unreadable"
             assert self.seq_replay.can_sample(self.H), (
                 f"no source-replay episode of length >= horizon={self.H}")
             if self.source_agent is None:
                 print("[warn] offline source replay without --source_agent: value "
                       "labels fall back to TD-bootstrap, which collapses to V==0 "
                       "under sparse reward (see CLAUDE.md §17). Provide --source_agent.")
+        # §43: z-scoring stats for the auxiliary privileged-state target. Without
+        # these the MSE runs on RAW scale, where the large-magnitude dims of the
+        # 37-d state dominate and the small positional ones -- exactly the mm
+        # geometry this term exists to preserve -- contribute almost nothing.
+        if getattr(self.agent.model, "aux_state", None) is not None:
+            _m, _sd = self.seq_replay.state_stats()
+            self.agent.model.set_aux_state_stats(_m.to("cuda"), _sd.to("cuda"))
+            print(f"[aux-state] z-scoring installed from {self.seq_replay.size()} "
+                  f"episodes (std range {float(_sd.min()):.4f}-{float(_sd.max()):.4f})")
+
         # OPTIONAL clean-expert demos mixed into the SAME buffer (loaded LAST so the
         # ring buffer evicts diverse data before these). Same loader: it reads
         # obs/state directly and, lacking expert_flags, marks every frame expert.
@@ -355,17 +537,29 @@ class Workspace:
             assert self.policy_replay.can_sample(self.H), (
                 f"no policy-expert episode of length >= horizon={self.H}")
 
-        # TARGET demos (stage-2 finetune ONLY -- stage 1 never touches this buffer).
-        # `target_demo_path` defaults to a THREADING path, so on any other task an
-        # unset cfg silently loads Threading demos: 37-dim states where TPA is 51,
-        # with nothing checking the width. Empty path = skip; finetune() errors if
-        # it is actually needed. (CLAUDE.md rule 13/17: non-empty code defaults
-        # that quietly swap the data out from under a run.)
+        # TARGET demos (stage-2 finetune). Loaded ONLY when stage 2 will actually
+        # run: the production stage-1 config sets simdist.finetune_steps=0 (stage
+        # 2/3 live in train_simdist_adapt.py), yet this load used to be
+        # unconditional -- which serialised stage-1 behind "train a target expert
+        # -> collect 20 demos", a multi-day dependency it never actually uses.
+        # Also unblocks the PIXEL arm, whose image-bearing demos do not exist yet.
+        # `target_demo_path` also defaults to a THREADING path, so on any other
+        # task an unset cfg silently loads Threading demos: 37-dim states where
+        # TPA is 51, with nothing checking the width -- hence the dim assert.
+        # (CLAUDE.md rule 13/17: non-empty code defaults that quietly swap the
+        # data out from under a run.)
         self.demo_replay = SequenceReplayBuffer(max_episodes=10000, device="cpu")
-        if self.cfg.target_demo_path:
+        if self.cfg.simdist.finetune_steps <= 0:
+            print("[seq-buffer] finetune_steps=0 -> SKIPPING the target-demo load "
+                  "(stage 2/3 run in train_simdist_adapt.py)")
+        elif not self.cfg.target_demo_path:
+            print("[demo-buffer] target_demo_path empty -- TARGET demos skipped; "
+                  "finetune() will error when it needs them")
+        else:
             load_demos_to_sequence_buffer(
                 self.demo_replay, self.cfg.target_demo_path,
                 num_data=self.cfg.target_num_data, reward_scale=self.cfg.env_reward_scale,
+                demo_offset=self.cfg.target_demo_offset,
             )
             assert self.demo_replay.can_sample(self.H), (
                 f"no TARGET demo episode of length >= horizon={self.H}")
@@ -378,9 +572,6 @@ class Workspace:
                     f"  source_replay_path: {self.cfg.source_replay_path}\n"
                     "These are different tasks -- set target_demo_path for THIS task "
                     "(or '' if stage-2 runs elsewhere).")
-        else:
-            print("[demo-buffer] target_demo_path empty -- TARGET demos skipped "
-                  "(stage-1 does not use them; finetune_steps must stay 0)")
 
     def _maybe_set_state_normalization(self):
         """Raw-state world model (encoder_type='identity'): fit per-dim z-score
@@ -475,6 +666,29 @@ class Workspace:
         pbar.close()
         print(f"Warm up done. source replay #episode: {self.seq_replay.size()}")
 
+    def _wm_obs(self, states, sampled_obs):
+        """What the WORLD MODEL consumes for this batch.
+
+        State arm: the [B,H+1,37] tensor, unchanged.
+        Pixel arm: an obs DICT of uint8 frames + `prop`. Note `prop` is sliced out
+        of the SAME state tensor (its first 9 dims are eef_pos[3]+eef_quat[4]+
+        gripper_qpos[2], i.e. PROP_KEYS, because DEFAULT_STATE_KEYS puts them
+        first) -- so prop is guaranteed index-aligned with the frames rather than
+        being carried separately.
+
+        The raw `states` tensor is still handed to _source_value_targets, because
+        V_src comes from the frozen PRIVILEGED STATE critic.
+        """
+        if self.cfg.use_state:
+            return states
+        assert sampled_obs is not None, "pixel arm needs sample(return_obs=True)"
+        obs = dict(sampled_obs)
+        if HISTORY_KEY in obs:
+            obs["prop"] = obs.pop(HISTORY_KEY)   # history replaces the bare prop
+        else:
+            obs["prop"] = states[..., :PROP_DIM]
+        return obs
+
     # --------------------------------------- stage 1: offline distill (方案 B)
     def _train_offline(self):
         """Distill the world model from the pre-collected MIXED source replay.
@@ -484,20 +698,29 @@ class Workspace:
             f"stage 1: OFFLINE distill from {self.seq_replay.size()} replay "
             f"trajectories ({self.seq_replay.num_transitions()} transitions, "
             f"{self.seq_replay.num_success} success)"))
+        self._log_epoch_budget()
         self._maybe_set_state_normalization()
         stopwatch = common_utils.Stopwatch()
         pbar = tqdm(total=self.cfg.distill_steps, desc="simdist distill (offline)",
                     initial=self.global_step, dynamic_ncols=True, mininterval=1.0)
         while self.global_step < self.cfg.distill_steps:
             with stopwatch.time("train"):
+                _want_obs = not bool(self.cfg.use_state)
                 B = self.cfg.batch_size
                 n_ex = (int(B * self.cfg.extra_replay_frac)
                         if self.extra_replay is not None else 0)
+                assert not (n_ex and _want_obs), (
+                    "extra_replay is a STATE-arm top-up: its episodes carry no "
+                    "frames, so there is nothing to concatenate onto the pixel "
+                    "obs dict. Set extra_replay_frac=0 for the pixel arm.")
                 sampled = self.seq_replay.sample(
                     B - n_ex, self.H, "cuda",
-                    return_mask=bool(self.cfg.bc_expert_only))
+                    return_mask=bool(self.cfg.bc_expert_only),
+                    return_obs=_want_obs, history=self._hist_k)
                 states, actions, rewards = sampled[:3]
                 policy_mask = sampled[3] if self.cfg.bc_expert_only else None
+                # return_obs is appended LAST by sample()
+                sampled_obs = sampled[-1] if _want_obs else None
                 if n_ex:
                     e_s = self.extra_replay.sample(
                         n_ex, self.H, "cuda",
@@ -514,7 +737,9 @@ class Workspace:
                         # (simdist.md 44) -- letting a top-up rewrite it would change
                         # three things at once and make any result unattributable.
                         policy_mask = torch.cat([policy_mask, e_s[3]], 0)
+                # V_src always comes from the STATE tensor (frozen state critic)
                 value_targets = self._source_value_targets(states)
+                wm_obs = self._wm_obs(states, sampled_obs)
                 p_states = p_actions = p_mask = None
                 if self.policy_replay is not None:
                     p_sampled = self.policy_replay.sample(
@@ -523,9 +748,12 @@ class Workspace:
                     p_states, p_actions, _ = p_sampled[:3]
                     p_mask = p_sampled[3] if self.cfg.bc_expert_only else None
                 self.stat.append(self.agent.update_distill(
-                    states, actions, rewards, value_targets, policy_mask=policy_mask,
+                    wm_obs, actions, rewards, value_targets, policy_mask=policy_mask,
                     policy_states=p_states, policy_actions=p_actions,
-                    policy_states_mask=p_mask))
+                    policy_states_mask=p_mask,
+                    # §43: the raw PRIVILEGED state tensor. Free in stage 1 (we are
+                    # in the source sim) and already sampled for _source_value_targets.
+                    priv_states=states))
                 self.train_step += 1
             self.global_step += 1
             pbar.update(1)
@@ -542,6 +770,21 @@ class Workspace:
         self.saver = common_utils.TopkSaver(save_dir=self.work_dir, topk=1)
         self.load_resume()
 
+        # ---- RESUME (offline stage-1 only; see MainConfig.resume_from) --------
+        if self.cfg.resume_from:
+            rp = self.cfg.resume_from
+            if not os.path.exists(rp):
+                # A first chunk has nothing to resume from. Treat a missing file as
+                # "start fresh" so the SAME sbatch script can be requeued blindly.
+                print(f"[resume] {rp} not found -> starting from scratch")
+            else:
+                ck = torch.load(rp, map_location="cuda")
+                self.agent.load_state_dict(ck["model"])
+                self.agent.distill_opt.load_state_dict(ck["distill_opt"])
+                self.global_step = int(ck["global_step"])
+                print(f"[resume] restored from {rp} at global_step={self.global_step}"
+                      f" (target {self.cfg.distill_steps})")
+
         if self.offline_source:
             self._train_offline()
             return
@@ -553,6 +796,11 @@ class Workspace:
         stopwatch = common_utils.Stopwatch()
         obs, _ = self.train_env.reset()
         self.seq_replay.new_episode(obs["state"])
+        assert self.cfg.use_state, (
+            "the ONLINE distill path is state-only: warm_up()/train() store "
+            "obs['state'] with no camera frames, so a pixel world model cannot be "
+            "fed from it. The pixel arm is OFFLINE (方案 B) -- set "
+            "source_replay_path to an image-bearing replay.")
         pbar = tqdm(total=self.cfg.distill_steps, desc="simdist distill",
                     initial=self.global_step, dynamic_ncols=True, mininterval=1.0)
         recent: list[float] = []
@@ -734,6 +982,41 @@ class Workspace:
                   "warm_up() runs again. Only the offline arm "
                   "(--source_replay_path) resumes exactly.")
         return True
+    def _log_epoch_budget(self):
+        """Print how many EPOCHS over D_sim this run actually does.
+
+        docs/simdist.md §45: the pixel arm was doing 461 epochs over a 0.44M
+        replay while the reference recipe does 2 over ~2.5e7 -- a 230x
+        over-training on 57x too little data that nothing in the logs surfaced.
+        Also prints the buffer cap, because `seq_replay_max_transitions` silently
+        bounds what reaches training regardless of dataset size."""
+        n_trans = max(int(self.seq_replay.num_transitions()), 1)
+        seen = int(self.cfg.distill_steps) * int(self.cfg.batch_size)
+        cap = int(getattr(self.cfg, "seq_replay_max_transitions", 0) or 0)
+        cap_str = (f"cap={cap} (ACTIVE — the dataset is larger than what trains)"
+                   if 0 < cap <= n_trans else f"cap={cap or 'none'}")
+        print(f"[budget] transitions={n_trans}  batch={self.cfg.batch_size}  "
+              f"steps={self.cfg.distill_steps}  samples_seen={seen}  "
+              f"=> EPOCHS over D_sim = {seen / n_trans:.1f}   {cap_str}", flush=True)
+        print(f"[budget] reference recipe = 2 epochs over ~2.5e7 transitions "
+              f"(docs/simdist.md §45)", flush=True)
+        # §45: we trained the pixel arm with ZERO augmentation for 461 epochs and
+        # nothing in the logs said so (the `augment_fn` hook existed but no caller
+        # ever passed one). Print it so that can never be silent again.
+        _wm = self.cfg.simdist.world_model
+        _pad = int(getattr(_wm, "aug_shift_pad", 0) or 0)
+        _pn = float(getattr(_wm, "aug_prop_noise", 0.0) or 0.0)
+        _cj = float(getattr(_wm, "aug_color_jitter", 0.0) or 0.0)
+        _bl = float(getattr(_wm, "aug_blur_sigma_max", 0.0) or 0.0)
+        _enc = getattr(getattr(_wm, "pixel", None), "enc_type", "n/a")
+        _rz = int(getattr(getattr(_wm, "pixel", None), "resize_to", 0) or 0)
+        print(f"[aug] shift_pad={_pad} prop_noise={_pn} "
+              f"color_jitter={_cj} blur_sigma_max={_bl}"
+              + ("   <== NO AUGMENTATION"
+                 if (_pad == 0 and _pn == 0.0 and _cj == 0.0 and _bl == 0.0) else "")
+              + f"   | encoder={_enc}"
+              + (f" resize_to={_rz}" if _rz else "")
+              + f" | rl_image_size={self.cfg.rl_image_size}", flush=True)
 
     def log_and_save(self, stopwatch, phase: str):
         elapsed = max(stopwatch.elapsed_time_since_reset, 1e-6)
@@ -761,6 +1044,14 @@ class Workspace:
                 self.stat["score/source_score"].append(source_score)
         saved = self.saver.save(self.agent.state_dict(), eval_score, save_latest=True)
         self.save_resume(phase=phase)
+        # ALSO the slim resume_state.pt consumed by --resume_from: the pixel
+        # stage-1 SLURM chunk chain (scripts/slurm/pixel_stage1.slrm) reads that
+        # exact filename. TopkSaver keeps only the BEST weights, which is the
+        # wrong thing to restart from -- we need the LATEST step with its moments.
+        torch.save({"global_step": self.global_step,
+                    "model": self.agent.state_dict(),
+                    "distill_opt": self.agent.distill_opt.state_dict()},
+                   os.path.join(self.work_dir, "resume_state.pt"))
         self.stat.summary(self.global_step, reset=True)
         pol_str = f"  policy_score={policy_score:.3f}" if policy_score is not None else ""
         src_str = f"  source_score={source_score:.3f}" if source_score is not None else ""

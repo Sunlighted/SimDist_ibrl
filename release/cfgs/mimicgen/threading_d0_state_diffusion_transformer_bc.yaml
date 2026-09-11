@@ -12,7 +12,7 @@
 #       n_cond_layers=0 (per-token MLP encoder).
 #   - ~2-3M params (vs UNet1D ~5M) at the same lr.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 16          # = diffusion_policy.pred_horizon
   num_data: -1

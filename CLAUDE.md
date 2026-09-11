@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-09-04
+Last updated: 2026-09-11
 
 ---
 
@@ -16,13 +16,15 @@ Last updated: 2026-09-04
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~1470 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** |
+| **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **§48 5-seed 重做（跑中）：§44 的三项增广已实现 + `DEMO_OFFSET` 解除同一 draw 的封锁；读法与 Phase 2 已预注册** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
 | **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）**。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
 | `docs/flow_qc_ug.md` | ~110 | （早于本次拆分就存在）flow actor + Q-chunking + UG 的在线 model-free RL 方案书 —— "不再修 SimDist、改把 policy 做强"那条支线。 |
+| **`docs/pixel-progress.md`** | ~112 | **做 pixel/视觉版之前必读 —— 现在是完整实验日志。** 所有已测数字：stage-1 四个 checkpoint（pixel 0.968/0.980 ≥ state）、target adapt 的 2×2（state 0.540 / pixel 0.028；dynamics-only 0.393 vs 0.023）、demo-count 扫（pixel 0.08→0.24，**state 0.360→0.75**）、latent probe（含它**不能**支撑的结论）、编码器 bench、环境坑。 |
+| `docs/pixel-gap-closing-prompt.md` | ~230 | 要接着推 pixel 的时候：交给 agent 的完整任务书（Phase A 增广 / B 数据对齐 state / C 224+ResNet-18），含活跃任务共用 checkout 的风险与回归门。
 | **`CLAUDE_ARCHIVE.md`** | ~2020 | 只在需要回查已归档分支（§10/11/13/14/15/16/18/19/20/21/22/23）时。代码在本地 `_archive/`，不随仓库发布。 |
 
 ---
@@ -125,6 +127,151 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     critic `10×512`（全仓库其他 IBRL run 都是 `5×1024`+ln）。三者都不报错，已各咬一次。
 19. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
+16. **SLURM 时限要卡在分层线以下**（Killarney：b1 ≤3:00:00 / b2 ≤12:00:00 / b3 ≤1-00:00:00
+    / b4 ≤3-00:00:00）。刚好超线极贵：一个 9 分钟的活要了 4:00:00 → 落 b2 → 等了 15h23；
+    3 天的活落 b4（42 节点）等 8-15h，而组里中位数是 **1 分钟**。CPU/内存也要小（8-12 核
+    / 32G），大申请会缩小「GPU 空闲且槽位匹配」的节点集合。时长一律从 `sacct -o Elapsed,MaxRSS`
+    量出来，别猜。
+17. **BC prior 的推理成本会乘进 IBRL 的每一步**：IBRL 每次选动作都查 prior，所以 flow
+    （10 步 Euler ODE/次）比 RNN-GMM（一次前向）慢一个数量级 —— 实测同样 400k steps，
+    **RNN 6h23 vs flow ≥3 天（超时未完成）**。Threading 用 RNN。§32 早就写了「flow 没跑（太慢）」。
+
+18. **`load_pretrained_agent` 是「权重热启动」，不是 resume ⇒ 对 IBRL 等于重启。**
+    `train_rl.py:402-433` 只搬 actor+critic 权重，`global_step=0`、replay 空、optimizer
+    state 全新，于是 critic 从 25 条几乎全失败的 episode 重新拟合，第一次 eval 之前就把
+    继承来的 policy 拖走。实测：target run#1（warm from source，400k）0.00→210k、
+    0.02@250k、0.26@370k、best **0.32**；c2 从 run#1 的 0.32 热启动，170k 时又回到
+    **0.00** —— 逐点重走 run#1 的曲线，收益为零。⇒ **不要把长训练拆成 400k 的 warm-start
+    链**，要么一个长 job（1M ≈ 15 h ⇒ `--time=23:59:00`，b3 84 节点），要么实现真 resume
+    （global_step + optimizer + replay 三样都存）。stage-1 已经有真 resume，`train_rl.py` 没有。
+19. **`\` 续行的下一行绝不能是 `#` 注释**：注释会终止整条逻辑行，**后面所有 flag 静默丢失**，
+    再下一行还会被当成独立命令执行。踩法：pixel adapt smoke 因此退回默认
+    `max_transitions=20000` + 默认 eval 规模，2 分钟的 smoke 变成 3 小时的真跑，且
+    `rc=0`。注释写到命令上方的 banner 里。全仓扫描脚本见 §本次 commit（当时只有这 1 处）。
+
+20. **「跑在哪一级台阶」由 stage-1 架构决定，adapt 时改不了。**
+    `release/cfgs/.../threading_d0_state_simdist_tdmpc2.yaml` **出厂就是
+    `horizon:3 + num_dynamics_heads:1`**，即 `plain_h3` ⇒ 参考值只有
+    **0.564 ± 0.171**，不是 0.88/0.979。台阶分解（on-policy-adaptation.md）：
+    `plain_h3 0.564` --**+0.249 dynens_h5**--> `0.813` --+0.085 未触顶 demo-->
+    `0.898` --+0.081 anchor λ=1--> **`0.979`**。
+    ⇒ **dynens 是最大的单项干预**，而 `num_dynamics_heads`/`horizon` 在
+    `world_model._build` 里建头、`load_state_dict` 是 strict ⇒ **只能重跑 stage-1**。
+    用 `*_dynens.yaml`（wm.horizon=5 / wm.num_dynamics_heads=5 / planner.horizon=5，
+    对齐 `square_d0_state_simdist_rotw1_dynens.yaml`）。
+    ⚠️ `_slow` **不是训练旋钮，是 demo 属性**（§38 未触顶采集），`_anchor` = `bc_anchor_coef=1`。
+21. **参考分数是「75–100k 窗口内 100-game eval 的均值」，不是最后一个 eval。**
+    协议 = 100k target transitions / 每 1k 一个 eval 点 / 每点 100 局 / strict / σ=0.1
+    （on-policy-adaptation.md:3-8）。`adapt.slrm` 旧默认 `max_transitions=20000`
+    **少了 5×预算**，且 300 局/点 ⇒ 与任何已发布台阶都不可比。已改默认。
+    成本实测：state ~275 s/round ⇒ 7.6 h（11:59 够）；pixel ~480 s/round ⇒ 13.3 h ⇒ 必须 23:59。
+
+22. **分块长任务的 requeue 必须在 python **之前** 用 `--dependency=afterany` 挂好，
+    放在 python 后面的任何 requeue 代码都不会执行。** chunk 的设计终止方式就是 walltime
+    TIMEOUT，而 walltime kill 会杀掉**整个 job script** ⇒ python 之后的行永远轮不到。
+    我为此栽了两次：第一次以为是 rc 判据不对（把 rc 改成 progress 判据），第二次才发现
+    **位置**才是根因 —— plain pixel arm 卡在 780000/800000，log 里没有 `requeueing`，
+    队列里也没有后继。正确写法：开头先
+    `sbatch --dependency=afterany:$SLURM_JOB_ID ... scripts/slurm/xxx.slrm`
+    （afterany ⇒ TIMEOUT/FAILED/COMPLETED 都触发），后继任务开头检查
+    `global_step >= STEPS` 就秒退，链条自然终止，`MAX_CHUNK` 兜底。
+    ⚠️ 别用 `$0` 提交自己：batch job 里 `$0` 是 slurmd 的 spool 副本，随 job 消失。
+
+23. **`WorldModel.__init__` 有三条互斥分支且各自 `return`（`raw_state` :335 /
+    `pixel` :369 / `latent` 落到底）⇒ 加在末尾的新功能对前两条臂是"不存在"的。**
+    §43 的 aux-state 只把 `self._build_aux_state(...)` 加在落底路径，于是 pixel
+    模型上 `self.aux_state` 这个属性**根本没有被创建**，而 `train_simdist.py`
+    无条件读它 ⇒ **每一个 pixel run 一启动就 AttributeError**。
+    之所以一直没暴露 —— 而且这正是「live jobs share this checkout」最阴的形态：
+    在跑的那个 `pixel_dynens` 是在这段（**未提交**的）代码落地**之前**启动的，
+    python 只在启动时读文件，所以它**照常跑完出结果**；真正会崩的是它用
+    `afterany` 排好的后继 chunk（铁律 #22 的链条）。
+    ⇒ 动 `world_model.py` 加任何 head/buffer/属性，**必须三条分支都过一遍**；
+    读方一律 `getattr(..., None)`。想让属性对所有分支存在，就在**分支之前**赋
+    `None`：赋 None 不注册 parameter/buffer ⇒ state_dict 不变 ⇒ 老 ckpt 仍 strict load。
+    ⇒ **dedup gate 只覆盖 state arm**（当时全绿），所以改共用文件后**每条臂都要
+    单独 smoke 一次**，不能只看 gate。
+    ⚠️ 同理：`num_dynamics_heads`/`horizon` 在 `_build` 里建头且 `load_state_dict`
+    是 strict（铁律 #20），所以这类遗漏只会在**运行时、且只在那条臂上**炸。
+    自查最快的办法是本地 CPU 直接构造一次（秒级），别等 SLURM：
+    `WorldModel(obs_dim=37, action_dim=7, cfg=WorldModelConfig(encoder_type="pixel", ...), image_shape=..., cameras=[...], prop_dim=9)`。
+
+24. **python 的 `print` 进的是 `<save_dir>/train.log`，不是 slurm 的 `.out`。**
+    slurm log 里只有 stderr（tqdm、robosuite warning、traceback）。在任务还在跑的时候
+    `grep` slurm log 找不到 `[budget]` / `[seq-buffer]` 这类行**不代表没执行**——
+    train.log 是块缓冲的，任务结束前可能还是 0 字节。别据此判断代码没生效。
+
+25. **多 seed 的 demo draw 默认是同一批 —— 不传 `DEMO_OFFSET` 的"5 seeds"是假的。**
+    `rl/replay.py:206` 和 `load_demos_to_sequence_buffer` 都是**无 seed 地取前 N 条**，
+    所以 N 个 adapt seed 会训练在**完全相同的 20 条 demo** 上，误差棒里**没有** §38 的
+    单次抽样 σ=**0.092**（本项目最大的噪声源），表格看起来比真相紧得多。
+    已加 `demo_offset` / `target_demo_offset` / `adapt.slrm` 的 `DEMO_OFFSET`
+    （默认 0 = 逐字节旧行为）。200 条的 target pool ⇒ 10 个互斥的 20-demo draw。
+    **分块设计**：seed 内三个 rung 共用同一 draw（delta 配对到 ~0.027），seed 间 draw 不同
+    （均值 delta 的误差棒诚实地含 0.092）。这也正是 published state 协议的做法
+    （它的 10 个 seed 是 **adapt** seed，stage-1 只有一个）。⇒ 用 5 个 stage-1 seed 反而
+    会往我们的误差棒里塞一个 published 那边没有的方差成分。详见 simdist.md §48b。
+
+26. **`dedup_regress` 对"增广坏了"结构性失明** —— 它跑在 aug **关闭**下，只能证明
+    default-off 契约。`scripts/test_augmentation.py`（新）才是唯一的防线：
+    0 时逐字节 no-op / 开时真的改像素（§44 的病根就是"钩子在但没人调"）/
+    **同一 (sample, camera) 的 H+1 帧参数相同、不同 sample 与不同 camera 不同**
+    （错了会静默毁掉 dynamics head）/ uint8 往返 clamp 不回绕、shift 仍无损 / 三条分支都跑。
+    ⚠️ 再加一条：`WorldModel` 级的 gate **不覆盖训练路径**（§46 d3/d8 两个缺陷都是
+    pixel-only + runtime-only）⇒ 改 `update_distill` 必须**本地 CPU 直接跑一次** pixel
+    `update_distill`（秒级），别只看 gate。
+    ⚠️ `aug_prop_noise` 的单位是**米**（`prop` 未归一化，`pixel_obs_encoder.py:189` 直接拼接）
+    ⇒ 0.002 = 2 mm 刚好在 ~1.8 mm 容错窗口之上；看起来很自然的 0.01 是 **1 cm**，直接淹掉信号。
+
+### ★★★ PIXEL 决定（2026-09-09 重写）：用 r18@224，但 **~0.5 是交互，不是编码器主效应**
+
+`enc_type: resnet18_pretrained` + `rl_image_size: 224`，且 **`bc_anchor_coef=1` 必须一起开**。
+ViT@96 已退役（只作历史记录）。
+
+**完整 2×2 析因**（encoder × anchor，`dynens_h5` 固定，独立 n=500/格，同一 demo draw，strict/σ=0.1）：
+
+| | no anchor | +anchor | anchor 效应 |
+|---|---:|---:|---:|
+| **vit96** | 0.338 | 0.266 | **−0.072** (z=−2.5) |
+| **r18@224** | 0.334 | **0.766** | **+0.432** (z=+15.2) |
+| **encoder 效应** | **−0.004** (z=−0.1) | **+0.500** (z=+18.3) | **交互 +0.504** (z=+12.4) |
+
+⇒ ★★ **anchor 关掉时，r18@224 比 vit96 一点都不强（0.334 vs 0.338）。**
+"分辨率 + ImageNet 先验值 ~0.5" 这句**只在 `+anchor` 那一行成立**；encoder 在
+`anchor=0` 上的主效应是 **0**。**引用 encoder 收益必须同时说明 anchor 条件。**
+（本块旧版把 0.5 记成 encoder 主效应，是错的 —— 已按 §47b 更正。）
+
+⇒ **r18 上的两个梯级结论与 vit96 正好互换**（§47）：
+
+```
+state (published, n=10 seeds, 窗口):  0.564 --+0.249 ens--> 0.813 --+0.081 anchor--> 0.979
+vit96 (独立 n=500):                   0.218 --+0.120 ens--> 0.338 ---0.072 anchor--> 0.266
+r18@224 (独立 n=500):                 0.418 ---0.084 ens--> 0.334 --+0.432 anchor--> 0.766
+r18@224 (窗口):                       0.365 --+0.060 ens--> 0.425 --+0.450 anchor--> 0.875
+```
+- **ensemble 没复现**：+0.060(窗口)/−0.084(独立)，两个量度**符号相反**，且窗口效应小于
+  rung A 自己的 SD(0.099) ⇒ 单 seed 上是噪声，肯定不是 +0.249。
+- **anchor 复现且成为 pixel 上的支配杠杆**：+0.432(独立)/+0.450(窗口)，两量度一致。
+  ⚠️ §42 说 anchor 在**弱** base 上收益最大，而这里**强** base 收益远大 ⇒
+  **base 强度解释不了 pixel 的 anchor。**
+
+⚠️ **`num_dynamics_heads`/`horizon` 改不了 adapt 时（铁律 #20）** ⇒ plain_h3 臂必须自己重跑
+stage-1（`..._r18_224_plain_h3.yaml`）。
+⚠️ 单 stage-1 seed/格；eval 噪声上巨大，但 **stage-1 seed 方差未测**（铁律 #3 仍适用）。
+
+### ★ 铁律 #14 的补充：独立重评**去不掉 TopkSaver 的选择偏差**（§47a）
+`model0.pt` 是 in-training eval 点上的 **max**，所以"独立 n=500 重评"只去掉了
+in-training 乐观，**选择偏差还在**，而且**溢价随该臂曲线方差放大**：
+
+| arm | 窗口 SD | best−窗口均值 | 独立−窗口 |
+|---|---:|---:|---:|
+| plain_h3 | **0.099** | **+0.245** | **+0.053** |
+| dynens_h5 | 0.054 | +0.095 | −0.091 |
+| +anchor | 0.030 | +0.065 | −0.109 |
+
+⇒ **比较两臂前先比它们的窗口 SD。** 差得多时独立 n=500 **不可互换**，delta 只能读窗口
+（published state 梯子本来也就是 75-100k 窗口均值 ⇒ 比 delta 时窗口才是同质量度；
+独立 n=500 用来报**单个 ckpt 的绝对值**）。**两个都报。**
 
 ### 常用命令
 ```bash
@@ -177,6 +324,19 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   + IBRL-with-same-base 对照臂。
 - **§26** 省交互 3 段式（30k adapt + 复用其 replay 做 IQL）；**AWR 在这份数据上必然退化成
   BC（adv_std 0.011 vs Q_std 0.258）⇒ 用 RWR**；margin 崩塌的真正归因。
+- **§43** ★ PIXEL stage-2 = 主要是 **demo 预算**问题，不是 latent 缺陷（旧版结论已推翻，勿引用）。
+  demo 数是主轴：pixel 0.08→0.24 (N=20→200，未饱和)，**state 也从 0.360→0.75** ⇒ 全项目固定
+  N=20 本身是瓶颈；bc_steps 无效（8× 步数零收益）；匹配 N 后仍差 0.24 vs 0.75；解冻 encoder
+  是**探针不是解药**（MPPI 归零）；⚠️ aux 重建项被论文 ablation 否决（0.90→0.32）；
+  **⑧ 我们跑了方法里没有的一个 stage**（Eq.3 只更新 `f_θ`，π 冻结）。
+- **§45** ★★ **pixel arm 在 57× 更少的数据上多训了 230×**：论文 **2 epochs**（2.5e7 步），
+  我们 state **50**、pixel **461**（0.44M 步）。一条就解释了「source 0.98 / target 0.01」
+  ——source 分布被背下来了。修复顺序：**增广（免费、论文有、我们零）→ 砍 epoch/按 target
+  早停 → JPEG 存储把 D_sim 扩到 ~1e7 → 224² + ImageNet ResNet-18（分辨率优先于视角数）
+  → history encoder + 5 Hz**。§43 的所有测量都是在过拟合的 stage-1 上做的，需重测。
+- **§44** ★ 论文 vs 我们的移植：输入/目标函数差异表（3×224² + ImageNet ResNet-18 + history
+  encoder + 100k 轨迹 + 4 种增广 + 5 Hz vs 我们 2×96² + from-scratch ViT + 无 history +
+  2400 轨迹 + **零增广** + 20 Hz）。⚠️ 100k×3×224² 无法用预先落盘的 offline replay 承载。
 - **§42** ★ stage-2 的 policy 受**两个竞争条件**约束（靠近 π_src ⊗ target 成功率），
   `bc_anchor_coef=λ≈1` 在弱 base 上 **+0.164 (t=112.6)**、强 base 上测不到 ⇒ 交互 t=5.2。
   ⚠️ 「只对弱 base 值钱」这个推广已被 **§44** 推翻（调节变量是 dynamics 误差，不是 base 分数）。

@@ -4,13 +4,13 @@
     "experiment": {
         "name": "threading_enlarged",
         "source": {
-            "dataset_path": "/home/Chenyang/ibrl/release/data/mimicgen/source/threading.hdf5",
+            "dataset_path": "release/data/mimicgen/source/threading.hdf5",
             "filter_key": null,
             "n": null,
             "start": null
         },
         "generation": {
-            "path": "/home/Chenyang/ibrl/release/data/mimicgen/generated/threading_enlarged",
+            "path": "release/data/mimicgen/generated/threading_enlarged",
             "guarantee": true,
             "keep_failed": false,
             "num_trials": 1000,

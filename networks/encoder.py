@@ -186,3 +186,89 @@ if __name__ == "__main__":
     print(common_utils.count_parameters(enc))
     print("output size:", enc(x, flatten=False).size())
     print("repr dim:", enc.repr_dim, ", real dim:", enc(x, flatten=True).size())
+
+
+@dataclass
+class ResNet18PretrainedEncoderConfig:
+    # ImageNet-pretrained torchvision ResNet-18, the reference recipe's image
+    # encoder. NOT interchangeable with ResNet96Encoder:
+    #  * it wants ImageNet mean/std, not ResNet96's `x/255 - 0.5`; the
+    #    normalisation is applied HERE so callers keep passing raw 0-255 uint8.
+    #  * it carries BatchNorm, which is batch-coupled. `WorldModel.update_distill`
+    #    serves every t>0 from a DETACHED cache and scripts/test_distill_dedup.py
+    #    is bit-exact, so a batch-coupled encoder would break the regression gate.
+    #    `freeze_bn=1` (default) keeps every BN in eval mode with frozen running
+    #    stats, which restores per-sample determinism AND is the standard way to
+    #    finetune a pretrained backbone on a small domain.
+    pretrained: int = 1
+    freeze_bn: int = 1
+    # 0 = train the whole trunk. >0 = freeze the stem + this many residual stages
+    # (torchvision layer1..layer4), for the low-data regime.
+    freeze_stages: int = 0
+
+
+class ResNet18PretrainedEncoder(nn.Module):
+    """torchvision resnet18 trunk (conv1..layer4), no avgpool/fc.
+
+    Output grid is H/32 x W/32: 7x7 at 224 (repr_dim 25088), 3x3 at 96.
+    Weights must be fetched on a LOGIN node -- compute nodes have no egress.
+    """
+
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+
+    def __init__(self, obs_shape: list[int], cfg: ResNet18PretrainedEncoderConfig):
+        super().__init__()
+        import torchvision
+        from torchvision.models import resnet18, ResNet18_Weights
+
+        self.cfg = cfg
+        weights = ResNet18_Weights.IMAGENET1K_V1 if cfg.pretrained else None
+        net = resnet18(weights=weights)
+        assert obs_shape[0] == 3, f"resnet18 expects 3-channel input, got {obs_shape}"
+        # drop avgpool + fc: we keep the spatial map, like every other encoder here
+        self.nets = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
+                                  net.layer1, net.layer2, net.layer3, net.layer4)
+
+        if cfg.freeze_stages > 0:
+            # stem is index 0..3, then layer1..layer4 at 4..7
+            for i in range(min(4 + cfg.freeze_stages, len(self.nets))):
+                for p in self.nets[i].parameters():
+                    p.requires_grad_(False)
+
+        self.register_buffer(
+            "_mean", torch.tensor(self.IMAGENET_MEAN).view(1, 3, 1, 1) * 255.0)
+        self.register_buffer(
+            "_std", torch.tensor(self.IMAGENET_STD).view(1, 3, 1, 1) * 255.0)
+
+        self.repr_dim, self.num_patch, self.patch_repr_dim = self._get_repr_dim(obs_shape)
+
+    def _get_repr_dim(self, obs_shape: list[int]):
+        was_training = self.training
+        self.eval()
+        with torch.no_grad():
+            x = torch.rand(1, *obs_shape) * 255.0
+            y = self.forward(x, flatten=False)
+        self.train(was_training)
+        _, num_patch, patch_repr_dim = y.size()
+        return num_patch * patch_repr_dim, num_patch, patch_repr_dim
+
+    def train(self, mode: bool = True):
+        """Keep BN in eval mode even inside a training loop (see config docstring)."""
+        super().train(mode)
+        if self.cfg.freeze_bn:
+            for m in self.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
+        return self
+
+    def forward(self, obs, flatten=True):
+        # Callers pass RAW 0-255 floats (ResNet96Encoder asserts this); the
+        # ImageNet normalisation that torchvision expects happens here.
+        obs = (obs - self._mean) / self._std
+        h: torch.Tensor = self.nets(obs)
+        if flatten:
+            h = h.flatten(1, -1)
+        else:
+            h = h.flatten(2, 3).transpose(1, 2)   # [B, num_patch, dim]
+        return h

@@ -1,0 +1,90 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=eval_simdist
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=2:59:00
+#SBATCH --output=logs/eval_simdist_%j.out
+#SBATCH --error=logs/eval_simdist_%j.out
+#
+# ★ SLURM SIZING: 2:59:00 -> b1 (168 nodes). 12 CPU because mp eval runs MP
+#   worker processes each with its own MuJoCo env (and EGL context in pixel
+#   mode); keep MP <= cpus.
+#
+# The ONE sanctioned way to produce a reported SimDist number (iron law #14:
+# model0.pt's in-training best is a single 50/100-episode eval, systematically
+# optimistic by 0.06-0.19).
+#
+# Handles both checkpoint kinds:
+#   CKPT=<stage-1 dir>/model0.pt        -- read directly (cfg.yaml is a MainConfig)
+#   ADAPT=<adapt save_dir>              -- staged first, because an adapt cfg.yaml
+#                                          is an AdaptConfig and pyrallis refuses it
+#
+# ★ ORIGINAL_MPPI defaults to 1 to match train_simdist_adapt.py's own planner.
+#   Iron law #9: planner knobs transfer neither across tasks nor across
+#   oracle-vs-learned dynamics, so never let them default silently.
+#
+# ★ Iron law #12: MP must divide N. Asserted below rather than discovered in a
+#   mid-eval traceback.
+#
+# ★ Iron law #15: two numbers are comparable only if the printed [EVAL ENV] line
+#   matches. Ours is:
+#   [EVAL ENV] task=Threading_D0 shift=fixed nut_z_rot=FULL(0-360) sigma=0.1 strict=True ep_len=400
+#
+# Usage:
+#   CKPT=exps/mimicgen/threading_state_stage1_seed1/model0.pt N=300 \
+#       sbatch --export=ALL,CKPT,N scripts/slurm/eval_simdist.slrm
+#   ADAPT=exps/mimicgen/threading_pixel_adapt_seed1 N=500 \
+#       sbatch --export=ALL,ADAPT,N scripts/slurm/eval_simdist.slrm
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+N="${N:-300}"
+MP="${MP:-10}"
+ORIGINAL_MPPI="${ORIGINAL_MPPI:-1}"
+TAG="${TAG:-eval}"
+
+if [ $((N % MP)) -ne 0 ]; then
+    echo "FATAL: MP=$MP does not divide N=$N (mp eval asserts this; iron law #12)"; exit 1
+fi
+
+if [ -n "${ADAPT:-}" ]; then
+    STAGED="${STAGED:-/scratch/yifanr/simdist/eval_staging/$(basename "$ADAPT")}"
+    python scripts/stage_adapt_ckpt_for_eval.py --adapt_dir "$ADAPT" \
+        --out_dir "$STAGED" --num_game "$N" --mp "$MP" || exit 1
+    CKPT="$STAGED/model0.pt"
+elif [ -z "${CKPT:-}" ]; then
+    echo "FATAL: pass CKPT=<...>/model0.pt or ADAPT=<adapt save_dir>"; exit 1
+fi
+[ -s "$CKPT" ] || { echo "FATAL: missing $CKPT"; exit 1; }
+
+echo "=== node $(hostname) ==="
+echo "ckpt=$CKPT  n=$N  mp=$MP  original_mppi=$ORIGINAL_MPPI"
+
+FLAGS="--shift_from_cfg 1 --strict_success 1 --hand_init_perturb_joint_sigma 0.1"
+if [ "$ORIGINAL_MPPI" = "1" ]; then FLAGS="$FLAGS --original_mppi 1"; else FLAGS="$FLAGS --use_planner 1"; fi
+[ -n "${PLANNER_SET:-}" ] && FLAGS="$FLAGS --planner_set $PLANNER_SET"
+
+OUT="/scratch/yifanr/simdist/eval_staging/${TAG}_${SLURM_JOB_ID}.txt"
+python evaluate/eval.py --weight "$CKPT" --mode simdist --num_game "$N" --mp "$MP" $FLAGS \
+    > "$OUT" 2>&1
+echo "eval rc=$?"
+
+# Verify the ARTIFACT, not the exit code, and read the OUTPUT FILE, never this
+# log -- a previous version of this check "passed" by matching its own banner.
+echo; echo "--- verdict ---"; echo "(full output: $OUT)"
+grep -E "^\[EVAL ENV\]" "$OUT" || echo "MISSING [EVAL ENV] -> FAIL"
+grep -E "success rate" "$OUT"  || echo "MISSING success rate -> FAIL"
+# "Exception ignored in __del__" is EGL teardown at interpreter exit
+# (docs/infra.md:345); .nfs* is an NFS cleanup race. Both benign.
+# Match the ERROR line that TERMINATES a traceback, not the "Traceback:" header
+# -- the header is a separate line, so filtering on "Exception ignored in" left
+# it printing and made benign teardown look like a failure.
+grep -E "^[A-Za-z_.]*(Error|Exception):" "$OUT" \
+  | grep -vE "EGLError|Device or resource busy" | head -3
+echo "=== done ==="

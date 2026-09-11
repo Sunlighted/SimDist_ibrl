@@ -1,0 +1,150 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=gen_src_replay
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=2:59:00
+#SBATCH --output=logs/gen_src_replay_%j.out
+#SBATCH --error=logs/gen_src_replay_%j.out
+#
+# ★ SLURM SIZING: sit just UNDER a tier boundary. This script defaults to a SHORT
+#   calibration run (2:59:00 -> b1, all 168 nodes). Override --time on the sbatch
+#   line for the full run once NUM_TRAJ is sized from the measured rate.
+#
+# Phase 0.6 -- the SOURCE replay that stage-1 distillation trains on (方案 B).
+#
+# scripts/generate_simdist_data.py is a faithful port of SimDist's Algorithm 2:
+# per-episode it picks the expert with prob p_expert else a uniformly random
+# sub-optimal snapshot, and injects Gaussian noise in CONTIGUOUS intervals
+# interleaved with noise-free ones. It records (state, action, reward, V_e(s),
+# expert_flag) per step and writes the exact hdf5 layout that
+# load_source_replay_to_sequence_buffer reads.
+#
+# The CLI defaults already match the documented recipe (p_expert=0.5,
+# hand_init_sigma=0.1, expert_hybrid=0 -- the "HYBRID=0" docs/simdist.md §305-312
+# stresses -- snapshot_hybrid=1, save_values=1), so they are passed explicitly here
+# only to make the artifact self-describing.
+#
+# Reference size: diverse_v2 = 100k trajectories / 4.1 GB, mean length 212, 63.7%
+# success => ~21M transitions (docs/simdist.md:278,887). NOTE
+# docs/demo-collection.md:196's "80万步" contradicts this; the file size settles it
+# (4.1 GB / 21M ~= 195 B/transition, exactly the measured per-transition state cost).
+#
+# Usage:
+#   # 1. calibrate (minutes, b1):
+#   NUM_TRAJ=400 OUT=/scratch/yifanr/simdist/data/calib sbatch scripts/slurm/gen_source_replay.slrm
+#   # 2. full run, sized from the measured rate:
+#   NUM_TRAJ=100000 sbatch --time=11:59:00 scripts/slurm/gen_source_replay.slrm
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+SRC="${SRC:-exps/mimicgen/threading_ibrl_source_rnnprior_seed1}"
+OUT="${OUT:-release/data/mimicgen/threading_d0_source_diverse_v2}"
+NUM_TRAJ="${NUM_TRAJ:-400}"
+NUM_PROC="${NUM_PROC:-10}"      # <= cpus-per-task; each worker holds its own env
+# PIXEL arm: "" (default) = state-only. Set to
+# "agentview+robot0_eye_in_hand" to also render+record uint8 frames. Use "+",
+# NOT a comma: `sbatch --export=ALL,K=V` splits the value on commas, so a comma
+# here silently delivers only the first camera. Frames cost
+# 55,296 B/transition for two cameras, so size NUM_TRAJ accordingly (~4000 trajs
+# ~= 720k transitions ~= 40 GB), and expect ~19% slower stepping (the render is
+# only +2.23 ms on an 11.82 ms step -- physics dominates, measured on an L40S).
+RL_CAMERAS="${RL_CAMERAS:-}"
+# PIXEL resolution / storage. All default to the legacy values, so a state run is
+# byte-for-byte unchanged.
+#   RL_IMAGE_SIZE=224  -> store the NATIVE render (we already render at 224 and
+#                         downsize to 96, so this costs nothing to produce).
+#   JPEG_Q=95          -> per-frame JPEG in the hdf5. MANDATORY at 224: raw is
+#                         301,056 B/transition = 6.1 TB for 100k traj.
+#   FLUSH_MB           -> per-worker RAM cap; 500-traj flushes are ~31 GB at 224.
+RL_IMAGE_SIZE="${RL_IMAGE_SIZE:-0}"
+JPEG_Q="${JPEG_Q:-0}"
+FLUSH_MB="${FLUSH_MB:-2000}"
+FLUSH_EVERY="${FLUSH_EVERY:-500}"
+
+echo "=== node $(hostname) | traj=$NUM_TRAJ proc=$NUM_PROC out=$OUT ==="
+echo "expert    = $SRC/model0.pt"
+echo "snapshots = $(ls "$SRC"/snapshot_*.pt 2>/dev/null | wc -l)"
+[ -s "$SRC/model0.pt" ] || { echo "FATAL: missing $SRC/model0.pt"; exit 1; }
+
+t0=$SECONDS
+python scripts/generate_simdist_data.py \
+    --expert "$SRC/model0.pt" \
+    --checkpoints_glob "$SRC/snapshot_*.pt" \
+    --out_dir "$OUT" \
+    --num_traj "$NUM_TRAJ" \
+    --num_proc "$NUM_PROC" \
+    --p_expert 0.5 \
+    --hand_init_sigma 0.1 \
+    --domain source \
+    --expert_hybrid 0 \
+    --snapshot_hybrid 1 \
+    --save_values 1 \
+    --rl_cameras "$RL_CAMERAS" \
+    --rl_image_size "$RL_IMAGE_SIZE" \
+    --jpeg_quality "$JPEG_Q" \
+    --flush_mb "$FLUSH_MB" \
+    --flush_every "$FLUSH_EVERY" \
+    --seed "${SEED:-1}"
+rc=$?
+dt=$((SECONDS - t0))
+echo "generate rc=$rc  elapsed=${dt}s"
+# The generator merges its worker shards and exits 0 even when EVERY worker died
+# (a crashed worker just contributes no shard) -- so a total failure looks like
+# success. Verify the artifact, not the exit code.
+if [ "$rc" -ne 0 ]; then echo "FATAL: generator exited $rc"; exit $rc; fi
+
+# ---- report the measured rate so the full run can be sized from data ----------
+python - "$OUT" "$NUM_TRAJ" "$dt" <<'PY'
+import h5py, os, sys, numpy as np
+out, n_req, dt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+p = os.path.join(out, "dataset.hdf5")
+if not os.path.exists(p):
+    raise SystemExit(f"MISSING {p}")
+f = h5py.File(p, "r")
+d = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
+lens = np.array([f[f"data/{k}"]["actions"].shape[0] for k in d])
+succ = sum(1 for k in d if np.asarray(f[f"data/{k}"]["rewards"]).max() >= 1)
+keys = sorted(f[f"data/{d[0]}"].keys()) + sorted(f[f"data/{d[0]}/obs"].keys())
+gb = os.path.getsize(p) / 1e9
+if len(d) == 0:
+    raise SystemExit("FATAL: 0 trajectories written -- workers almost certainly "
+                     "crashed; grep the log for Traceback")
+if len(d) < 0.5 * n_req:
+    print(f"WARNING: only {len(d)}/{n_req} trajectories -- some workers died")
+print(f"trajectories : {len(d)} (requested {n_req})")
+print(f"mean length  : {lens.mean():.1f}  (reference 212)")
+print(f"transitions  : {lens.sum()}")
+print(f"success rate : {100*succ/len(d):.1f}%  (reference 63.7%)")
+print(f"size         : {gb:.3f} GB  -> {gb/lens.sum()*1e9:.0f} B/transition")
+print(f"per-demo keys: {keys}")
+imgk = [k for k in f[f"data/{d[0]}/obs"].keys() if k.endswith("_image")]
+for k in imgk:
+    ds = f[f"data/{d[0]}/obs/{k}"]
+    codec = ds.attrs.get("codec", "raw")
+    fshape = ds.attrs.get("frame_shape", None)
+    print(f"  {k}: shape={ds.shape} dtype={ds.dtype} codec={codec} frame_shape={fshape}")
+    if codec == "jpeg":
+        import numpy as _np
+        raw_b = int(_np.prod(fshape))
+        enc_b = _np.mean([len(ds[i]) for i in range(min(50, ds.shape[0]))])
+        print(f"    JPEG: {enc_b:.0f} B/frame vs {raw_b} B raw "
+              f"=> {raw_b/max(enc_b,1):.1f}x compression")
+    assert ds.shape[0] == f[f"data/{d[0]}/obs/state"].shape[0], "IMAGE/STATE LENGTH MISMATCH"
+if imgk:
+    print("  image/state lengths aligned: OK")
+if dt > 0:
+    rate = lens.sum() / dt
+    print(f"\nMEASURED RATE: {rate:.0f} transitions/s")
+    print(f"  => 21.2M transitions would take {21.2e6/rate/3600:.1f} h "
+          f"and ~{21.2e6*gb/lens.sum():.1f} GB")
+    print(f"  => tier: {'11:59:00 (b2)' if 21.2e6/rate/3600 < 11 else 'NEEDS CHUNKING or fewer traj'}")
+f.close()
+PY
+echo "=== done ==="

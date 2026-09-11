@@ -49,7 +49,7 @@ end_on_success: 1
 # IBRL BC prior — the same source-domain flow BC the source IBRL used. IBRL
 # competes the RL actor against this prior via max-Q. (The warm-start base is
 # separate: passed via --load_pretrained_agent in the shell script.)
-bc_policy: "/home/Chenyang/ibrl/exps/mimicgen/threading_flow_bc_seed1/model0.pt"
+bc_policy: "exps/mimicgen/threading_flow_bc_seed1/model0.pt"
 freeze_bc_replay: 1
 
 q_agent:

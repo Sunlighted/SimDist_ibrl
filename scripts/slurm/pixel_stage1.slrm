@@ -1,0 +1,201 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix_stage1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=72G
+#SBATCH --time=11:59:00
+#SBATCH --output=logs/pix_stage1_%j.out
+#SBATCH --error=logs/pix_stage1_%j.out
+#
+# ★ SLURM SIZING: 11:59:00 sits just under the b2 boundary. An 800k-step distill
+#   does not fit one chunk, so this script RESUMES and RE-SUBMITS ITSELF until
+#   global_step reaches distill_steps -- which keeps us out of b4 (42 nodes,
+#   8-15h waits) entirely. Resume is safe here because stage 1 is OFFLINE: the
+#   source replay is reloaded from the hdf5 each chunk, so only global_step,
+#   the weights and the optimizer moments need persisting (train_simdist.py
+#   writes resume_state.pt next to every topk save).
+#
+# Sizing measured by scripts/slurm/pixel_loadtest.slrm on the REAL replay:
+#   230.3 ms/step, 4.88 GB peak GPU, 25.2M params
+#   => 800k steps = 51.2 h = 4.4 chunks of 11:59
+# 12 CPUs because in-training eval is mp with num_proc hardcoded to 10
+# (train_simdist.py:429); 72G because the 431k-transition pixel replay is ~24 GB
+# resident and shard-merging already OOM'd once at 32G.
+#
+# PIXEL stage-1 distillation. The world model consumes images + prop; the SOURCE
+# EXPERT stays state-based (privileged teacher) and supplies dense V_src labels
+# from the 37-dim state the buffer keeps alongside the frames.
+#
+# ★ --source_agent is passed EXPLICITLY: the config's hardcoded path points at
+#   threading_ibrl_source_seed1, but our expert is the RNN-prior one. Without the
+#   override train_simdist.py:275-278 falls back to a TD bootstrap that
+#   "collapses to V==0 under sparse reward" -- a dead planner, not a crash.
+#
+# Usage:
+#   STEPS=50000 sbatch scripts/slurm/pixel_stage1.slrm       # short smoke/timing run
+#   STEPS=800000 sbatch scripts/slurm/pixel_stage1.slrm      # full, self-chunking
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+CFG="${CFG:-release/cfgs/mimicgen/threading_d0_pixel_simdist.yaml}"
+SAVE="${SAVE:-exps/mimicgen/threading_pixel_stage1_seed1}"
+SRC="${SRC:-exps/mimicgen/threading_ibrl_source_rnnprior_seed1/model0.pt}"
+REPLAY="${REPLAY:-release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5}"
+STEPS="${STEPS:-800000}"
+CHUNK="${CHUNK:-1}"
+MAX_CHUNK="${MAX_CHUNK:-8}"
+
+echo "=== node $(hostname) | chunk $CHUNK/$MAX_CHUNK | target ${STEPS} steps ==="
+[ -s "$SRC" ] || { echo "FATAL: missing $SRC"; exit 1; }
+echo "expert = $SRC"
+
+# REPLAY may be a SINGLE path or a "+"-separated / globbed set of shards (the
+# 100k-trajectory replay is generated as 8 independent shards and never merged).
+# `[ -s "$REPLAY" ]` is false for a glob, so resolve first and verify EVERY part
+# -- a missing shard must be a hard failure, not a silently smaller dataset.
+REPLAY_PARTS=()
+IFS='+' read -ra _specs <<< "$REPLAY"
+for _sp in "${_specs[@]}"; do
+    [ -z "$_sp" ] && continue
+    for _hit in $_sp; do          # unquoted ON PURPOSE: this is where globs expand
+        [ -e "$_hit" ] && REPLAY_PARTS+=("$_hit")
+    done
+done
+if [ "${#REPLAY_PARTS[@]}" -eq 0 ]; then
+    echo "FATAL: REPLAY matched no files: $REPLAY"; exit 1
+fi
+echo "replay = ${#REPLAY_PARTS[@]} file(s), $(du -ch "${REPLAY_PARTS[@]}" 2>/dev/null | tail -1 | cut -f1) total"
+for _f in "${REPLAY_PARTS[@]}"; do
+    [ -s "$_f" ] || { echo "FATAL: empty shard $_f"; exit 1; }
+    echo "    $_f ($(du -h "$_f" | cut -f1))"
+done
+
+read_progress () {
+    python - "$SAVE" <<'PYP'
+import os, sys, torch
+p = os.path.join(sys.argv[1], "resume_state.pt")
+print(torch.load(p, map_location="cpu")["global_step"] if os.path.exists(p) else 0)
+PYP
+}
+BEFORE=$(read_progress)
+
+# ---- OPTIONAL completion hook -------------------------------------------------
+# A self-chunking chain has no single "last job id", so a follow-on stage-2 job
+# CANNOT be given --dependency=afterany:<stage1> at submit time: chunk 1 is not
+# the final chunk, and the final chunk's id does not exist until chunk N-1 runs.
+# THEN_SBATCH is therefore how you chain work AFTER the whole distillation:
+#   THEN_SBATCH='ENV=v ... sbatch --time=... scripts/slurm/adapt.slrm'
+# It is submitted EXACTLY ONCE, guarded by a marker file, from whichever of the
+# two completion paths is reached first (the successor's early-exit, or the
+# post-python COMPLETE branch when MAX_CHUNK lands exactly on the finish).
+# DEFAULT IS EMPTY => completely inert for every existing chain, including one
+# already in flight that re-submits itself through this same file.
+THEN_SBATCH="${THEN_SBATCH:-}"
+fire_then () {
+    [ -z "$THEN_SBATCH" ] && return 0
+    local marker="$SAVE/.then_submitted"
+    if [ -e "$marker" ]; then
+        echo "[then] hook already fired (marker $marker) -- not resubmitting"
+        return 0
+    fi
+    : > "$marker"
+    echo "[then] stage-1 complete -> submitting follow-on:"
+    echo "[then]   $THEN_SBATCH"
+    eval "$THEN_SBATCH" && echo "[then] submitted OK" || echo "[then] !! SUBMIT FAILED -- run it by hand"
+}
+
+echo "progress before this chunk: $BEFORE / $STEPS"
+
+# Already finished? Then this chunk is the tail of a dependency chain whose work
+# is done -- exit in seconds without queueing anything further, which is what
+# terminates the chain.
+if [ "$BEFORE" -ge "$STEPS" ]; then
+    echo "=== already at $BEFORE / $STEPS -- nothing to do, chain ends here ==="
+    fire_then
+    exit 0
+fi
+
+# ★★ QUEUE THE SUCCESSOR *NOW*, NOT AFTER PYTHON.
+#   A chunk is DESIGNED to end by walltime TIMEOUT, and a walltime kill
+#   terminates the whole job script -- so any requeue placed after the python
+#   call simply never executes. That is not theoretical: the plain pixel arm
+#   stalled at 780000/800000 with no "requeueing" line in its log and no
+#   successor in the queue, because SLURM killed the script mid-python.
+#   Fix: establish the chain up front with --dependency=afterany, which fires
+#   however this job dies (TIMEOUT, FAILED, COMPLETED). The successor's
+#   early-exit check above stops the chain once the target is reached, and
+#   MAX_CHUNK is the backstop.
+# ★ PROPAGATE THIS CHUNK'S RESOURCES to the successor. `--export=ALL` carries
+# ENV VARS only -- it does NOT carry the sbatch resource flags. So a chunk launched
+# with `--mem=200G` queued a successor that fell back to the script's
+# `#SBATCH --mem=72G` header and died OUT_OF_MEMORY loading a ~119 GB replay
+# (job 5212432, 20 min in, after chunk 1 had run 11:59 fine on 200G).
+MEM_MB="${SLURM_MEM_PER_NODE:-72000}"
+TIME_LIM="$(squeue -h -j "$SLURM_JOB_ID" -o '%l' 2>/dev/null | tr -d ' ')"
+[ -z "$TIME_LIM" ] && TIME_LIM="11:59:00"
+CPUS="${SLURM_CPUS_PER_TASK:-12}"
+# Propagate the ACCOUNT too: the #SBATCH header hardcodes aip-gigor, so a chunk
+# submitted with `--account=aip-rhinehar` would silently queue its successor back
+# on gigor. Same class of bug as the --mem fallback that OOM'd job 5212432.
+ACCT="${SLURM_JOB_ACCOUNT:-aip-gigor}"
+echo "propagating to successor: --mem=${MEM_MB}M --time=$TIME_LIM --cpus-per-task=$CPUS --account=$ACCT"
+
+if [ "$CHUNK" -lt "$MAX_CHUNK" ]; then
+    NEXT=$((CHUNK + 1))
+    sbatch --dependency=afterany:$SLURM_JOB_ID --kill-on-invalid-dep=yes \
+        --mem="${MEM_MB}M" --time="$TIME_LIM" --cpus-per-task="$CPUS" \
+        --account="$ACCT" \
+        --export=ALL,CFG="$CFG",SAVE="$SAVE",SRC="$SRC",REPLAY="$REPLAY",STEPS="$STEPS",CHUNK="$NEXT",MAX_CHUNK="$MAX_CHUNK",THEN_SBATCH="$THEN_SBATCH" \
+        scripts/slurm/pixel_stage1.slrm \
+        && echo "queued successor chunk $NEXT (afterany:$SLURM_JOB_ID)"
+else
+    echo "CHUNK=$CHUNK == MAX_CHUNK=$MAX_CHUNK -- no successor queued (backstop)"
+fi
+
+t0=$SECONDS
+python train_simdist.py \
+    --config_path "$CFG" \
+    --save_dir "$SAVE" \
+    --source_agent "$SRC" \
+    --source_replay_path "$REPLAY" \
+    --distill_steps "$STEPS" \
+    --resume_from "$SAVE/resume_state.pt" \
+    --use_wb 0
+rc=$?
+dt=$((SECONDS - t0))
+echo "train rc=$rc elapsed=${dt}s"
+
+# ---- progress + self-requeue -------------------------------------------------
+DONE=$(read_progress)
+echo "progress: $DONE / $STEPS steps (this chunk advanced $((DONE - BEFORE)))"
+
+# A WALLTIME TIMEOUT is the EXPECTED way a chunk ends -- it is the whole
+# reason this script chunks -- and SLURM reports it as a non-zero exit. So do
+# NOT gate the requeue on rc. Gate it on PROGRESS: if this chunk advanced
+# global_step and steps remain, resume; if it advanced nothing, something is
+# genuinely broken and looping would just burn allocation.
+# The successor is already queued (above), so this block only REPORTS. Note it
+# does not run at all when SLURM kills the script at walltime -- which is
+# exactly why the requeue must not live here.
+if [ "$DONE" -ge "$STEPS" ]; then
+    echo "=== distillation COMPLETE at $DONE steps (successor will no-op and end the chain) ==="
+    fire_then
+elif [ "$DONE" -le "$BEFORE" ]; then
+    echo "!! chunk made NO progress ($BEFORE -> $DONE, rc=$rc) -- a real failure."
+    echo "   The queued successor will retry from the same point; cancel the chain"
+    echo "   if the traceback shows something that will not fix itself."
+else
+    echo "chunk advanced $BEFORE -> $DONE; successor already queued"
+fi
+
+echo "=== loss trend ==="
+grep -E "distill/(loss|consistency|value_pred_std|policy)" "$SAVE/train.log" 2>/dev/null | tail -8
+echo "=== score trend ==="
+grep -E "^ *[0-9]+: score" "$SAVE/train.log" 2>/dev/null | tail -6
+echo "=== done ==="

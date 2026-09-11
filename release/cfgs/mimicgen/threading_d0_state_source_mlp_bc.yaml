@@ -10,7 +10,7 @@
 seed: 1
 
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_sigma0.1/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_source_sigma0.1/dataset.hdf5
   num_data: 2000
   use_state: 1
   state_stack: 1

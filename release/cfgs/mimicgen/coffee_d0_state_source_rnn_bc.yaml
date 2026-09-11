@@ -20,7 +20,7 @@
 seed: 1
 
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/coffee_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/coffee_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 10        # = Tp (MimicGen seq_length)
   build_state_chunk: 0      # open-loop RNN

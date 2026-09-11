@@ -1,0 +1,195 @@
+# PIXEL SimDist stage 1 on Threading_D0 -- 224 + ImageNet ResNet-18 arm.
+#
+# Derived from threading_d0_pixel_simdist_dynens.yaml. Changes are the reference
+# recipe's image pipeline plus the data scale-up (docs/simdist.md §44/§45); the
+# dynens invariants (num_dynamics_heads 5 / horizon 5) and every planner and
+# domain-shift field are untouched.
+#
+# MEASURED, not estimated (scripts/slurm/bench_pixel224.slrm, job 5195192):
+#   resnet18@224  674.4 ms/step encoder-only   (vit@96 was 41.5)
+#   JPEG GPU decode  ~110 ms/step at 3072 frames/step
+#   => ~0.9-1.0 s/step end-to-end; 150k steps ~= 40 h = 4 chunks of 11:59.
+# Generation measured at 295 transitions/s and 18,935 B/transition
+# (15.9x JPEG compression), i.e. 100k traj ~= 18M transitions ~= 340 GB.
+#
+# Copied from threading_d0_state_simdist_tdmpc2.yaml -- the PRODUCTION stage-1
+# recipe behind the 0.979 target-adaptation result -- with only the observation
+# space changed. Deltas vs that file are marked ### PIXEL below.
+#
+# The world model consumes images + prop; the SOURCE EXPERT stays state-based
+# (privileged teacher). Stage 1 is offline distillation on a pre-collected source
+# replay, so there is no rendering in the training loop; the frozen state critic
+# supplies dense V_src labels from the 37-dim state that the buffer keeps
+# alongside the frames.
+#
+# ★ Launch with an EXPLICIT --source_agent. `source_agent` below points at the
+# path every SimDist config hardcodes, but the strict-trained expert this project
+# actually uses lands in threading_ibrl_source_strict_seed1. Without the override
+# train_simdist.py:275-278 silently falls back to a TD bootstrap that "collapses
+# to V==0 under sparse reward" -- no crash, just a dead planner.
+#
+# Run:
+#   python train_simdist.py \
+#     --config_path release/cfgs/mimicgen/threading_d0_pixel_simdist.yaml \
+#     --source_agent exps/mimicgen/threading_ibrl_source_strict_seed1/model0.pt \
+#     --source_replay_path release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5 \
+#     --save_dir exps/mimicgen/threading_pixel_stage1_seed1
+
+task_name: Threading_D0
+episode_length: 400
+end_on_success: 1
+env_reward_scale: 1
+discount: 0.99
+seed: 1
+
+### PIXEL: observation space -------------------------------------------------
+use_state: 0                                    # was 1
+rl_camera: agentview+robot0_eye_in_hand         # was robot0_eye_in_hand; "+"-split
+image_size: 224                                 # render size, then resized down
+rl_image_size: 224                              # ★ store/consume the NATIVE render.
+                                                # image_size was ALREADY 224 and the
+                                                # wrapper threw it away in resize, so
+                                                # this costs nothing to produce.
+obs_stack: 1                                    # rl/replay.py:267 asserts 1
+state_stack: 1                                  # the privileged teacher's layout
+prop_stack: 1                                   # keep 1: stacking is a SECOND change
+### --------------------------------------------------------------------------
+
+batch_size: 256
+distill_steps: 400
+log_per_step: 200
+num_warm_up_episode: 20
+num_eval_episode: 10
+mp_eval: 1
+eval_source: 0
+seq_replay_max_episode: 55000
+### PIXEL: cap the buffer by TRANSITIONS, not episodes. This cap -- NOT the
+### dataset size -- is what actually bounds training (§45 B2): the old 450000
+### meant the arm saw 445k transitions no matter how much data existed.
+### At 224 with JPEG the store is 18,935 B/transition, so 8M ~= 151 GB resident
+### (ask --mem=200G). 8M transitions x 150k steps x batch 256 = 4.8 epochs,
+### against the reference recipe's 2 -- versus 461 for the old pixel arm.
+### The remaining trajectories stay on disk for a later scale-up; going past
+### ~8M needs a lazy/disk-backed loader, not a bigger --mem.
+seq_replay_max_transitions: 200000
+
+# offline stage-1 data (方案 B): no online rollout, no rendering in the loop
+### "+"-separated and/or globbed: the 100k-trajectory replay is generated as 8
+### independent b1 shards (2.9h each) instead of one 17h b2 job, and is never
+### merged -- a 340 GB merge would cost hours and 2x the disk for nothing.
+source_replay_path: /scratch/yifanr/simdist/data/calib224_jpeg95/dataset.hdf5
+source_replay_num_data: -1
+expert_demo_path: ''
+expert_demo_num_data: -1
+policy_replay_path: ''
+policy_replay_num_data: -1
+expert_collect_steps: 0
+bc_expert_only: 1
+stddev_max: 0.0
+stddev_min: 0.0
+stddev_step: 200000
+
+# privileged STATE teacher -- override on the CLI (see header)
+source_agent: exps/mimicgen/threading_ibrl_source_seed1/model0.pt
+
+target_demo_path: release/data/mimicgen/threading_d0_target_dynamics_pix/dataset.hdf5
+target_num_data: 20
+
+simdist:
+  finetune_steps: 0          # stage 2/3 live in train_simdist_adapt.py
+  finetune_dynamics: 1
+  finetune_policy: 1
+  finetune_lr: 0.0003
+  use_planner: 0             # policy-head eval during training (cheap)
+  planner:
+    horizon: 5
+    discount: 0.99
+    num_samples: 512
+    num_elites: 64
+    iterations: 6
+    mixture_coef: 0.8
+    temperature: 0.5
+    momentum: 0.1
+    init_std: 0.5
+    min_std: 0.05
+    ### PIXEL: both MUST stay 0. plan()/seed_mean_from_policy need a RAW obs
+    ### (simdist_planner.py:227/389) which is meaningless for an image dict; the
+    ### pixel act path routes everything through plan_batch_from_latent instead.
+    warm_start: 0
+    seed_mean_from_policy: 0
+  world_model:
+    ### PIXEL: the new encoder arm -------------------------------------------
+    encoder_type: pixel        # was "latent"
+    decoder_coef: 0.0          # was 1.0 -- there is NO image decoder
+    shared_encoder: 1          # required: enc_pi would need decode() to bridge back
+    detach_pi: 1
+    pi_grad_t0: 1              # NEW: let BC reach the encoder at t=0 only.
+                               # Measured 6.4x larger conv grad-norm (2.72 -> 17.47)
+                               # at IDENTICAL loss. Without it the encoder's only
+                               # gradient is consistency+reward+value at t=0, and a
+                               # constant encoder is a feasible solution.
+    pixel:
+      # MEASURED end-to-end (batch 256, 2 cams, H=3, on an L40S):
+      #   resnet96 202.8 ms/step -> 45.1 h for 800k   (6.0x the state arm)
+      #   vit      59.9 ms/step -> 13.3 h for 800k    (1.8x the state arm)
+      # ViT embed2/depth1 is also what the UPSTREAM ibrl pixel configs used for
+      # IBRL, so it is the more faithful choice as well as 3.4x faster.
+      # TRADEOFF: ResNet96 has a finer patch grid (144 vs 121) and a larger repr
+      # (36864 vs 15488). On a ~1.8 mm tolerance window spatial granularity is the
+      # top research risk, so if the pixel arm underperforms, re-run with
+      # enc_type: resnet96 before concluding anything about pixels-vs-state.
+      enc_type: resnet18_pretrained
+      feat_dim: 256
+      use_prop: 1              # 9-dim eef pose is free and legitimately available;
+                               # the 28 object-state dims still come from pixels
+      pool: flatten            # 9.4M params/camera in the compress Linear. Switch to
+                               # spatial_softmax if it overfits -- NOT mean pooling,
+                               # which destroys the spatial precision a 1.8 mm
+                               # tolerance window needs.
+    ### ----------------------------------------------------------------------
+    aug_shift_pad: 8           # ~= repo's pad=4 at 96, rescaled to 224
+    aug_prop_noise: 0.0        # separate knob; leave off for the first run
+    horizon: 5
+    num_dynamics_heads: 5
+    latent_dim: 512
+    mlp_hidden_dim: 512
+    num_layer: 2
+    layer_norm: 1
+    simnorm_dim: 8
+    activation: mish
+    discrete_heads: 1
+    num_bins: 101
+    vmin: -10.0
+    vmax: 10.0
+    consistency_coef: 20.0
+    reward_coef: 0.1
+    value_coef: 0.1
+    policy_coef: 10.0
+    rho: 0.5
+    lr: 0.0003
+    enc_lr_scale: 0.3          # now also scales the conv stack (encoder_parameters)
+    tau: 0.01
+    grad_clip: 20.0
+
+# SOURCE (train, offline): nominal
+train_domain_shift:
+  mode: none
+
+# TARGET (eval): the §12 dynamics-only recipe
+eval_domain_shift:
+  mode: fixed
+  friction_scale: 0.5
+  mass_scale: 3.0
+  solref_scale: 1.0
+  solimp_scale: 1.0
+  gripper_kp_scale: 0.12
+  hole_offset: [0.0, 0.0, 0.0]
+  ring_size_scale: 0.85
+  ring_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0

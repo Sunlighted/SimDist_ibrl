@@ -13,7 +13,7 @@
 # normalization yet, so on 20 demos it may trail the plain MLP — see CLAUDE.md
 # §15 (generative heads losing to MLP in the low-data regime).
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 16        # = diffusion_policy.pred_horizon
   num_data: 20              # 20 (all) target demos

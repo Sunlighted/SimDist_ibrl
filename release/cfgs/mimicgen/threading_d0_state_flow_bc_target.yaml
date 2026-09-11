@@ -6,7 +6,7 @@
 # Same flow head + chunking + EMA as the source / cotrain configs so the
 # objective-vs-data axes are clean.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 16       # = flow_policy.pred_horizon (chunk length)
   num_data: 20             # all 20 target demos

@@ -8,7 +8,7 @@
 # Eval = in-domain D1 (mode=none) + sigma=0.1 + strict success, so the number is
 # directly comparable to threading_recovery_d1_sigma0.1_seed1 and the residual run.
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d1/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d1/processed_data96.hdf5
   use_state: 1
   action_horizon: 1         # single-step (StateBcPolicy is NOT chunked) → deterministic
   num_data: -1              # all D1 demos (matches the flow BC base)

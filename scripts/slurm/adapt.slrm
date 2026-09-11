@@ -1,0 +1,146 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=adapt
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=64G
+#SBATCH --time=11:59:00
+#SBATCH --output=logs/adapt_%j.out
+#SBATCH --error=logs/adapt_%j.out
+#
+# ★ SLURM SIZING: 11:59:00 -> b2. 12 CPUs because in-training eval is mp with
+#   num_proc from --num_eval_proc (keep <= cpus). Never ask 3-00:00:00 (b4, 42
+#   nodes, 8-15 h waits).
+#
+# Stage 2 (policy BC + source anchor) then stage 3 (MPPI collection + dynamics
+# repair). Runs BOTH arms from one script:
+#
+#   ARM=state  sbatch --export=ALL,ARM scripts/slurm/adapt.slrm
+#   ARM=pixel  sbatch --export=ALL,ARM scripts/slurm/adapt.slrm
+#
+# ★ The pixel number is only interpretable NEXT TO the state number on the SAME
+#   demo draw: docs/demo-collection.md §38 puts the single-20-demo-draw sigma at
+#   0.092, the largest noise source in this project. Two arms on two draws would
+#   need delta > 0.26 to distinguish; on the SAME draw they are paired against
+#   ~0.027. So DEMOS defaults to one shared path for both arms -- do not
+#   re-collect per arm.
+#
+# ★ Demos must come from an UNSATURATED target snapshot (§38: +0.139, the only
+#   pre-registered replicated demo-quality intervention). Criterion is "success
+#   still RISING", not "highest score". And size --max_demo_len from the
+#   collector's own episode lengths: a weaker policy needs MORE steps, not fewer
+#   (a 0.32 collector rejected 200/200 rollouts at max_demo_len=150).
+
+# ★ MEASURED cost (pixel, from the 5155804 smoke): a round = collect 1000
+#   transitions (~30 s) + 1000 dynamics steps (~70 s) + ONE in-training eval,
+#   and the eval is ~95% of it: 500 episodes of pixel MPPI = ~1900 s. So at
+#   --num_eval_episode 300 a round is ~19 min and the default 20 rounds
+#   (max_transitions 20000 / adapt_interval 1000) is ~7 h => 11:59:00 fits.
+#   Keep the eval size IDENTICAL on both arms (iron law #15) even though the
+#   state arm is far cheaper -- it drives TopkSaver model selection, so changing
+#   it changes which checkpoint gets re-evaled.
+#
+# ★★ PROTOCOL (docs/on-policy-adaptation.md:3-8). The reference numbers are
+#   "100k TARGET transitions, 100 eval points (every 1k transitions, 100 games
+#   each), strict, sigma=0.1", and the reported score is the mean over the
+#   **75-100k steady-state window** -- i.e. ~25 eval points x 100 games, which is
+#   how they beat the 20-demo draw noise. So MAX_TRANS=100000 / EVAL_N=100 /
+#   INTERVAL=1000 are the FAITHFUL defaults; the old 20000/300 undershot the
+#   budget 5x and is not comparable to any published rung.
+#
+# ★★ WHICH RUNG ARE YOU ON? The stage-1 ARCHITECTURE decides it, and it cannot be
+#   changed at adapt time (num_dynamics_heads/horizon are built in _build and
+#   load_state_dict is strict):
+#       plain_h3  (horizon 3, 1 head)   ->  0.564 +- 0.171   <- the tdmpc2 cfg AS SHIPPED
+#       dynens_h5 (horizon 5, 5 heads)  ->  0.813 +- 0.085
+#         + unsaturated demos ("_slow") ->  0.898 +- 0.044   <- a DEMO property (§38), not a knob
+#         + bc_anchor_coef=1 ("_anchor") -> 0.979 +- 0.010
+#   The ensemble is the single largest intervention (+0.249). Use
+#   *_dynens.yaml for stage 1 or you are chasing 0.564, not 0.979.
+#
+# ★★ DEMO_OFFSET (default 0 = the legacy "first 20"). rl/replay.py and
+#   load_demos_to_sequence_buffer both took the FIRST N episodes unseeded, so
+#   every seed of a multi-seed run trained on the IDENTICAL 20 demos and the
+#   error bars EXCLUDED §38's single-draw sigma = 0.092. The 200-episode target
+#   pool gives 10 disjoint draws; §48 uses DEMO_OFFSET=0/20/40/60/80, SHARED
+#   across the rungs within a seed (paired deltas) and varied across seeds (an
+#   honest error bar). The value is echoed below and logged by the trainer.
+#
+# ★ Measured cost at this protocol: state ~275 s/round => ~7.6 h (fits 11:59);
+#   pixel ~480 s/round => ~13.3 h => submit with --time=23:59:00 (b3, 84 nodes).
+#
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+ARM="${ARM:-pixel}"
+# per-arm below; pix224 needs 224 demos, state/pixel share the 96 draw
+DEMOS="${DEMOS:-}"
+case "$ARM" in
+  state)
+    DEMOS="${DEMOS:-release/data/mimicgen/threading_d0_target_dynamics_pix/dataset.hdf5}"
+    STAGE1="${STAGE1:-exps/mimicgen/threading_state_stage1_seed1/latest.pt}"
+    ANCHOR="${ANCHOR:-release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5}"
+    ;;
+  pixel)
+    DEMOS="${DEMOS:-release/data/mimicgen/threading_d0_target_dynamics_pix/dataset.hdf5}"
+    STAGE1="${STAGE1:-exps/mimicgen/threading_pixel_stage1_seed1/latest.pt}"
+    # the anchor pool must carry FRAMES for the pixel arm (it is encoded to a
+    # latent pool once), so it points at the image-bearing source replay.
+    ANCHOR="${ANCHOR:-release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5}"
+    ;;
+  pix224)
+    # 224 + ImageNet ResNet-18 arm (docs/simdist.md §46). Demos and anchor must
+    # BOTH be 224: the stage-1 encoder is built for 224 and the anchor pool is
+    # encoded through that same frozen encoder.
+    STAGE1="${STAGE1:-exps/mimicgen/threading_pixel224_stage1_seed1/latest.pt}"
+    DEMOS="${DEMOS:-release/data/mimicgen/threading_d0_target_dynamics_pix224_s400k_n200/dataset.hdf5}"
+    # ONE shard is plenty: bc_anchor_episodes bounds what is read, and the pool
+    # is encoded to latents once. read_frames_array() handles the JPEG codec.
+    ANCHOR="${ANCHOR:-/scratch/yifanr/simdist/data/thr_d0_src_pix224/shard_1/dataset.hdf5}"
+    ;;
+  *) echo "FATAL: ARM must be state|pixel|pix224 (got '$ARM')"; exit 1 ;;
+esac
+SAVE="${SAVE:-exps/mimicgen/threading_${ARM}_adapt_seed1}"
+
+echo "=== node $(hostname) | ARM=$ARM ==="
+for f in "$STAGE1" "$DEMOS" "$ANCHOR"; do
+    [ -s "$f" ] || { echo "FATAL: missing $f"; exit 1; }
+done
+echo "stage1 = $STAGE1"
+echo "demo_offset = ${DEMO_OFFSET:-0}  (demos [${DEMO_OFFSET:-0}, $(( ${DEMO_OFFSET:-0} + ${NUM_DEMO:-20} )) ))"
+echo "demos  = $DEMOS"
+echo "anchor = $ANCHOR"
+
+python train_simdist_adapt.py \
+    --stage1_ckpt "$STAGE1" \
+    --save_dir "$SAVE" \
+    --target_demo_path "$DEMOS" \
+    --target_num_data "${NUM_DEMO:-20}" \
+    --target_demo_offset "${DEMO_OFFSET:-0}" \
+    --bc_steps "${BC_STEPS:-1000}" \
+    --bc_anchor_coef "${ANCHOR_COEF:-1.0}" \
+    --bc_train_encoder "${BC_TRAIN_ENC:-0}" \
+    --bc_anchor_path "$ANCHOR" \
+    --dyn_anchor_coef "${DYN_ANCHOR_COEF:-0.1}" \
+    --dyn_anchor_path "$ANCHOR" \
+    --max_transitions "${MAX_TRANS:-100000}" \
+    --adapt_interval "${INTERVAL:-1000}" \
+    --dyn_update_steps "${DYN_STEPS:-1000}" \
+    --num_eval_episode "${EVAL_N:-100}" \
+    --num_eval_proc 10 \
+    --use_wb 0
+echo "adapt rc=$?"
+
+echo "=== score trend (read the WINDOW, not the last point -- iron law #4) ==="
+grep -E "^ *[0-9]+: score" "$SAVE/train.log" 2>/dev/null | tail -20
+echo
+echo "NOTE: the headline number must come from an INDEPENDENT re-eval, not from"
+echo "model0.pt's in-training best -- iron law #14 (systematically optimistic by"
+echo "0.06-0.19; we measured exactly 0.15 on our own flow-BC prior). Use:"
+echo "  python evaluate/eval.py --weight $SAVE/model0.pt --mode simdist \\"
+echo "      --num_game 500 --mp 10 --shift_from_cfg 1 --strict_success 1 \\"
+echo "      --hand_init_perturb_joint_sigma 0.1"
+echo "=== done ==="

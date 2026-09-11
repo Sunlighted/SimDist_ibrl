@@ -1,0 +1,98 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=bench_arms
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --time=0:20:00
+#SBATCH --output=logs/bench_arms_%j.out
+#SBATCH --error=logs/bench_arms_%j.out
+#
+# ★ SLURM SIZING: 0:20:00 -> b1, tiny footprint. Synthetic tensors only.
+#
+# Times update_distill for the STATE and PIXEL arms on the SAME GPU, so
+# "is pixel slower than state, and by how much?" is answered by measurement
+# rather than by a cost model. Also breaks the pixel step down by the two knobs
+# that plausibly dominate (the conv encoder, and the flatten->Linear compress),
+# so any optimisation targets the right thing.
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+python - <<'PY'
+import time, torch
+from rl.simdist_agent import SimDistAgent, SimDistConfig
+
+
+B, H, CAMS = 256, 3, ["agentview", "robot0_eye_in_hand"]
+
+def base_cfg():
+    c = SimDistConfig(); w = c.world_model
+    w.horizon = H; w.latent_dim = 512; w.mlp_hidden_dim = 512
+    w.discrete_heads = 1; w.activation = "mish"; w.enc_lr_scale = 0.3
+    c.planner.horizon = H
+    return c
+
+def timeit(agent, mk_batch, n=12, warm=3):
+    for i in range(n):
+        ob, ac, rw, vt = mk_batch()
+        if i == warm:
+            torch.cuda.synchronize(); t0 = time.time()
+        agent.update_distill(ob, ac, rw, value_targets=vt)
+    torch.cuda.synchronize()
+    return (time.time() - t0) / (n - warm)
+
+rows = []
+
+# ---------------- STATE arm ----------------
+c = base_cfg(); c.world_model.encoder_type = "latent"
+c.world_model.shared_encoder = 1; c.world_model.detach_pi = 1
+c.world_model.decoder_coef = 1.0
+ag = SimDistAgent(True, (37,), (9,), 7, "", c, device="cuda")
+def mkb_state():
+    return (torch.randn(B, H+1, 37, device="cuda"),
+            torch.randn(B, H, 7, device="cuda").clamp(-1, 1),
+            (torch.rand(B, H, device="cuda") > .8).float(),
+            torch.randn(B, H+1, device="cuda") * .1)
+ms = 1000 * timeit(ag, mkb_state)
+rows.append(("STATE (latent, 37-d)", sum(q.numel() for q in ag.model.parameters()), ms))
+del ag; torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+
+# ---------------- PIXEL arms ----------------
+def mkb_pix():
+    ob = {cam: torch.randint(0, 256, (B, H+1, 3, 96, 96), dtype=torch.uint8, device="cuda")
+          for cam in CAMS}
+    ob["prop"] = torch.randn(B, H+1, 9, device="cuda")
+    return (ob, torch.randn(B, H, 7, device="cuda").clamp(-1, 1),
+            (torch.rand(B, H, device="cuda") > .8).float(),
+            torch.randn(B, H+1, device="cuda") * .1)
+
+for label, pool, ncam, enc in [("PIXEL 2cam resnet96", "flatten", 2, "resnet96"),
+                               ("PIXEL 2cam VIT embed2d1", "flatten", 2, "vit"),
+                               ("PIXEL 1cam VIT embed2d1", "flatten", 1, "vit"),
+                               ("PIXEL 2cam vit+spatsoft", "spatial_softmax", 2, "vit")]:
+    c = base_cfg(); w = c.world_model
+    w.encoder_type = "pixel"; w.shared_encoder = 1; w.detach_pi = 1
+    w.decoder_coef = 0.0; w.pi_grad_t0 = 1; w.pixel.pool = pool
+    w.pixel.enc_type = enc
+    cams = CAMS[:ncam]
+    ag = SimDistAgent(False, (3, 96, 96), (9,), 7, "+".join(cams), c, device="cuda")
+    def mk(cams=cams):
+        ob, ac, rw, vt = mkb_pix()
+        return ({k: v for k, v in ob.items() if k in cams or k == "prop"}, ac, rw, vt)
+    ms = 1000 * timeit(ag, mk)
+    rows.append((label, sum(q.numel() for q in ag.model.parameters()), ms))
+    del ag; torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+
+base = rows[0][2]
+print("\n" + "=" * 78)
+print(f"{'arm':34s} {'params':>12s} {'ms/step':>9s} {'vs state':>9s}  {'800k steps':>11s}")
+print("-" * 78)
+for label, params, ms in rows:
+    print(f"{label:34s} {params:12,d} {ms:9.1f} {ms/base:8.1f}x {ms*800_000/3.6e6:10.1f} h")
+print("=" * 78)
+PY
+echo "bench rc=$?"

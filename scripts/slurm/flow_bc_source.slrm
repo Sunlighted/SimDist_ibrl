@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=flow_bc_src
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=12:00:00
+#SBATCH --output=logs/flow_bc_%j.out
+#SBATCH --error=logs/flow_bc_%j.out
+#
+# Phase 0.5a -- the flow-matching BC prior on SOURCE Threading_D0.
+#
+# WHY THIS RUNS FIRST: release/cfgs/mimicgen/threading_d0_state_ibrl_source_strict.yaml
+# line 30 hardcodes
+#     bc_policy: exps/mimicgen/threading_flow_bc_seed1/model0.pt
+# so the source IBRL expert (0.5b) cannot start until this exists at exactly
+# that path. Hence --save_dir below must not be renamed.
+#
+# Budget: 2000 epochs x 100 steps = 200k grad steps, plus 40 in-training evals
+# (eval_period=50) of 50 episodes each. train_bc.py has NO mp_eval, so those
+# evals are single-process: ~40 x 50 x 224 steps = 448k env steps, and the
+# measured rate is ~85 steps/s -> ~90 min of pure eval. 12 h is deliberately
+# generous for a first real run; tighten once the actual elapsed is known
+# (shorter walltime schedules sooner).
+#
+# wandb is OFF for this first run: it is unconfigured here, and the repo pins
+# 0.16.4 while the cluster guidance is 0.18.0 (0.19.x has an Alliance bug,
+# wandb#8966). Curves are still in <save_dir>/train.log. Turn it on with
+# `--use_wb 1` (and WANDB_MODE=offline) once the pipeline is proven.
+#
+# Submit from the repo root:  sbatch scripts/slurm/flow_bc_source.slrm
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+SAVE=exps/mimicgen/threading_flow_bc_seed1
+echo "=== node $(hostname) | save_dir=$SAVE ==="
+nvidia-smi --query-gpu=name --format=csv,noheader | head -1
+
+python train_bc.py \
+    --config_path release/cfgs/mimicgen/threading_d0_state_flow_bc.yaml \
+    --save_dir "$SAVE" \
+    --seed 1 \
+    --use_wb 0
+echo "train rc=$?"
+
+echo "=== artifacts ==="
+ls -la "$SAVE" || true
+echo "=== last eval scores from train.log ==="
+grep -E "score|best_ckpt" "$SAVE/train.log" 2>/dev/null | tail -12
+echo "=== done ==="

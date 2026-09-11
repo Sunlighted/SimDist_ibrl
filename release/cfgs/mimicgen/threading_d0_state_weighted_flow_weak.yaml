@@ -17,10 +17,10 @@ seed: 1
 
 dataset:
   # WEAK source demos (BC policy: threading_target_mlp_bc_n20_seed1) — gap-weighted.
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/dataset.hdf5
   num_data: 2000
   # TARGET demos (few; dynamics-only shift) — weight 1.
-  cotrain_path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  cotrain_path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   cotrain_num_data: 20
   use_state: 1
   state_stack: 1
@@ -31,7 +31,7 @@ dataset:
   val_ratio: 0.0
 
 # --- weighted-BC knobs (same as the MLP weighted_bc experiment) ---
-gap_cache: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/gt_gaps_n2000.npz
+gap_cache: release/data/mimicgen/threading_d0_source_bcpolicy_sigma0.1/gt_gaps_n2000.npz
 weight_mode: sample            # flow REQUIRES sample mode (gap-weight via draw)
 gap_c_mode: soft
 gap_tau: 0.01

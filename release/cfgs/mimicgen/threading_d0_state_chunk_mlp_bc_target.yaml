@@ -7,7 +7,7 @@
 #   StateBcPolicy (mlp_bc_target):  single action, closed-loop (Ta=1)
 #   StateChunkMlpPolicy (this):     Tp=16 chunk, open-loop Ta=8
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   use_state: 1
   action_horizon: 16        # = chunk_mlp_policy.pred_horizon (Tp); builds action_chunk
   num_data: 20              # 20 (all) target demos; set 10 for the 10-demo run

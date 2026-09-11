@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix224_smoke
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
+#SBATCH --time=0:59:00
+#SBATCH --output=logs/pix224_smoke_%j.out
+#SBATCH --error=logs/pix224_smoke_%j.out
+# ★ 0:59:00 -> b1. Smoke gate for the 224 + ResNet-18 + JPEG path BEFORE the
+#   ~40 h real run. Validates, on the 400-traj calibration replay:
+#     - ImageNet weights load from cache on a node with NO egress
+#     - JPEG frames decode inside the real training loop
+#     - 224 shapes flow through encoder -> world model -> planner eval
+#     - augmentation runs at 224
+#     - the [budget] epoch line prints
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"; source set_env_drac.sh
+export TORCH_HOME="${TORCH_HOME:-$HOME/.cache/torch}"
+echo "TORCH_HOME=$TORCH_HOME"
+ls -la "$TORCH_HOME/hub/checkpoints/" 2>&1 | head
+python train_simdist.py \
+    --config_path release/cfgs/mimicgen/threading_d0_pixel_simdist_r18_224_smoke.yaml \
+    --save_dir exps/mimicgen/pixel224_smoke \
+    --source_agent exps/mimicgen/threading_ibrl_source_rnnprior_seed1/model0.pt \
+    --use_wb 0
+echo "smoke rc=$?"

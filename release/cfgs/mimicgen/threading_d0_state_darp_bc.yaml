@@ -11,7 +11,7 @@ use_darp: 1
 seed: 1
 
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+  path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
   num_data: 20
   use_state: 1
   state_stack: 1

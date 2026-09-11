@@ -1,0 +1,90 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=ibrl_src
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=11:59:00
+#SBATCH --output=logs/ibrl_src_%j.out
+#SBATCH --error=logs/ibrl_src_%j.out
+#
+# ★ SLURM SIZING (walltime tiers on this cluster, measured 2026-08-26):
+#     b1 <= 3:00:00   168 nodes      b2 <= 12:00:00
+#     b3 <= 1-00:00:00  84 nodes     b4 <= 3-00:00:00   42 nodes
+#   Requesting just OVER a boundary is very expensive: a 4h job priced into the
+#   12h tier waited 15h23m, where 2:59:00 would have gone to b1 and started in
+#   minutes. Our 3-day jobs waited 8-15h; the group median is ~1 minute.
+#   So: always sit just UNDER a boundary (2:59:00 / 11:59:00 / 23:59:00), and
+#   keep CPU/mem small -- large asks shrink the set of nodes with a free slot
+#   next to an idle GPU. Right-size from `sacct -o Elapsed,MaxRSS`, not guesses.
+#   This job: measured 6:23 with the RNN prior (the flow prior needs ~2.7d -- avoid it)
+#
+# Phase 0.5b -- the SOURCE IBRL expert. Parameterised so the same script runs
+# both arms:
+#   CFG=<yaml> SAVE=<dir> sbatch --export=ALL,CFG,SAVE scripts/slurm/ibrl_source.slrm
+#
+# ARM A (the reproduction): threading_d0_state_ibrl_source_strict.yaml
+#   -> exps/mimicgen/threading_ibrl_source_strict_seed1
+#   Confirmed by the project owner as what Threading actually uses. Trains AND
+#   evals under strict success, so the topk saver ranks by honest insertion.
+# ARM B (diagnostic): the same config with strict_success disabled
+#   -> exps/mimicgen/threading_ibrl_source_nonstrict_seed1
+#   Measures what the documented reward-hacking (raw 100% / strict 68%: ram,
+#   clip-through, shove-the-ring) costs downstream, since V_src is distilled
+#   from this policy.
+#
+# ★ --snapshot_period 25000 IS LOAD-BEARING. train_rl.py:241 defaults it to 0
+# and :720 only writes snapshots when >0 -- with no runtime symptom. The
+# source-replay generation for stage 1 needs sub-optimal snapshots of this run,
+# so forgetting the flag costs a full 400k retrain discovered days later.
+#
+# 16 CPUs because eval is mp with num_proc hardcoded to 10 (train_rl.py:566);
+# num_eval_episode=50, and 10 | 50 satisfies the divisibility assertion.
+# L40S over H100: 10 eval workers need the cores (~16/GPU vs ~6/GPU).
+#
+# Tripwire when this finishes -- the cheapest correctness check in the project:
+#   strict source ~= 0.98  AND  strict target ~= 0.13   (docs/infra.md:363-368)
+# If it reads 0.98 / 0.40 the target recipe is wrong and everything downstream
+# is uninterpretable.
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+CFG="${CFG:-release/cfgs/mimicgen/threading_d0_state_ibrl_source_strict.yaml}"
+SAVE="${SAVE:-exps/mimicgen/threading_ibrl_source_strict_seed1}"
+EXTRA="${EXTRA:-}"
+
+echo "=== node $(hostname) ==="
+echo "cfg  = $CFG"
+echo "save = $SAVE"
+echo "extra= $EXTRA"
+
+# Fail fast: the BC prior must exist. PRIOR is overridable because the Threading
+# configs hardcode the FLOW prior path while this project uses the RNN-GMM prior
+# for Threading -- so the RNN arm passes it explicitly via EXTRA/--bc_policy.
+PRIOR="${PRIOR:-exps/mimicgen/threading_flow_bc_seed1/model0.pt}"
+if [ ! -s "$PRIOR" ]; then
+    echo "FATAL: BC prior missing at $PRIOR -- flow-BC (0.5a) must finish first."
+    exit 1
+fi
+echo "prior = $PRIOR ($(du -h "$PRIOR" | cut -f1))"
+
+python train_rl.py \
+    --config_path "$CFG" \
+    --save_dir "$SAVE" \
+    --seed 1 \
+    --snapshot_period 25000 \
+    --use_wb 0 \
+    $EXTRA
+echo "train rc=$?"
+
+echo "=== artifacts ==="
+ls -la "$SAVE" 2>/dev/null | head -20
+echo "snapshots: $(ls "$SAVE"/snapshot_*.pt 2>/dev/null | wc -l)"
+echo "=== score trend (last 12) ==="
+grep -E "^ *[0-9]+: (score|score\(best\))" "$SAVE/train.log" 2>/dev/null | tail -12
+echo "=== done ==="

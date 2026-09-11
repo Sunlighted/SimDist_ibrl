@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=eval_tgt_snap
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=0:59:00
+#SBATCH --output=logs/eval_tgt_snap_%j.out
+#SBATCH --error=logs/eval_tgt_snap_%j.out
+# Honest n=500 eval of a TARGET IBRL snapshot, for two purposes:
+#   1. decide whether the 1M run has already served its purpose (demo collector)
+#   2. give us our OWN "model-free IBRL" reference line, which is what the
+#      reference ladder compares SimDist's 0.962 against (docs: 0.9815 @ n=2000)
+# Iron law #14: the in-training 0.98 is a single 50-episode eval, optimistic by
+# 0.06-0.19, so it cannot be used for either decision.
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"; source set_env_drac.sh
+[ -s "$SNAP" ] || { echo "FATAL: missing $SNAP"; exit 1; }
+echo "=== node $(hostname) | snap=$SNAP | n=500 mp=10 ==="
+OUT=/scratch/yifanr/simdist/eval_staging/tgt_snap_${SLURM_JOB_ID}.txt
+python evaluate/eval.py --weight "$SNAP" --mode rl \
+    --num_game 500 --mp 10 --strict_success 1 \
+    --hand_init_perturb_joint_sigma 0.1 \
+    --shift_mode fixed \
+    --shift_friction_scale 0.5 --shift_mass_scale 3.0 \
+    --shift_solref_scale 1.0 --shift_solimp_scale 1.0 \
+    --shift_gripper_kp_scale 0.12 --shift_hole_offset "0.0,0.0,0.0" \
+    --shift_ring_size_scale 0.85 --shift_ring_friction_scale 2.0 \
+    --shift_needle_size_scale 1.0 --shift_mask_hole_in_obs 0 > "$OUT" 2>&1
+echo "eval rc=$?"
+echo "--- verdict ---"
+grep -E "^\[EVAL ENV\]" "$OUT" || echo "MISSING env -> FAIL"
+grep -E "success rate" "$OUT" || echo "MISSING rate -> FAIL"
+grep -E "^[A-Za-z_.]*(Error|Exception):" "$OUT" | grep -vE "EGLError|Device or resource busy" | head -3 || true
+# `|| true`: the error-grep finding NOTHING exits 1, and as the last command
+# that made sacct report the job FAILED on a perfectly good eval.
+exit 0

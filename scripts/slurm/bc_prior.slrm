@@ -1,0 +1,65 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=bc_prior
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=11:59:00
+#SBATCH --output=logs/bc_prior_%j.out
+#SBATCH --error=logs/bc_prior_%j.out
+#
+# ★ SLURM SIZING (walltime tiers on this cluster, measured 2026-08-26):
+#     b1 <= 3:00:00   168 nodes      b2 <= 12:00:00
+#     b3 <= 1-00:00:00  84 nodes     b4 <= 3-00:00:00   42 nodes
+#   Requesting just OVER a boundary is very expensive: a 4h job priced into the
+#   12h tier waited 15h23m, where 2:59:00 would have gone to b1 and started in
+#   minutes. Our 3-day jobs waited 8-15h; the group median is ~1 minute.
+#   So: always sit just UNDER a boundary (2:59:00 / 11:59:00 / 23:59:00), and
+#   keep CPU/mem small -- large asks shrink the set of nodes with a free slot
+#   next to an idle GPU. Right-size from `sacct -o Elapsed,MaxRSS`, not guesses.
+#   This job: measured: RNN 2:01, flow 5:11. 11:59 = just under the b2 boundary
+#
+# A BC prior for IBRL (Phase 0.5a). Parameterised so the same script trains
+# either head:
+#   CFG=<yaml> SAVE=<dir> sbatch --export=ALL,CFG,SAVE scripts/slurm/bc_prior.slrm
+#
+# RNN-GMM (threading_d0_state_bc_rnn.yaml) is the prior this project uses for
+# Threading, per the project owner. Note the repo's Threading IBRL configs all
+# hardcode the FLOW prior path instead, and docs/tasks.md §32's RNN-vs-MLP
+# head-to-head (RNN 97.8% vs MLP 89.2%, 500 games) was run on SQUARE -- so the
+# IBRL run must be launched with an explicit --bc_policy override rather than
+# relying on the config default. §32 also records "flow 没跑（太慢）": flow was
+# skipped there for being too slow, which is why RNN is the cheaper choice.
+#
+# Budget is the same for both heads: 2000 epochs x 100 steps = 200k grad steps,
+# plus 40 in-training evals (eval_period=50) of 50 episodes. train_bc.py has no
+# mp_eval, so those are single-process (~90 min at the measured ~85 steps/s).
+# The flow run took 5:11:30 wall; RNN-GMM should be faster per step (no 10-step
+# Euler ODE at eval, smaller net).
+#
+# wandb: WANDB_MODE=offline is exported by set_env_drac.sh, so --use_wb 1 is
+# safe here (records locally, `wandb sync` later).
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+CFG="${CFG:-release/cfgs/mimicgen/threading_d0_state_bc_rnn.yaml}"
+SAVE="${SAVE:-exps/mimicgen/threading_source_rnn_bc_n1000_seed1}"
+
+echo "=== node $(hostname) | cfg=$CFG | save=$SAVE ==="
+nvidia-smi --query-gpu=name --format=csv,noheader | head -1
+
+python train_bc.py --config_path "$CFG" --save_dir "$SAVE" --seed 1 --use_wb 0
+echo "train rc=$?"
+
+echo "=== artifacts ==="
+ls -la "$SAVE"/*.pt 2>/dev/null
+echo "=== score trend (last 8 evals) ==="
+grep -E "^ *[0-9]+: score" "$SAVE/train.log" 2>/dev/null | tail -8
+echo "=== honest re-eval of the best ckpt (n=100, printed by train_bc) ==="
+grep -E "best_ckpt" "$SAVE/train.log" 2>/dev/null | tail -4
+echo "=== done ==="

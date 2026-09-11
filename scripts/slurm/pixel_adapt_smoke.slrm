@@ -1,0 +1,113 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix_adapt_smoke
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=2:59:00
+#SBATCH --output=logs/pix_adapt_smoke_%j.out
+#SBATCH --error=logs/pix_adapt_smoke_%j.out
+#
+# ★ SLURM SIZING: 2:59:00 -> b1 (all 168 nodes), tiny footprint.
+#
+# INTEGRATION smoke test for the PIXEL stage-2/3 port. None of that code has ever
+# been EXECUTED -- only imported -- and the last several launch failures were all
+# at integration seams (trainer<->buffer, buffer<->loader, teacher<->run), not in
+# components. So run every seam once, with step counts small enough that a failure
+# costs a minute:
+#   1. collect a handful of PIXEL target demos  -> exercises the B-1 --rl_cameras
+#      patch, i.e. whether image keys reach the hdf5 at all
+#   2. verify those demos actually contain frames
+#   3. stage-2 policy BC + source anchor (latent pool path)
+#   4. stage-3 MPPI collection + dynamics update + dyn anchor
+#
+# ★ --max_transitions MUST exceed episode_length (400): the buffer only gains an
+#   episode on TERMINAL, so a sub-episode budget leaves buffer_episodes=0 and
+#   _train_dynamics correctly refuses ("no episode >= horizon"), silently leaving
+#   the whole stage-3 path untested behind rc=0.
+#
+# ★ NEVER put a `#` comment on the line after a `\` continuation: the comment ends
+#   the logical line, so EVERY remaining flag is silently dropped and the next line
+#   runs as its own command. That reverted this script to default max_transitions
+#   (20000) and default eval size -- a 3 h job instead of a 2 min one.
+#
+# Demo QUALITY is irrelevant here -- the collecting policy is the 0.32 first-pass
+# target expert. This tests plumbing, not science. The real demos need the ~1M-step
+# expert and an UNSATURATED snapshot (docs/demo-collection.md §38).
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+TGT=${TGT:-exps/mimicgen/threading_ibrl_target_rnnprior_seed1/model0.pt}
+DEMOS=${DEMOS:-/scratch/yifanr/simdist/data/pix_demos_smoke}
+STAGE1=${STAGE1:-exps/mimicgen/threading_pixel_stage1_seed1/latest.pt}
+PIXREPLAY=${PIXREPLAY:-release/data/mimicgen/threading_d0_source_diverse_pix/dataset.hdf5}
+
+echo "########## 1. collect PIXEL target demos (tests the B-1 patch) ##########"
+# EVERY shift knob explicit -- iron law #13: --hole_offset (default 0.01),
+# --solref_scale (default 0.8) and --solimp_scale UNCONDITIONALLY override the
+# ckpt, so omitting them silently collects against the PRE-§12 target.
+python scripts/collect_target_demos.py \
+    --weight "$TGT" --mode rl \
+    --out_dir "$DEMOS" \
+    --num_demo 6 --max_demo_len 400 --max_episodes 300 \
+    --seed 1 --interactive 0 \
+    --shift_mode fixed \
+    --friction_scale 0.5 --mass_scale 3.0 \
+    --solref_scale 1.0 --solimp_scale 1.0 \
+    --gripper_kp_scale 0.12 \
+    --hole_offset 0.0 \
+    --ring_size_scale 0.85 --ring_friction_scale 2.0 \
+    --needle_size_scale 1.0 \
+    --hand_init_perturb_joint_sigma 0.02 \
+    --collect_mask_in_obs 0 \
+    --rl_cameras agentview+robot0_eye_in_hand \
+    --record_video 0 --drop_images 0
+echo "collect rc=$?"
+
+echo; echo "########## 2. do the demos actually contain frames? ##########"
+python - "$DEMOS/dataset.hdf5" <<'PY'
+import h5py, sys, numpy as np
+f = h5py.File(sys.argv[1], "r")
+d = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
+print("demos:", len(d))
+keys = sorted(f[f"data/{d[0]}/obs"].keys())
+print("obs keys:", keys)
+imgs = [k for k in keys if k.endswith("_image")]
+if not imgs:
+    raise SystemExit("FATAL: no *_image keys -- the --rl_cameras patch did not take")
+for k in imgs:
+    ds = f[f"data/{d[0]}/obs/{k}"]
+    print(f"  {k}: {ds.shape} {ds.dtype}")
+    assert ds.dtype == np.uint8
+    assert ds.shape[0] == f[f"data/{d[0]}/obs/robot0_eef_pos"].shape[0], \
+        "frame count != state count"
+print("frames present and length-aligned: OK")
+f.close()
+PY
+echo "verify rc=$?"
+
+echo; echo "########## 3+4. stage-2 BC + stage-3 dynamics (tiny) ##########"
+python train_simdist_adapt.py \
+    --stage1_ckpt "$STAGE1" \
+    --save_dir exps/mimicgen/threading_pixel_adapt_smoke \
+    --target_demo_path "$DEMOS/dataset.hdf5" \
+    --target_num_data 6 \
+    --bc_steps 5 \
+    --bc_anchor_coef 1.0 \
+    --bc_anchor_path "$PIXREPLAY" \
+    --bc_anchor_episodes 20 --bc_anchor_states 512 --bc_anchor_batch 32 \
+    --dyn_anchor_coef 0.1 \
+    --dyn_anchor_path "$PIXREPLAY" \
+    --dyn_anchor_episodes 20 --dyn_anchor_states 512 --dyn_anchor_batch 32 \
+    --max_transitions 900 \
+    --adapt_interval 450 \
+    --dyn_update_steps 5 \
+    --adapt_batch_size 32 \
+    --num_eval_episode 6 --num_eval_proc 3 \
+    --use_wb 0
+echo "adapt rc=$?"
+echo "=== done ==="

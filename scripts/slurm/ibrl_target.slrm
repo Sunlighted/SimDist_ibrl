@@ -1,0 +1,98 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=ibrl_tgt
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=32G
+#SBATCH --time=11:59:00
+#SBATCH --output=logs/ibrl_tgt_%j.out
+#SBATCH --error=logs/ibrl_tgt_%j.out
+#
+# ★ SLURM SIZING: sit just UNDER a tier boundary (b1 <=3:00:00 / b2 <=12:00:00 /
+#   b3 <=1-00:00:00 / b4 <=3-00:00:00). Measured: source IBRL with the RNN prior
+#   took 6h23, so 11:59:00 (b2) fits with headroom. Do NOT ask 3-00:00:00 -- that
+#   lands in b4 (42 nodes) and waited 8-15h.
+#
+# Phase 0.5c -- the TARGET-domain IBRL expert.
+#
+# Its ONLY job is to collect the ~20 stage-2 demos. It is NOT the thing being
+# evaluated, and it is deliberately NOT trained to convergence:
+#
+# ★ docs/demo-collection.md §38: of ~20 candidate demo-selection criteria, the
+#   only one that survived pre-registered replication is "collect with a policy
+#   whose success rate is STILL RISING" (+0.139). The criterion is explicitly not
+#   "how good is the policy now" -- the original 20-demo set came from step 220k
+#   of 400k, at eval 0.98 and still climbing. So:
+#     - --snapshot_period 20000 is LOAD-BEARING (train_rl.py:241 defaults it to 0
+#       and :720 only writes snapshots when >0, with no runtime symptom). Without
+#       snapshots there is nothing unsaturated to collect from and this run has to
+#       be repeated.
+#     - After it finishes, pick an UNSATURATED snapshot (success still rising),
+#       NOT model0.pt.
+#
+# Warm-started from the SOURCE expert via --load_pretrained_agent. Note that is a
+# weight warm-start only: train_rl.py:363 sets global_step=0 and neither the
+# optimizer state nor the replay is restored.
+#
+# --bc_policy overrides the config's hardcoded FLOW prior path with the RNN-GMM
+# prior this project uses for Threading.
+#
+# Usage:
+#   SRC=<source expert dir> PRIOR=<rnn bc model0.pt> sbatch --export=ALL,SRC,PRIOR \
+#       scripts/slurm/ibrl_target.slrm
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+# ★★ MEASURED 2026-09-01: CHAINING CONTINUATIONS DOES NOT WORK. Run #1 (warm from
+#   source, 400k, 6h00) went 0.00 until 210k, 0.02@250k, 0.26@370k, best 0.32.
+#   Run c2 warm-started from run #1's 0.32 model0.pt and was back to 0.00 at 170k
+#   -- i.e. it re-walked run #1's curve EXACTLY, gaining nothing. Cause: :402-433
+#   restores actor+critic WEIGHTS but global_step=0, the replay is empty and the
+#   optimizer state is fresh, so the critic is refit from 25 mostly-failure
+#   episodes and drags the actor off the inherited policy within the first eval.
+#   ⇒ Warm-start ~= restart for IBRL. Do NOT chain 400k chunks; run ONE long job.
+#   1M steps ~= 15 h at the measured 66.7k steps/h => override --time=23:59:00
+#   (b3, 84 nodes) at submit time rather than editing the 11:59:00 default:
+#     sbatch --time=23:59:00 --export=ALL,SAVE,STEPS scripts/slurm/ibrl_target.slrm
+#
+# WARM: what to warm-start from. Defaults to the SOURCE expert (first pass).
+# For a CONTINUATION pass, point it at the target run itself -- docs/
+# on-policy-adaptation.md §1 records that model-free IBRL needs ~1M transitions
+# on this target, and our first 400k pass reached only 0.32 (ref 0.9815).
+# NOTE train_rl.py:363 resets global_step, so a continuation is a fresh run that
+# inherits weights only -- not a true resume.
+SRC="${SRC:-exps/mimicgen/threading_ibrl_source_rnnprior_seed1}"
+PRIOR="${PRIOR:-exps/mimicgen/threading_source_rnn_bc_n1000_seed1/model0.pt}"
+SAVE="${SAVE:-exps/mimicgen/threading_ibrl_target_rnnprior_seed1}"
+CFG="${CFG:-release/cfgs/mimicgen/threading_d0_state_ibrl_newtarget.yaml}"
+
+echo "=== node $(hostname) ==="
+echo "cfg   = $CFG"
+echo "warm  = $SRC/model0.pt"
+echo "prior = $PRIOR"
+echo "save  = $SAVE"
+for f in "$SRC/model0.pt" "$PRIOR"; do
+    [ -s "$f" ] || { echo "FATAL: missing $f"; exit 1; }
+done
+
+python train_rl.py \
+    --config_path "$CFG" \
+    --save_dir "$SAVE" \
+    --seed 1 \
+    --load_pretrained_agent "$SRC/model0.pt" \
+    --bc_policy "$PRIOR" \
+    --snapshot_period 20000 \
+    --num_train_step "${STEPS:-400000}" \
+    --use_wb 0
+echo "train rc=$?"
+
+echo "=== artifacts ==="
+echo "snapshots: $(ls "$SAVE"/snapshot_*.pt 2>/dev/null | wc -l)"
+echo "=== score trend -- find where it is STILL RISING, that is the collector ==="
+grep -E "^ *[0-9]+: score/score " "$SAVE/train.log" 2>/dev/null | tail -25
+echo "=== done ==="

@@ -1,0 +1,205 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=collect_demos
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=2:59:00
+#SBATCH --output=logs/collect_demos_%j.out
+#SBATCH --error=logs/collect_demos_%j.out
+#
+# ★ SLURM SIZING: 2:59:00 -> b1 (all 168 nodes). Sizing from the smoke: a 0.32
+#   policy produced 6 demos in 25 attempts at ~7 s/attempt, so 20 demos from a
+#   stronger policy is minutes, not hours.
+#
+# Collect the ~20 stage-2 TARGET demos WITH IMAGES. One draw serves BOTH arms:
+# the state arm re-concatenates STATE_KEYS and ignores the image keys
+# (rl/sequence_replay.py:255-256). Iron law #1 puts the single-20-demo-draw sigma
+# at 0.092 -- larger than replicate spread (0.027) or seed spread (0.035) -- so
+# two arms on two draws would need delta>0.26 to say anything. DO NOT re-collect
+# per arm.
+#
+# ★ SNAP must be chosen BY HAND, not by a rule. docs/demo-collection.md §38: the
+#   only demo-quality intervention that survived pre-registered replication is
+#   "collect with a policy whose success rate is STILL RISING" (+0.139). The
+#   criterion is explicitly NOT "the highest-scoring snapshot" -- the reference
+#   20-demo set came from step 220k of 400k at eval 0.98 while still climbing.
+#   Run with LIST=1 first to print every snapshot next to its eval score, then
+#   pass the one on the rising limb.
+#
+# ★ max_demo_len defaults to the env's own episode_length (400), i.e. maximally
+#   permissive. A WEAKER collector needs MORE steps, not fewer: the 0.32 policy
+#   rejected 200/200 rollouts at max_demo_len=150. Shortening it silently
+#   discards slow successes and biases the draw toward easy initial states.
+#
+# Usage:
+#   LIST=1 sbatch --export=ALL,RUN scripts/slurm/collect_pixel_demos.slrm
+#   SNAP=<...>/snapshot_260000.pt sbatch --export=ALL,SNAP scripts/slurm/collect_pixel_demos.slrm
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+RUN="${RUN:-exps/mimicgen/threading_ibrl_target_rnnprior_1M_seed1}"
+OUT="${OUT:-release/data/mimicgen/threading_d0_target_dynamics_pix}"
+NUM="${NUM:-20}"
+LEN="${LEN:-400}"
+MAXEP="${MAXEP:-400}"
+CAMS="${CAMS:-agentview+robot0_eye_in_hand}"
+# 0 = inherit the ckpt's rl_image_size (96, legacy). 224 = record the NATIVE
+# render for the ResNet-18 arm; the env already renders at 224 and downsizes.
+IMGSZ="${IMGSZ:-0}"
+
+# ---- LIST mode: show the score curve next to each snapshot, then stop --------
+if [ "${LIST:-0}" = "1" ]; then
+    echo "=== snapshots in $RUN, with the eval score logged at that step ==="
+    python - "$RUN" <<'PYL'
+import os, re, sys, glob
+run = sys.argv[1]
+
+scores = {}
+for ln in open(os.path.join(run, "train.log")):
+    m = re.match(r"\s*(\d+): score/score\s*:\s*([0-9.]+)", ln)
+    if m:
+        scores[int(m.group(1))] = float(m.group(2))
+if not scores:
+    sys.exit("no score/score lines in train.log yet")
+
+steps = sorted(scores)
+# ★ "still rising" must be judged over a WINDOW, not point-to-point. The
+# in-training eval is n=50, and we watched it read 0.06/0.02/0.06/0.04 across
+# 120-160k -- consecutive-point comparison calls that alternately rising and
+# falling (iron law #4: read the window, not the point). So: smooth over a
+# 5-point trailing window and fit a slope over 7 points centred on each step.
+W, F = 5, 3   # F = half-width of the slope fit
+def smooth(k):
+    idx = steps.index(k)
+    lo = max(0, idx - W + 1)
+    v = [scores[s] for s in steps[lo:idx + 1]]
+    return sum(v) / len(v)
+
+def slope(k):
+    idx = steps.index(k)
+    lo, hi = max(0, idx - F), min(len(steps) - 1, idx + F)
+    xs = steps[lo:hi + 1]
+    ys = [scores[x] for x in xs]
+    n = len(xs)
+    if n < 3:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    den = sum((x - mx) ** 2 for x in xs)
+    if den == 0:
+        return None
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den * 100000.0  # per 100k
+
+snaps = sorted(glob.glob(os.path.join(run, "snapshot_*.pt")),
+               key=lambda q: int(re.search(r"snapshot_(\d+)", q).group(1)))
+if not snaps:
+    sys.exit("no snapshot_*.pt yet -- --snapshot_period must be >0 at launch")
+
+peak = max(scores.values())
+print(f"peak in-training score so far: {peak:.2f}   (n=50/point => +-0.03 noise)")
+print(f"{'step':>9} {'score':>6} {'smooth5':>8} {'slope/100k':>11}  verdict")
+rows = []
+for q in snaps:
+    st = int(re.search(r"snapshot_(\d+)", q).group(1))
+    if st not in scores:
+        continue
+    sm, sl = smooth(st), slope(st)
+    rows.append((st, scores[st], sm, sl))
+    sls = "     n/a" if sl is None else f"{sl:>+11.3f}"
+    # §38 wants HIGH *and* RISING: near the eventual plateau but not yet flat.
+    if sl is None:
+        v = ""
+    elif sl > 0.02 and sm >= 0.6 * peak:
+        v = "<== §38 CANDIDATE (high & rising)"
+    elif sl > 0.02:
+        v = "rising, still low"
+    else:
+        v = "flat/falling"
+    print(f"{st:>9} {scores[st]:>6.2f} {sm:>8.3f} {sls}  {v}")
+
+print()
+print("§38: pick a CANDIDATE -- 'success still RISING', explicitly NOT the max")
+print("(the reference 20-demo set came from step 220k of 400k at 0.98, still climbing).")
+print("Then: SNAP=<run>/snapshot_<step>.pt sbatch --export=ALL,SNAP scripts/slurm/collect_pixel_demos.slrm")
+PYL
+    exit 0
+fi
+
+if [ -z "${SNAP:-}" ]; then echo "FATAL: pass SNAP=<snapshot.pt> (or LIST=1 to choose)"; exit 1; fi
+[ -s "$SNAP" ] || { echo "FATAL: missing $SNAP"; exit 1; }
+
+echo "=== node $(hostname) ==="
+echo "snapshot = $SNAP"
+echo "out      = $OUT   num=$NUM  max_demo_len=$LEN  cams=$CAMS"
+
+# ---- iron law #13: EVERY shift knob explicit. --hole_offset (default 0.01),
+#      --solref_scale (default 0.8) and --solimp_scale UNCONDITIONALLY override
+#      the ckpt, so omitting one silently collects against the PRE-§12 target.
+python scripts/collect_target_demos.py \
+    --weight "$SNAP" --mode rl \
+    --out_dir "$OUT" \
+    --num_demo "$NUM" --max_demo_len "$LEN" --max_episodes "$MAXEP" \
+    --seed 1 --interactive 0 \
+    --shift_mode fixed \
+    --friction_scale 0.5 --mass_scale 3.0 \
+    --solref_scale 1.0 --solimp_scale 1.0 \
+    --gripper_kp_scale 0.12 \
+    --hole_offset 0.0 \
+    --ring_size_scale 0.85 --ring_friction_scale 2.0 \
+    --needle_size_scale 1.0 \
+    --hand_init_perturb_joint_sigma 0.1 \
+    --collect_mask_in_obs 0 \
+    --rl_cameras "$CAMS" \
+    --rl_image_size "$IMGSZ" \
+    --record_video 0 --drop_images 0
+rc=$?
+echo "collect rc=$rc"
+
+# ---- verify the ARTIFACT, not the exit code (four rc=0 traps so far) ---------
+python - "$OUT/dataset.hdf5" "$NUM" "$SNAP" "$LEN" <<'PYV'
+import h5py, sys, os, hashlib, json, numpy as np
+path, want, snap, maxlen = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+if not os.path.exists(path): raise SystemExit(f"FATAL: no {path}")
+f = h5py.File(path, "r")
+d = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
+print(f"demos: {len(d)} (wanted {want})")
+if len(d) < want: raise SystemExit(f"FATAL: only {len(d)}/{want} demos -- do NOT adapt on a short draw")
+
+keys = sorted(f[f"data/{d[0]}/obs"].keys())
+imgs = [k for k in keys if k.endswith("_image")]
+if not imgs: raise SystemExit("FATAL: no *_image keys -- --rl_cameras did not take (blocker B-1)")
+for k in imgs:
+    ds = f[f"data/{d[0]}/obs/{k}"]
+    print(f"  {k}: {ds.shape} {ds.dtype}")
+    assert ds.dtype == np.uint8, f"{k} is not uint8"
+
+# frames must be length-aligned with state on EVERY demo, not just the first
+lens = []
+for k in d:
+    n = f[f"data/{k}/obs/robot0_eef_pos"].shape[0]
+    lens.append(n)
+    for c in imgs:
+        assert f[f"data/{k}/obs/{c}"].shape[0] == n, f"{k}/{c} frame count != state count"
+lens = np.array(lens)
+print(f"frames present, uint8, length-aligned on all {len(d)} demos: OK")
+print(f"episode lengths: min={lens.min()} p50={int(np.median(lens))} max={lens.max()} mean={lens.mean():.1f}")
+if lens.max() >= maxlen - 1:
+    print("  !! some demos hit max_demo_len -- successes are being TRUNCATED; raise LEN")
+
+# provenance sidecar: snapshots are not overwritten, but record it anyway so the
+# draw stays auditable (iron law #14 -- the 0.952 mystery came from exactly this)
+h = hashlib.sha256(open(snap, "rb").read()).hexdigest()
+side = {"snapshot": snap, "sha256": h, "num_demos": len(d),
+        "cameras": imgs, "ep_len_min": int(lens.min()),
+        "ep_len_median": int(np.median(lens)), "ep_len_max": int(lens.max())}
+with open(path + ".provenance.json", "w") as g: json.dump(side, g, indent=2)
+print(f"\nprovenance -> {path}.provenance.json\n  sha256={h[:16]}...")
+f.close()
+PYV
+echo "verify rc=$?"
+echo "=== done ==="

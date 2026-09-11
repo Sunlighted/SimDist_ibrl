@@ -1,0 +1,65 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=pix_eval_smoke
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=24G
+#SBATCH --time=0:29:00
+#SBATCH --output=logs/pix_eval_smoke_%j.out
+#SBATCH --error=logs/pix_eval_smoke_%j.out
+#
+# ★ SLURM SIZING: 0:29:00 -> b1 (168 nodes), 6 CPU / 24 G. A few minutes of work.
+#
+# `evaluate/eval.py --mode simdist` is a DIFFERENT code path from the
+# in-training eval that the stage-2/3 smoke exercised, and it is the one that
+# produces the HEADLINE number (iron law #14: model0.pt's in-training best is
+# systematically optimistic by 0.06-0.19, so the reported figure MUST come from
+# this script). It has never been run on a PIXEL checkpoint. Prove it works now,
+# on a throwaway ckpt, rather than discovering it after the real adapt.
+#
+# Score is meaningless here (the ckpt is the garbage-demo smoke). The pass
+# criterion is: it builds the pixel env, routes image obs through the planner,
+# and prints an [EVAL ENV] line + a success rate.
+#
+# 3 | 6 satisfies the num_eval_proc divisibility assertion (iron law #12).
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+ADAPT="${ADAPT:-exps/mimicgen/threading_pixel_adapt_smoke}"
+STAGED="${STAGED:-/scratch/yifanr/simdist/eval_staging/pixel_smoke}"
+echo "=== node $(hostname) | adapt=$ADAPT ==="
+
+# An adapt save_dir's cfg.yaml is an AdaptConfig, which pyrallis refuses to
+# decode as train_simdist.MainConfig -- so eval.py cannot read it directly.
+# Stage the weights next to the STAGE-1 cfg (docs/simdist.md:425-428).
+python scripts/stage_adapt_ckpt_for_eval.py \
+    --adapt_dir "$ADAPT" --out_dir "$STAGED" --num_game 6 --mp 3
+[ -s "$STAGED/model0.pt" ] || { echo "FATAL: staging produced no ckpt"; exit 1; }
+
+# --shift_from_cfg 1 is CORRECT here: the adapt run takes its TARGET env from the
+# stage-1 cfg's eval_domain_shift (train_simdist_adapt.py:277), and that block is
+# the §12 target. --original_mppi 1 matches the adapt run's own planner.
+EV=/scratch/yifanr/simdist/eval_staging/eval_out.txt
+python evaluate/eval.py --weight "$STAGED/model0.pt" --mode simdist \
+    --num_game 6 --mp 3 --original_mppi 1 \
+    --shift_from_cfg 1 --strict_success 1 \
+    --hand_init_perturb_joint_sigma 0.1 > "$EV" 2>&1
+echo "eval rc=$?"
+
+# Check the EVAL OUTPUT FILE, never the slurm log: the last run of this script
+# reported PASS because my grep matched this very banner instead of the eval.
+echo; echo "--- verdict ---"
+grep -E "^\[EVAL ENV\]" "$EV" || echo "MISSING env line -> FAIL"
+grep -E "success rate" "$EV" || echo "MISSING rate line -> FAIL"
+# Benign and expected: "Exception ignored in __del__" is EGL teardown at
+# interpreter exit (docs/infra.md:345) and .nfs* is an NFS cleanup race.
+# Match the ERROR line that TERMINATES a traceback, not the "Traceback:" header
+# -- the header is a separate line, so filtering on "Exception ignored in" left
+# it printing and made benign teardown look like a failure.
+grep -E "^[A-Za-z_.]*(Error|Exception):" "$EV" \
+  | grep -vE "EGLError|Device or resource busy" | head -3
+echo "=== done ==="

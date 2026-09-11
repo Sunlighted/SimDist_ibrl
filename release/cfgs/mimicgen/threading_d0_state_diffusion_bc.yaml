@@ -9,7 +9,7 @@
 #     vs Flow's 10-step Euler rectified-flow with MLP backbone.
 #   - 10 DDIM inference steps per chunk pred (same eval call cost as Flow).
 dataset:
-  path: /home/Chenyang/ibrl/release/data/mimicgen/core/threading_d0/processed_data96.hdf5
+  path: release/data/mimicgen/core/threading_d0/processed_data96.hdf5
   use_state: 1
   action_horizon: 16          # = diffusion_policy.pred_horizon
   num_data: -1

@@ -321,6 +321,75 @@ Threading 之外的 task 不解析 binding（`mode=none` + strict 关 ⇒ 不会
 
 ## 7. 已知坑 / sharp edges
 
+### 7z. SLURM 长任务编排：自分块链 / 预留窗口 / 监控（2026-09-09，跑 r18 梯子踩出来的）
+
+**① 自分块链没有"最后一个 job id"⇒ 后续任务不能用 `--dependency=afterany:<stage1>`。**
+chunk 1 不是最后一块，而最后一块的 id 要等 chunk N-1 跑起来才存在。
+`scripts/slurm/pixel_stage1.slrm` 现在有 `THEN_SBATCH` 钩子：**默认空 ⇒ 完全惰性**
+（在跑的旧链不受影响），由 marker 文件 `<save>/.then_submitted` 保证**只触发一次**，
+两条完成路径（后继的 early-exit / python 之后的 COMPLETE 分支）都会调。
+必须加进 `--export` 才能沿链传递。实测两条都跑过：一条 `[then] submitted OK`，
+另一条 `[then] hook already fired ... not resubmitting`。
+⚠️ `--export` 的值**带空格是安全的**（SLURM 只按逗号切）—— 已用一个 2 分钟探针作业验证：
+`THEN_SBATCH=[bash scripts/...sh]` 完整到达，且其后的 `MAX_CHUNK=6` 也没被截断。
+
+**② `--export=ALL` 只带环境变量，从不带 sbatch 的资源/账号 flag。**
+所以链上每一跳都要显式转发 `--mem/--time/--cpus/--account`（少了 `--mem` 曾让后继
+退回 header 的 72G 并 OOM）。同理，**钩子调起的 adapt/eval 也要转发 `--account`**，
+否则 `adapt.slrm`/`eval_simdist.slrm` 里硬编码的 `#SBATCH --account=aip-gigor`
+会让加速悄悄漏回原账号。
+
+**③ 可用 steps 不等于 tqdm 的 steps。** 进度只在 `log_per_step` 边界落盘，
+walltime kill 会丢掉最后一次保存之后的一切。实测 tqdm 50,249 而 `resume_state.pt`
+只有 **50,000**。⇒ 用**可用速率**排预算（224+r18+H=3 是 ~50k usable / 11:59 chunk）。
+⇒ 想用维护前的空窗补一块，要让它**明显越过**一个边界并留出 ~169MB 落盘时间，
+**别刚好压在边界上**：我按"raw 恰好到 120k"排，结果 120k 那次保存没写完，只落了 110k
+（预期 +20k，实收 +10k）。
+
+**④ 维护预留前的空窗怎么安全用**：一次性 chunk，且三件事齐全 ——
+`CHUNK == MAX_CHUNK`（走 backstop ⇒ **不排后继**，短 walltime 不会污染真链）、
+**不传 `THEN_SBATCH`**（不会误触发钩子）、
+`--deadline=<预留开始前>`（**排不进就让 SLURM 取消它**，否则它会在维护后启动，
+和真链的 chunk 同时写一个 `resume_state.pt`）。
+⚠️ 那个 chunk 的 log 仍会**无条件**打印 "propagating to successor: ..."，
+真正算数的是下面那行 `no successor queued (backstop)`。
+
+**⑤ 维护会把 slurmctld 也带走，此时任何"不在 squeue 里就是没了"的判断都是错的。**
+`squeue` 直接报 `Unable to contact slurm controller`。一个旧监控据此发出了假的
+`[LEFT QUEUE]`。⇒ 控制器不可达时结论是"**未知**"，不是"没了"；用 `sacct` 复核。
+⇒ 反过来，**只报状态变化的监控在队列被清空时会完全沉默**，和"还在排队"无法区分
+（silence ≠ success）。要么像 `watch.sh` 那样对**每个见过的 id 都查 sacct**
+（CANCELLED 会作为新状态触发），要么单独跑一个阻塞到控制器回来的**正向存活检查**。
+⚠️ 预留的 `EndTime` 可能是占位符（我们那次写 `Duration=365-00:00:00`，实际停机 ~1 小时）
+⇒ **两个方向都不要照它排期**。
+
+**⑥ pixel 跑起来每个 eval 点都会吐两个无害的 teardown traceback**，别当故障：
+mp eval worker 在 NFS 上清临时目录的 `OSError: [Errno 16] ... '.nfsXXXX'`，
+以及 `MjRenderContext.__del__` 里的 `EGLError(EGL_NOT_INITIALIZED)`（前缀
+`Exception ignored in:`）。⇒ 崩溃过滤器要匹配**异常行**并减去这两类，
+不要匹配 `Traceback (most recent`（否则每块日志刷十几条，很快就被训练成无视告警）。
+
+
+**★ 分块续跑会清空 `train.log`（2026-09-02 修复）。** `common_utils/py/logger.py:6,14`
+的 `Logger` 默认 `mode="w"`，而 `train_simdist.py:216` 没传 mode ⇒ **每个 resume chunk
+都把 train.log 截断重写**，之前所有 `score/source_score` 和 `distill/*` 历史全部丢失。
+plain pixel arm 的 0–500k 学习曲线就是这样没的，而且这些指标**不进 stdout**
+（`logs/*stage1*.out` 里 grep 不到），所以无处可恢复。已改为
+`mode=("a" if cfg.resume_from else "w")`。⚠️ `train_rl.py:373` / `train_simdist_adapt.py:226`
+没有 resume 路径，`"w"` 是对的，不要一起改。
+
+
+
+- ⚠️ **「render 是单步主要开销」已被实测推翻**（2026-08，L40S，`scripts/bench_render.py`）。
+  `env/robosuite_wrapper.py:161-165` 说 224×224 render 是 "the dominant single-step
+  cost"（也是加 `state_only_no_render` 的理由）。实测：**无渲染 11.82 ms/step，双相机
+  96×96 只 +2.23 ms（1.19×）** —— 物理才是瓶颈（control_freq=20 ⇒ 每控制步 ~25 个 sim
+  substep）。⇒ **pixel 模式的 env stepping 只贵 ~19%，不是 2-3×**。
+  ⚠️ 但这只适用于 **stepping**：带渲染的**数据生成**实测慢 **2.9×/worker**（每 worker 自己的
+  EGL context + 27 KB/step 搬运 + hdf5 写）。两者别混用。
+- ✅ **mp eval 带渲染是可用的**：10 worker 聚合吞吐 **9.71×**（理想 10×），无 EGL 争用。
+  `state_only_no_render` 是 state 模式的提速开关，不是 pixel 的阻塞项。
+
 - **`pip` 的 shebang 是坏的**（指向不存在的 `/home/Chenyang/anaconda3/envs/ibrl/bin/python3.10`）
   ⇒ 一律用 `python -m pip install ...`。
 - **`env/metaworld_wrapper.py` 导入即失败** —— 故意跳过了 mujoco-py/metaworld（§1）。
