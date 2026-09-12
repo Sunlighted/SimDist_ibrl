@@ -4,7 +4,7 @@
 \subsection{Algorithm}
 \label{app:algorithm}
 
-SimOAED runs in three stages. Stage~1 happens entirely in the source domain and
+SimADEPT runs in three stages. Stage~1 happens entirely in the source domain and
 is paid for once. Stages~2 and 3 are the adaptation proper and are the only
 parts that consume the target budget of Def.~\ref{def:budget}.
 
@@ -34,17 +34,17 @@ disagree off the data manifold. And the gradient of the policy-cloning term is
 stopped before it reaches the encoder, so the policy cannot reshape the latent
 space that the dynamics depends on.
 
-\paragraph{Stage 2: warm up the proposal on target demonstrations, anchored to
+\paragraph{Stage 2: warm up the proposal on target demonstrations, tethered to
 the source.}
 Stage~2 is offline: it uses the $n \le 20$ target demonstrations and no target
 interaction. We fine-tune only the policy head, minimising the cloning loss on
-the demonstrations plus the source-anchor penalty of Eq.~\ref{eq:anchor}. The
+the demonstrations plus the tether penalty of Eq.~\ref{eq:tether}. The
 encoder, the dynamics, the reward and the value heads are all frozen.
 
-The anchor is what makes this stage safe. The demonstrations are few enough that
+The tether is what makes this stage safe. The demonstrations are few enough that
 an unregularised fit revisits them for hundreds of effective epochs, which pulls
 the policy far away from the states where the frozen dynamics and value are
-still accurate. The anchor pool is a fixed set of source states with
+still accurate. The tether pool is a fixed set of source states with
 $\pi_s$'s actions precomputed on them, so the penalty costs no target
 interaction and adds no wall-clock beyond one extra forward pass per step.
 
@@ -70,7 +70,7 @@ deployed controller will visit, because the controller that collected them is
 the controller that will be evaluated.
 
 \begin{algorithm}[h]
-\caption{SimOAED}
+\caption{SimADEPT}
 \label{alg:simoaed}
 \begin{algorithmic}[1]
 \Require source simulator $\mathcal{M}_s$, target simulator $\mathcal{M}_t$,
@@ -80,9 +80,9 @@ the controller that will be evaluated.
 \State collect source replay $\mathcal{D}_s$ with $\pi_s$ \emph{and} weaker checkpoints of it
 \State distil $\{E_\theta, \hat p_\theta^{1..K}, \hat r_\theta, \hat V_\theta, \pi_\theta\}$
        on $\mathcal{D}_s$ with Eq.~\ref{eq:simdist-distill}; relabel values with $Q_s$
-\State build anchor pool $\mathcal{B} = \{(s, \pi_s(s))\}$ from $\mathcal{D}_s$, frozen
+\State build tether pool $\mathcal{B} = \{(s, \pi_s(s))\}$ from $\mathcal{D}_s$, frozen
 \Statex \textbf{Stage 2 --- proposal warm-up (offline, no target interaction)}
-\State fine-tune $\pi_\theta$ only, on $\mathcal{D}_t$ with the $\mathcal{B}$-anchor (Eq.~\ref{eq:anchor})
+\State fine-tune $\pi_\theta$ only, on $\mathcal{D}_t$ with the tether on $\mathcal{B}$ (Eq.~\ref{eq:tether})
 \Statex \textbf{Stage 3 --- dynamics repair (spends the budget)}
 \State $\mathcal{R} \gets \mathcal{D}_t$; \; $t \gets 0$
 \While{$t < N$}
@@ -137,7 +137,7 @@ Table~\ref{tab:app-planner}.
 
 \begin{table}[h]
 \centering
-\caption{SimOAED hyperparameters. Shared across tasks unless noted.}
+\caption{SimADEPT hyperparameters. Shared across tasks unless noted.}
 \label{tab:app-hparams}
 \small
 \begin{tabular}{llc}
@@ -162,8 +162,8 @@ Stage & Parameter & Value \\
  & target demonstrations $n$ & $20$ \\
  & gradient steps & $1000$ \\
  & learning rate, batch size & $3\times10^{-4}$, $256$ \\
- & anchor coefficient $\lambda$ & $0.1$--$1.0$ (task-dependent) \\
- & anchor pool & $40$k states from $2000$ source episodes \\
+ & tether strength $\lambda$ & $0.1$--$1.0$ (task-dependent) \\
+ & tether pool & $40$k states from $2000$ source episodes \\
 \midrule
 \multirow{6}{*}{3 (dynamics repair)}
  & target budget $N$ & $100$k transitions \\

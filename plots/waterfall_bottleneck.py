@@ -81,7 +81,7 @@ for i, (_, d, z, emph) in enumerate(STEPS):
     ax.text(i + 1, y, f"+{d:.3f}", ha="center", va="bottom",
             fontsize=8, color=P["ink"] if emph else P["ink2"],
             fontweight="bold" if emph else "normal")
-    ax.text(i + 1, y + 0.036, f"z\u2009=\u2009{z:.1f}", ha="center", va="bottom",
+    ax.text(i + 1, y + 0.036, f"$z\\,{{=}}\\,{z:.1f}$", ha="center", va="bottom",
             fontsize=7, color=P["accent"] if emph else P["muted"],
             fontweight="bold" if emph else "normal")
 

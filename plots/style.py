@@ -55,11 +55,28 @@ PALETTE = {
 WIDTH_1COL, WIDTH_2COL = 3.35, 7.0
 
 
-def setup(base=8):
-    """Apply the shared rcParams. `base` is the body font size in points."""
+# ICLR's style file does \usepackage{times}, which resolves to URW Nimbus Roman
+# -- the same metric clone of Times Roman that is installed here. So figure text
+# set in Nimbus Roman is literally the body font of the paper, not an
+# approximation. Liberation Serif / FreeSerif are the fallbacks; DejaVu Serif is
+# last because it is NOT Times-metric and will look wrong next to the body text.
+SERIF = ["Nimbus Roman", "Times New Roman", "Liberation Serif", "FreeSerif",
+         "DejaVu Serif"]
+
+
+def setup(base=8, family="serif"):
+    """Apply the shared rcParams. `base` is the body font size in points.
+
+    Default is Times (see SERIF) to match the ICLR body font. Pass
+    family="sans-serif" only for figures that are not going into the paper.
+    """
     plt.rcParams.update({
-        "font.family": "sans-serif",
+        "font.family": family,
+        "font.serif": SERIF,
         "font.sans-serif": ["DejaVu Sans", "Helvetica", "Arial"],
+        # stix is the Times-compatible math set: $\lambda$ in a label then
+        # matches the surrounding roman text instead of switching to DejaVu.
+        "mathtext.fontset": "stix",
         "font.size": base,
         "axes.labelsize": base,
         "xtick.labelsize": base,
@@ -110,3 +127,43 @@ def save(fig, stem, outdir="figs"):
     fig.savefig(f"{outdir}/{stem}.png", bbox_inches="tight",
                 facecolor=PALETTE["surface"], dpi=300)
     print(f"wrote {outdir}/{stem}.{{pdf,png}}")
+
+
+# ---------------------------------------------------------------------------
+# Family palette (navy-anchored)
+# ---------------------------------------------------------------------------
+# For figures that encode a METHOD FAMILY plus its variants: one hue per family,
+# three lightness tiers per hue (deep = the strongest / final variant, light =
+# the ablation). Use this instead of PALETTE["cat*"] whenever a figure has more
+# than one variant inside a family.
+#
+# Built around the paper's main-method navy #1D3765 (L*23, h=283). Design notes,
+# all measured in CIELAB, all verified under deuteranope/protanope simulation:
+#
+#   * blue/orange/green are the three method families and are mutually safe:
+#     dE76 = 82 / 61 / 53 normal, 90 / 55 / 36 under deuteranopia.
+#   * orange's deep tier is capped at L*52 -- below that, h=68 reads as brown.
+#     It is the one family whose deep tier cannot match navy's L*23.
+#   * purple sits at h=320, NOT the more natural h=308: navy's own hue is 283,
+#     so a violet purple collides with it (dE 16 vs 31). The cost is that purple
+#     and rose are then only dE 21 apart -- do not put them in the same panel.
+#   * DO NOT co-locate: rose+red (dE 35 but only 11 deg of hue apart in the
+#     originals), green+red or green+rose (dE 8 / 9 under deuteranopia).
+#   * The light tier has contrast 1.6-2.2 against white. It is fine for CI
+#     bands and fills; as a standalone thin line it is at the legibility floor,
+#     so give it >= 1.6pt.
+FAMILIES = {
+    "blue":   {"deep": "#1D3765", "mid": "#487DB2", "light": "#AABCDB"},
+    "orange": {"deep": "#AC6E2A", "mid": "#E19D49", "light": "#EFC99B"},
+    "green":  {"deep": "#376439", "mid": "#669877", "light": "#A4CBB7"},
+    "purple": {"deep": "#885D94", "mid": "#A582AE", "light": "#C1A8C7"},
+    "rose":   {"deep": "#742A60", "mid": "#A6608D", "light": "#DDA1BE"},
+    "red":    {"deep": "#AA3A49", "mid": "#BE6C6D", "light": "#D0908F"},
+}
+
+# Neutral reference lines (oracle ceiling, source zero-shot). Never spend a
+# family hue on a reference -- a reference is not a method.
+REF = {"oracle": "#6B7280", "zeroshot": "#9CA3AF"}
+
+# The main sim2sim figure's family assignment, so every panel agrees.
+METHOD_FAMILY = {"planning": "blue", "dyna": "orange", "model_free": "green"}

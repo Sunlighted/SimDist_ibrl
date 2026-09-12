@@ -180,6 +180,8 @@ case $ARM in
   cof_valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_coffee} ;;
   sq_dsrcB_*)   EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_square} ;;
   cof_dsrcB_*)  EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_coffee} ;;
+  sq_anch_*)    EXP_DIR=${ANCHFORM_DIR:-exps/anchform_square} ;;
+  cof_anch_*)   EXP_DIR=${ANCHFORM_DIR:-exps/anchform_coffee} ;;
 esac
 OUT=$EXP_DIR/${ARM}${SUFFIX:-}_seed${SEED}
 
@@ -276,6 +278,75 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  sq_anch_f5|cof_anch_f5|sq_anch_f1|cof_anch_f1)
+    # ===== F5 (saturating Hellinger^2) vs F1 (the deployed KL penalty) on Square
+    # and Coffee. On Threading the two were measured TIED, not F5 ahead: simdist
+    # 43 Phase 1 has F5 0.946 +- .014 vs F1 0.957 (delta -0.011, t=0.9), and the
+    # v2 calibration puts their bc_loss within 0.1% of each other at the same
+    # held-out D_SRC. The question here is whether "the form does not matter"
+    # survives a change of task, which is worth its own cells -- F5 is the only
+    # form that pushes the deviation tail to the OTHER side of F1 (43 built it
+    # exactly to break the tail/bc_loss collinearity).
+    #
+    # The F1 cell is re-run rather than reused: each task's existing anchored
+    # baseline sits at its own lambda (Square 0.1, Coffee 1.0) and hence its own
+    # working point, so it is not a matched control for a freshly calibrated F5.
+    #
+    # ---- CALIBRATED per task on HELD-OUT D_SRC, 2026-09-12 (exps/anchform_cal) --
+    #   bash scripts/calibrate_f5_sqcof.sh ; python scripts/report_f5_cal.py exps/anchform_cal
+    # Each F5 cell is matched to ITS OWN task's F1 working point, tau fixed at 0.03:
+    #   task       F1 lambda  F1 held-out  F5 lambda  F5 held-out  F5 bc_loss vs F1
+    #   Threading  1.0        0.0317       0.013      0.0318       +0.1%
+    #   Coffee     1.0        0.0322       0.011      0.0327       -5.0%
+    #   Square     0.1        0.0747       0.006      0.0863       +0.9%
+    #
+    # ⚠️ The F5/F1 lambda RATIO is not portable either: 0.013 and 0.011 on
+    # Threading/Coffee but 0.070 on Square (5x). A saturating form's stiffness is
+    # lambda/tau, not lambda -- 43's gotcha #1 is F5 once running 1400x too strong
+    # because the F1 habit of lambda~1 was copied across forms. Re-run
+    # scripts/calibrate_f5_sqcof.sh for any new task or tau.
+    #
+    # ⚠️ Each task's F1 sits at a DIFFERENT working point, and deliberately so:
+    # Threading/Coffee at ~0.032 are 1.6x TIGHTER than the portable rule
+    # train_simdist_adapt.py recommends (held-out D_SRC 0.05, best leave-one-
+    # target-out), Square at 0.0747 is 1.5x looser. Square is not simply
+    # mis-tuned: lambda 1.0 there measures 0.692 against 0.759 for NO anchor at
+    # all, so its looser point is a real finding, and the F1/F5 pair here is
+    # matched to that point rather than to Threading's. Cross-TASK comparison of
+    # these cells is therefore not apples-to-apples; the d-sweep (dsrcB_* arms) is
+    # what puts all three on one axis.
+    # ========================================================================
+    CAL=${CAL:-0}
+    if [ "$CAL" = 1 ]; then F5_ARGS=(--max_transitions 0); else F5_ARGS=(--max_transitions 100000); fi
+    case $ARM in
+      sq_*) B_DEMOS=release/data/mimicgen/square_sat_400000_s${SEED}/dataset.hdf5
+            B_POOL=release/data/mimicgen/square_d0_source_rotw1_diverse/dataset.hdf5
+            B_DIS="0,0.05,0.1,0.3"
+            B_PSET=(--planner_set "init_std=0.15,base_policy_std=0.0")
+            F5LAM=${ANCH_F5_SQ:-0.006} ; F1LAM=0.1 ;;
+      *)    B_DEMOS=$DEMOS
+            B_POOL=release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5
+            B_DIS="0,0.01,0.05,0.1"
+            B_PSET=()
+            F5LAM=${ANCH_F5_COF:-0.011} ; F1LAM=1.0 ;;
+    esac
+    case $ARM in
+      *_f5) FORM=(--bc_anchor_coef $F5LAM --bc_anchor_sat ${ANCH_TAU:-0.03}) ;;
+      *)    FORM=(--bc_anchor_coef ${ANCH_F1:-$F1LAM}) ;;
+    esac
+    for f in "$STAGE1_DYNENS" "$B_DEMOS" "$B_POOL"; do
+      [ -f "$f" ] || { echo "MISSING asset: $f"; exit 1; }
+    done
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      "${B_PSET[@]}" "${FORM[@]}" \
+      --bc_anchor_path $B_POOL --bc_anchor_holdout 1 "${F5_ARGS[@]}" \
+      --target_demo_path $B_DEMOS \
+      --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_disagree_coefs "$B_DIS" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_dsrcB_*|cof_dsrcB_*)
     # LINE B on Square and Coffee: hold the HELD-OUT D_SRC at d with the dual
     # controller, lambda adaptive. The point of the line is that ONE d transfers

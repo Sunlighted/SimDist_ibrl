@@ -50,7 +50,7 @@ We report three variants, which differ in exactly one thing each:
 The model-based counterpart to IBRL, and the arm that isolates \emph{how} a
 world model is used. It shares everything with our method's stages~1 and 2 ---
 the same distilled world model, the same frozen prior from the same
-source-anchored warm-up --- and differs only in what happens during stage~3.
+tethered warm-up --- and differs only in what happens during stage~3.
 Instead of planning with the model at decision time, it uses the model as a data
 generator: each round it branches imagined rollouts from real latents, adds them
 to a synthetic buffer, and trains an actor and a $Q(z,a)$ head on a mixture of
