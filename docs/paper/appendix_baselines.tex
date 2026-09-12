@@ -1,0 +1,204 @@
+\subsection{Baseline details}
+\label{app:baselines}
+
+All baselines operate under the same budget as our method
+(Def.~\ref{def:budget}): unrestricted source interaction, the same $20$ target
+demonstrations, and at most $100$k target transitions. None of them sees target
+reward shaping, the target physics parameters, or a target expert. Every arm is
+evaluated in the same target environment with the same success predicate and the
+same number of episodes.
+
+Two budget conventions are worth stating, because they are easy to get wrong and
+they change the numbers. First, the warm-up episodes that each online method
+runs before its first gradient step \emph{are} counted against the $100$k; we
+verified this by checking that the step counter includes them, rather than
+assuming it. Second, the $20$ demonstrations are \emph{not} counted, for any
+method, since every method gets the same ones. Warm-up rollouts are collected
+with the arm's own frozen prior acting deterministically, so a method that warm
+starts its critic does not thereby get better warm-up data.
+
+\paragraph{IBRL.}
+Our model-free reference, and the strongest of the four.
+Following \citet{hu2023ibrl}, a behaviour-cloning prior $\mu$ is obtained by
+fine-tuning the source expert on the target demonstrations and then frozen. An
+actor $\pi_\phi$ and a twin critic $Q_\psi$ are trained online with TD3-style
+updates, and at every step the executed action is the critic's argmax over the
+two candidates $\{\pi_\phi(s), \mu(s)\}$ (Eq.~\ref{eq:ibrl}). The same argmax is
+used inside the Bellman backup, so the prior bootstraps the value function
+rather than only regularising the actor. The demonstrations are kept in a frozen
+half of the replay buffer, so every minibatch is half demonstration data and
+half online data throughout training.
+
+We report three variants, which differ in exactly one thing each:
+\begin{itemize}
+\item \textbf{IBRL} --- the published method: the critic is initialised from
+      scratch.
+\item \textbf{IBRL + source critic} --- the critic is initialised from the
+      source expert's critic $Q_s$ instead. This is the only change; the prior,
+      the data, and every hyperparameter are identical. We add this arm because
+      the model-based methods already carry the source value (their value head
+      is distilled from $Q_s$), so comparing them against a from-scratch critic
+      credits the world model with something the model-free method was simply
+      never given.
+\item \textbf{IBRL + source critic + margin} --- additionally requires the
+      learned actor to beat the prior by a margin $m$ before it is executed
+      (Sec.~\ref{sec:two-conditions}). Included to show the margin is not
+      specific to the model-based setting.
+\end{itemize}
+
+\paragraph{Dyna-IBRL.}
+The model-based counterpart to IBRL, and the arm that isolates \emph{how} a
+world model is used. It shares everything with our method's stages~1 and 2 ---
+the same distilled world model, the same frozen prior from the same
+source-anchored warm-up --- and differs only in what happens during stage~3.
+Instead of planning with the model at decision time, it uses the model as a data
+generator: each round it branches imagined rollouts from real latents, adds them
+to a synthetic buffer, and trains an actor and a $Q(z,a)$ head on a mixture of
+real and imagined transitions. At deployment the actor runs alone, with no
+planner.
+
+Three implementation points matter for a fair comparison. The $Q$ head does not
+exist in the distilled model, which provides $\hat r$ and $\hat V$ but not
+$Q(z,a)$; we therefore add one and initialise it by regression onto
+$\hat r(z,a) + \gamma \hat V(f(z,a))$, so that at step zero the critic
+\emph{is} the source value and every subsequent change is due to target data.
+Imagination is carried out entirely in latent space rather than decoding to
+states and re-encoding, because that round trip is not the identity and its
+error is of the same order as the one-step latent motion. And the imagined
+rollouts are collected with the same IBRL argmax that acts in the environment,
+not with the actor alone, so the critic is trained on the distribution it will
+actually be evaluated under.
+
+We report Dyna-IBRL with and without the prior-preference margin, and with and
+without the dynamics ensemble, since Sec.~\ref{sec:two-conditions} shows these
+two are not independent.
+
+\paragraph{RLPD.}
+An off-policy method designed to learn efficiently from a mixture of offline and
+online data \citep{ball2023rlpd}, included as a representative of the
+``no prior policy, but plenty of offline data'' regime. Following the original
+recipe we use symmetric sampling --- every minibatch is half offline and half
+online --- together with layer normalisation in the critic, a critic ensemble
+with random subset selection, and a high update-to-data ratio.
+
+The offline buffer is the union of a large set of source rollouts and the $20$
+target demonstrations, merged into a single prior dataset. This gives RLPD
+strictly more offline data than any other arm receives. We do so deliberately:
+RLPD has no mechanism for using a source \emph{policy}, so giving it the source
+\emph{data} is the closest equivalent, and it prevents the comparison from
+reducing to ``the method without a prior does worse''.
+
+\paragraph{IQL.}
+An offline-RL method \citep{kostrikov2022iql} used here as a warm start followed
+by online fine-tuning, which is the setting in which it is usually deployed for
+sim-to-real. We first run IQL offline on source rollouts plus the target
+demonstrations: the value function is fit by expectile regression, which avoids
+querying the critic on actions absent from the data, and the policy is extracted
+by advantage-weighted regression. The resulting actor and critic then initialise
+an online run with the same budget and environment as the other arms.
+
+One deviation from the standard recipe is worth recording. On this data
+advantage-weighted regression degenerates to plain behaviour cloning, because
+the spread of advantages across a minibatch is far smaller than the spread of
+$Q$ values, so the exponential weights are nearly uniform. We therefore use
+reward-weighted regression for policy extraction instead. This is a change that
+\emph{helps} the baseline; we report it because the failure mode is invisible in
+the training curves and would otherwise look like a tuning problem.
+
+\begin{table}[h]
+\centering
+\caption{Baseline settings. The upper block is shared by every online arm and is
+listed once; the lower blocks give what is specific to each method. A dash means
+the method has no such component.}
+\label{tab:app-baselines}
+\small
+\begin{tabular}{ll}
+\toprule
+\multicolumn{2}{l}{\emph{Shared by all online arms}} \\
+\midrule
+target budget                     & $100$k transitions \\
+target demonstrations             & $20$ \\
+warm-up episodes (counted against the budget) & $30$ \\
+batch size                        & $256$ \\
+learning rate                     & $3{\times}10^{-4}$ \\
+discount $\gamma$                 & $0.99$ \\
+critics (clipped double-$Q$)      & $2$ \\
+critic updates per environment step & $5$ \\
+actor update frequency            & every $2$ critic updates \\
+$n$-step return                   & $3$ \\
+exploration noise std             & $0.1$ \\
+demonstration fraction per batch  & $0.5$ (frozen demonstration replay) \\
+target-network rate $\tau$        & $0.01$ \\
+\midrule
+\multicolumn{2}{l}{\emph{IBRL}} \\
+\midrule
+prior                             & source expert fine-tuned on $\mathcal{D}_t$, frozen \\
+critic initialisation             & from scratch / from $Q_s$ (two variants) \\
+prior-preference margin $m$       & $0$ / $0.01$ (two variants) \\
+\midrule
+\multicolumn{2}{l}{\emph{Dyna-IBRL}} \\
+\midrule
+prior                             & stage-2 policy head (shared with our method) \\
+$Q(z,a)$ head initialisation      & regression onto $\hat r + \gamma \hat V$ \\
+imagined transitions per round    & $20$k \\
+imagination rollout length        & $1$ \\
+synthetic buffer size             & $100$k \\
+real fraction per batch           & $0.5$ \\
+actor learning rate               & $1{\times}10^{-5}$ \\
+actor updates per round           & $500$ \\
+critic updates per round          & $5000$ \\
+collection noise std              & $0.1$ \\
+target-policy smoothing std / clip & $0.1$ / $0.3$ \\
+\midrule
+\multicolumn{2}{l}{\emph{RLPD}} \\
+\midrule
+prior policy                      & --- \\
+offline buffer                    & $2000$ source episodes $+$ $20$ target demonstrations \\
+sampling                          & symmetric (half offline, half online) \\
+critic                            & layer-normalised, random subset selection \\
+\midrule
+\multicolumn{2}{l}{\emph{IQL} (offline warm start, then online)} \\
+\midrule
+offline data                      & $5000$ source episodes $+$ $20$ target demonstrations \\
+expectile $\tau_{\text{exp}}$     & $0.9$ \\
+offline critic steps              & $80$k \\
+offline actor steps               & $20$k \\
+policy extraction                 & reward-weighted regression \\
+weighting temperature $\beta$, clip & $3.0$, $100$ \\
+online phase                      & identical to the shared block above \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% PROVENANCE (read from the cfg.yaml of runs that are actually reported):
+%   IBRL / RLPD / IQL  exps/simdist_threading_3arm/{ibrl,rlpd,iql}_seed1
+%   Dyna-IBRL          exps/simdist_threading_3arm/dynaibrl_m001_seed1 (dyna block)
+%   RLPD prior set     scripts/merge_prior_dataset.py (source rollouts + 20 demos)
+%   IQL warm start     scripts/pretrain_iql_qagent.py --actor_mode rwr,
+%                      then scripts/iql_ckpt_to_agent.py to remap the keys
+%
+% TODO(verify): RLPD's critic block. The shared table now says 2 critics for
+% everything, which is what train_rl.py gives every arm -- but RLPD's published
+% recipe uses a 10-critic ensemble with random subset selection, and the prose
+% above claims "critic ensemble with random subset selection". Either the RLPD
+% arm really does run 2 critics (in which case the prose overclaims and should
+% say so, and the deviation from the published recipe must be stated) or the
+% ensemble is configured somewhere I did not find. Resolve before submission --
+% as written, the table and the prose contradict each other.
+% TODO(verify): warm-up episodes. The RLPD cfg says num_warm_up_episode=2030,
+% which is 2000 preloaded prior episodes plus the same 30 real warm-up rollouts
+% the other arms get. The shared row of 30 is therefore correct, but only if the
+% preloaded 2000 are genuinely not target interaction -- confirm.
+% TODO(verify): Dyna-IBRL is listed under the shared 30-episode warm-up row by
+% omission. It actually starts from the stage-2 prior with no separate warm-up
+% phase; either give it an explicit row or exclude it from that row.
+% TODO(verify): tau=0.01 in the shared block is read from the Dyna-IBRL config.
+% The IQL OFFLINE phase uses 5e-3 (listed separately is fine), but check what
+% train_rl.py uses for the IBRL/RLPD/IQL online phases before claiming it shared.
+% TODO(check): docs/infra.md 13 warns that job_{coffee,square}_baselines.sh still
+% runs the ibrl arm with warm-up 10 and WITHOUT count_warmup_transitions, unlike
+% Threading. Either re-run those or state the per-task difference; as written
+% this section claims one convention for all tasks.
+% TODO(cite): confirm bibkeys hu2023ibrl / ball2023rlpd / kostrikov2022iql.
+% ---------------------------------------------------------------------------

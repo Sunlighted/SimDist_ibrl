@@ -232,7 +232,10 @@ SUFFIX=${SUFFIX:-}                 # e.g. SUFFIX=_v2 if a name would collide
 # The value-adapt ablation gets its OWN wandb project: it is a self-contained
 # 5-arm table, and dropping 15 more groups into simdist_threading_3arm (which
 # already holds 100+) makes both harder to read. Override with VALABL_DIR.
-case $ARM in valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_threading} ;; esac
+case $ARM in
+  valabl_*)          EXP_DIR=${VALABL_DIR:-exps/valabl_threading} ;;
+  lamA_*|dsrcB_*)    EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_threading} ;;
+esac
 OUT=$EXP_DIR/${ARM}${SUFFIX}_seed${SEED}
 DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
 
@@ -368,6 +371,48 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  lamA_*|dsrcB_*)
+    # ===================== lambda tuning, two lines (Threading) =================
+    # Both are relative to dynens_h5_slow_anchor (the full method, 10 seeds,
+    # 0.971 +- 0.005): 5-head stage-1, sat_160000 per-seed demos, 100k,
+    # collect_disagree_coef 0.5, eval_disagree_coefs '0,0.01,0.05,0.1'.
+    #
+    #   LINE A  lamA_<v>   fixed bc_anchor_coef = v.  Shows that the multiplier
+    #           does NOT transfer: simdist 42 measured +0.164 at lambda~1 on a weak
+    #           base, 44 measured +0.055 (plain) vs +0.172 (dynens) at the SAME
+    #           lambda=1, and train_simdist_adapt's own notes record lambda=1
+    #           scoring BELOW no anchor at all on Square (0.692 vs 0.759). The
+    #           memory note anchor-lambda-not-portable puts lambda* at 5.2x spread
+    #           across targets. lambda 0 and 1 already exist as dynens_h5_slow and
+    #           dynens_h5_slow_anchor -- do not re-run them.
+    #
+    #   LINE B  dsrcB_<d>  bc_anchor_target_dsrc = d, lambda adaptive. The dual
+    #           controller holds the HELD-OUT D_SRC at d (log-lambda step, gain
+    #           1.5, period 20 BC steps, warmup 10%). This is the transferable
+    #           quantity: one d is supposed to work on all three tasks, which is
+    #           why line B also runs on Square and Coffee (job_sqcof_dynaibrl.sh)
+    #           and line A does not.
+    #
+    # ⚠️ The controller caps lambda at bc_anchor_lam_max=30. A cell that pins at
+    # the cap did NOT reach its target -- check "[anchor-ctrl]" / the final lam in
+    # train.log before reading its score. Our v2 calibration needed lambda~18-30
+    # for a 15%-subset pool at d=0.0317, so d=0.02 may well hit it here.
+    # ============================================================================
+    case $ARM in
+      lamA_*)  LAMV=${ARM#lamA_}; AB=(--bc_anchor_coef $LAMV) ;;
+      dsrcB_*) DV=${ARM#dsrcB_};  AB=(--bc_anchor_coef 1.0 --bc_anchor_target_dsrc $DV) ;;
+    esac
+    APATH=${ANCH_PATH:-release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5}
+    [ -f "$APATH" ] || { echo "MISSING anchor source: $APATH"; exit 1; }
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      "${AB[@]}" --bc_anchor_path $APATH \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_disagree_coefs "0,0.01,0.05,0.1" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   anch_*)
     # ============ anchor-loss ablation, all relative to dynens_h5_slow_anchor ===
     # That group IS the full method and already has 10 seeds (0.971 +- 0.005):

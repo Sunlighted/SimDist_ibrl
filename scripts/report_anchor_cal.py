@@ -9,7 +9,13 @@ working point; the winner per form is the cell whose D_SRC is nearest to it.
 """
 import os, re, sys, glob
 
-PAT = re.compile(r"\[D_SRC\]\s+([0-9.]+)\s+\(L2mean\s+([0-9.]+)\)\s+bc_loss\s+([0-9.]+)")
+# Prefer the HELD-OUT D_SRC when the line carries one: the anchor's own pool is
+# provenance-subset for the es_* arms (~15% of states), so pool D_SRC is not
+# comparable across forms. The held-out pool is always the uniform full draw.
+PAT = re.compile(
+    r"\[D_SRC\]\s+([0-9.]+)\s+\(L2mean\s+[0-9.]+\)"
+    r"(?:\s+heldout_D_SRC\s+([0-9.]+)[^b]*)?"
+    r"\s+bc_loss\s+([0-9.]+)")
 
 def main() -> int:
     root = sys.argv[1] if len(sys.argv) > 1 else "exps/anchor_cal"
@@ -22,7 +28,9 @@ def main() -> int:
             if mm:
                 m = mm
         if m:
-            cells[tag] = (float(m.group(1)), float(m.group(3)))
+            pool, hold, bc = m.group(1), m.group(2), m.group(3)
+            cells[tag] = (float(hold if hold else pool), float(bc),
+                          float(pool), hold is not None)
     if not cells:
         print(f"no cells with [D_SRC] under {root}", file=sys.stderr)
         return 1
@@ -32,22 +40,28 @@ def main() -> int:
         print("f1_* cell missing -- it defines the target D_SRC", file=sys.stderr)
         return 1
     target = cells[f1[0]][0]
-    print(f"target D_SRC (F1) = {target:.4f}   bc_loss {cells[f1[0]][1]:.5f}\n")
+    kind = "HELD-OUT" if cells[f1[0]][3] else "pool"
+    print(f"target {kind} D_SRC (F1) = {target:.4f}   bc_loss {cells[f1[0]][1]:.5f}")
+    if not cells[f1[0]][3]:
+        print("  !! no held-out column -- rerun with --bc_anchor_holdout 1; pool "
+              "D_SRC is NOT comparable for the provenance-subset arms")
+    print()
 
     forms = {}
     for tag, v in cells.items():
         form = tag.rsplit("_", 1)[0]
-        forms.setdefault(form, []).append((tag, *v))
+        forms.setdefault(form, []).append((tag, v[0], v[1], v[2]))
 
-    print(f"{'form':10s} {'cell':14s} {'D_SRC':>8s} {'bc_loss':>9s} {'|dD|':>7s}  pick")
+    print(f"{'form':10s} {'cell':14s} {'D_SRC':>8s} {'(pool)':>8s} {'bc_loss':>9s} "
+          f"{'|dD|':>7s}  pick")
     picks = {}
     for form in sorted(forms):
         rows = sorted(forms[form], key=lambda r: abs(r[1] - target))
-        for k, (tag, d, b) in enumerate(sorted(forms[form], key=lambda r: r[1])):
+        for k, (tag, d, b, pl) in enumerate(sorted(forms[form], key=lambda r: r[1])):
             best = (tag == rows[0][0])
             if best:
                 picks[form] = (tag, d, b)
-            print(f"{form if k == 0 else '':10s} {tag:14s} {d:8.4f} {b:9.5f} "
+            print(f"{form if k == 0 else '':10s} {tag:14s} {d:8.4f} {pl:8.4f} {b:9.5f} "
                   f"{abs(d - target):7.4f}  {'<= pick' if best else ''}")
     print("\n== picks (lambda per form, matched to F1's working point) ==")
     for form, (tag, d, b) in sorted(picks.items()):

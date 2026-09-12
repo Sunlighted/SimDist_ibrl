@@ -212,6 +212,17 @@ class AdaptConfig(common_utils.RunConfig):
     # anchor overfits its own pool: held-out D_SRC runs 13-18% HIGHER than the pool it
     # trained on (Coffee, and the gap grows with lambda), and the 0.05 calibration above
     # is on held-out states.
+    # Force the held-out split even with a FIXED lambda (the controller normally
+    # gates it). Needed to calibrate provenance-subset arms: with
+    # bc_anchor_expert_only/success_only the anchor's own pool is ~15% of states,
+    # so the pool D_SRC printed by [D_SRC] is NOT comparable to a full-pool arm's
+    # -- the subset arm is simply unconstrained on the other 85%. The held-out
+    # pool is always the uniform full draw (never subset), so it is the one metric
+    # under which every form sits at the same working point. Measurement only;
+    # it does not change the loss. ⚠️ It DOES change the rng draw for the anchor
+    # pool (n_take grows by holdout_episodes), so a run with this on is not
+    # bit-identical to one without.
+    bc_anchor_holdout: int = 0
     bc_anchor_holdout_episodes: int = 300
     bc_anchor_holdout_states: int = 8000
     # stage 3: TARGET dynamics adaptation
@@ -637,7 +648,8 @@ class AdaptWorkspace:
             # episodes are disjoint from the anchor's by construction. n_hold=0 keeps
             # `pick` bit-identical to the legacy draw (same rng, same call, same size).
             n_hold = (self.cfg.bc_anchor_holdout_episodes
-                      if self.cfg.bc_anchor_target_dsrc > 0 else 0)
+                      if (self.cfg.bc_anchor_target_dsrc > 0
+                          or self.cfg.bc_anchor_holdout) else 0)
             n_take = min(self.cfg.bc_anchor_episodes + n_hold, len(keys))
             take = rng.choice(len(keys), n_take, replace=False)
             hold, pick = take[:n_hold], take[n_hold:]

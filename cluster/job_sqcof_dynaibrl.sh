@@ -178,6 +178,8 @@ esac
 case $ARM in
   sq_valabl_*)  EXP_DIR=${VALABL_DIR:-exps/valabl_square} ;;
   cof_valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_coffee} ;;
+  sq_dsrcB_*)   EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_square} ;;
+  cof_dsrcB_*)  EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_coffee} ;;
 esac
 OUT=$EXP_DIR/${ARM}${SUFFIX:-}_seed${SEED}
 
@@ -274,6 +276,53 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  sq_dsrcB_*|cof_dsrcB_*)
+    # LINE B on Square and Coffee: hold the HELD-OUT D_SRC at d with the dual
+    # controller, lambda adaptive. The point of the line is that ONE d transfers
+    # across tasks, so these must mirror each task's own anchored baseline
+    # field-for-field and change only the anchor's control target:
+    #   Square  sq_dynens_anch_d400000 : 5-head stage-1, sat_400000, num_data
+    #           None, bc_anchor_coef 0.1, planner_set init_std=0.15/base 0, and
+    #           eval_disagree_coefs '0,0.05,0.1,0.3'  (NOT Threading's list)
+    #   Coffee  cof_dynens_anch        : coffee_s1g5x_dynens, sat400k, num_data
+    #           None, bc_anchor_coef 1.0, no planner_set,
+    #           eval_disagree_coefs '0,0.01,0.05,0.1'
+    # ⚠️ The per-task anchor lambda differs by 10x (0.1 vs 1.0) -- which is the
+    # very non-transferability line A documents, and the reason line B exists.
+    # bc_anchor_coef below only SEEDS the controller's search.
+    #
+    # ⚠️ The anchor pools are the FULL source-diverse sets (5.2 GB / 7.2 GB), the
+    # same files the baselines used. The 4k extracts would put these arms on a
+    # different state coverage, which simdist 44c measured at -0.123.
+    DV=${ARM##*dsrcB_}
+    case $ARM in
+      sq_*) B_STAGE1=$STAGE1_DYNENS
+            B_DEMOS=release/data/mimicgen/square_sat_400000_s${SEED}/dataset.hdf5
+            B_POOL=release/data/mimicgen/square_d0_source_rotw1_diverse/dataset.hdf5
+            B_SEED_LAM=0.1
+            B_DIS="0,0.05,0.1,0.3"
+            B_PSET=(--planner_set "init_std=0.15,base_policy_std=0.0") ;;
+      *)    B_STAGE1=$STAGE1_DYNENS
+            B_DEMOS=$DEMOS
+            B_POOL=release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5
+            B_SEED_LAM=1.0
+            B_DIS="0,0.01,0.05,0.1"
+            B_PSET=() ;;
+    esac
+    for f in "$B_STAGE1" "$B_DEMOS" "$B_POOL"; do
+      [ -f "$f" ] || { echo "MISSING asset: $f"; exit 1; }
+    done
+    $PY train_simdist_adapt.py --stage1_ckpt $B_STAGE1 --save_dir $OUT --seed $SEED \
+      "${B_PSET[@]}" \
+      --bc_anchor_coef $B_SEED_LAM --bc_anchor_target_dsrc $DV \
+      --bc_anchor_path $B_POOL \
+      --target_demo_path $B_DEMOS \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_disagree_coefs "$B_DIS" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_plain_d600000|sq_plain_d400000|cof_plain)
     # SimDist MPPI adapt on the single-head stage-1 -- the PLANNING reference the
     # dyna/model-free arms are measured against. Deliverable IS the planner, so

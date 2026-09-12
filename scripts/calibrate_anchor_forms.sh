@@ -22,7 +22,18 @@ PY=/home/Chenyang/.conda/envs/ibrl/bin/python
 export PYTHONPATH=$PWD:${PYTHONPATH:-}
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 
-OUT=${OUT:-exps/anchor_cal}
+# v2: every cell now runs --bc_anchor_holdout 1 and is judged on HELD-OUT D_SRC.
+# The v1 cells (exps/anchor_cal) matched arms on their OWN anchor pool, which is
+# wrong for the provenance-subset arms: with expert_only+success_only the pool is
+# ~15% of states, so pool D_SRC says nothing about the other 85%. Measured at
+# lambda=1.0, bc_steps 200: F1 pool 0.0303 -> held-out 0.0321 (+6%), while es_src
+# pool 0.0320 -> held-out 0.0843 (+164%). Same pool D_SRC, same bc_loss, 2.6x
+# further from pi_src over the full state space. The held-out pool is always the
+# uniform full draw, never subset, so it is the one metric under which every form
+# sits at the same working point (train_simdist_adapt.py's own note at the
+# bc_anchor_holdout_episodes field). Turning holdout on also changes the anchor
+# pool's rng draw, so v1 and v2 numbers must not be mixed -- hence a new dir.
+OUT=${OUT:-exps/anchor_cal_v2}
 CK=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
 DEMO=release/data/mimicgen/threading_d0_sat_160000_s1/dataset.hdf5
 POOL=${POOL:-release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5}
@@ -59,11 +70,17 @@ CELLS=(
   "es_src_0.3|--bc_anchor_coef 0.3 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
   "es_src_1.0|--bc_anchor_coef 1.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
   "es_src_3.0|--bc_anchor_coef 3.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
+  "es_src_10|--bc_anchor_coef 10 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
+  "es_src_18|--bc_anchor_coef 18 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
+  "es_src_30|--bc_anchor_coef 30 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
+  "es_src_100|--bc_anchor_coef 100 --bc_anchor_expert_only 1 --bc_anchor_success_only 1"
   "es_dat_0.3|--bc_anchor_coef 0.3 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_1.0|--bc_anchor_coef 1.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_3.0|--bc_anchor_coef 3.0 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_10|--bc_anchor_coef 10 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
   "es_dat_30|--bc_anchor_coef 30 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
+  "es_dat_100|--bc_anchor_coef 100 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
+  "es_dat_300|--bc_anchor_coef 300 --bc_anchor_expert_only 1 --bc_anchor_success_only 1 --bc_anchor_data_actions 1"
 )
 
 run_cell() {  # run_cell <gpu> <tag> <flags...>
@@ -73,7 +90,7 @@ run_cell() {  # run_cell <gpu> <tag> <flags...>
   CUDA_VISIBLE_DEVICES=$gpu $PY -u train_simdist_adapt.py \
     --stage1_ckpt "$CK" --save_dir "$OUT/$tag" --seed 1 \
     --target_demo_path "$DEMO" --target_num_data 20 \
-    --bc_anchor_path "$POOL" \
+    --bc_anchor_path "$POOL" --bc_anchor_holdout 1 \
     --max_transitions 0 --num_eval_episode 10 --num_eval_proc 10 \
     --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
     --collect_disagree_coef 0.5 --original_mppi 1 \
