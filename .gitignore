@@ -45,3 +45,4 @@ cluster/ibrl.sif
 *.sif
 .pylibs/
 plots/
+release/data

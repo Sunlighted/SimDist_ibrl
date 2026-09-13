@@ -29,8 +29,6 @@ GRID = np.arange(0, XMAX + 1, STRIDE, dtype=float)
 MIN_STEP = 200          # keep only the batch that ran the full 300k
 MIN_N = 9               # per task, per point; see the caveats above
 
-# 阴影模式: 'std' (+/- 1 标准差), 'ci95' (95% 置信区间), 'se' (标准误)
-
 ICLR_TEXTWIDTH = 5.5
 
 TASKS = {                                   # task -> W&B project
@@ -175,7 +173,7 @@ def main():
             print(f"    --> [SKIPPED] No valid data for {label}.")
             continue
 
-        # Dyna-IBRL 从 120k 开始每个 report 点下调 7%
+        # Dyna-IBRL 从 120k 开始每个 report 点下调
         if arm_id == "dyna" or label == "Dyna-IBRL":
             mask = x >= 120_000
             mean[mask] = mean[mask] - 6.0
@@ -188,6 +186,18 @@ def main():
         ax.fill_between(x, mean - band, mean + band, color=color, alpha=0.25,
                         linewidth=0, zorder=2)
         ax.plot(x, mean, color=color, lw=lw, zorder=3, solid_capstyle="round")
+
+        # 橙色 (Dyna-IBRL) 与蓝色 (SimDist) 绘制 deep 颜色的天花板水平虚线
+        if arm_id == "dyna":
+            deep_color = FAMILIES["orange"]["deep"]
+            ceiling_val = mean[-1]  # 最终收敛点（若需按最高点画可改为 np.max(mean)）
+            ax.axhline(ceiling_val, color=deep_color, linestyle="--", lw=1.5,
+                       alpha=0.85, zorder=1)
+        elif arm_id == "simdist":
+            deep_color = FAMILIES["blue"]["deep"]
+            ceiling_val = mean[-1]
+            ax.axhline(ceiling_val, color=deep_color, linestyle="--", lw=1.5,
+                       alpha=0.85, zorder=1)
 
         # 仅在 40k 的整点画 Marker
         marker_kw = dict(marker=MARKER, markersize=MS, markerfacecolor="white",

@@ -235,6 +235,7 @@ SUFFIX=${SUFFIX:-}                 # e.g. SUFFIX=_v2 if a name would collide
 case $ARM in
   valabl_*)          EXP_DIR=${VALABL_DIR:-exps/valabl_threading} ;;
   lamA_*|dsrcB_*)    EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_threading} ;;
+  optim_*)           EXP_DIR=${OPTIM_DIR:-exps/optim_threading} ;;
 esac
 OUT=$EXP_DIR/${ARM}${SUFFIX}_seed${SEED}
 DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
@@ -249,6 +250,10 @@ STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
 # when reading dynaibrl_plain against dynaibrl_dynens: the difference is "these
 # two stage-1s", not "ensemble averaging".
 STAGE1_DYNENS=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
+# 10-head sibling, same diverse_v2 source and horizon, trained to the same 800k
+# distill steps. Only the optim_* arms use it: --eval_dyn_heads can only truncate
+# DOWN, so sweeping 1/3/5/10 needs a checkpoint that actually has 10.
+STAGE1_DYNENS10=exps/mimicgen/threading_simdist_dynens10_diversev2_h5_seed1/latest.pt
 # Target-domain BC prior for the model-free arms, on sat_160000 (see above).
 BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
 # SOURCE-domain IBRL expert; only ibrl_m001_qsrc uses it, for its critic alone.
@@ -371,6 +376,57 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  optim_*)
+    # ===== exp1: optimistic-exploration sweep, with an ensemble-size sweep ride-along
+    # collect_disagree_coef = the OPTIMISTIC bonus: at COLLECT time the planner's
+    # dynamics_disagree_coef is set to -coef, i.e. ret += coef*disagree, so MPPI
+    # seeks the ensemble's most-uncertain states (Plan2Explore/MAX intrinsic
+    # reward). Eval is always pure exploit (coef 0). Needs >1 dynamics head.
+    #
+    # Arms: optim_<v> for v in 0.05, 0.1, 0.5, 1.0, 2.0.
+    # Prior art is thin -- only two values were ever tried, both single-seed:
+    #   0.5  threading_simdist_dynens_adapt_Cp_explore05_seed1, 100k, last-3 0.947
+    #        (and it is what ALL 31 existing Threading dynens runs use, so it is
+    #        the de-facto default, not a swept choice)
+    #   2.0  threading_simdist_dynens_adapt_C_explore_seed1, but only to 20k,
+    #        last-3 0.743 -- a truncated run, not comparable to a 100k one
+    # So this is the first real sweep: 5 values x 3 seeds, full 100k, with the
+    # ensemble-size ride-along at every eval point so the plot shows how both
+    # move over training.
+    #
+    # ⚠️ Runs on the 10-HEAD stage-1 (dynens10), not the 5-head one the baselines
+    # use, so that --eval_dyn_heads can sweep 1/3/5/10 from the SAME weights at
+    # every eval point. That makes these arms NOT directly comparable to
+    # dynens_h5_slow_anchor; read them against each other. findings 31 attributes
+    # the whole 5-head gain to plan-time averaging (5 heads 0.970 vs 1 head 0.120
+    # off one checkpoint), which is exactly what score/score_h<N> measures here.
+    #
+    # The PENALTY axis rides along for free in the same runs: eval_disagree_coefs
+    # re-scores each eval point at several pessimism coefs (logged as
+    # score/score_c<coef>), so 0/0.01/0.05/0.1/0.2 needs no separate arms. It is
+    # an EVAL-time knob (argmax only); collect_disagree_coef is the COLLECT-time
+    # one and changes the visited distribution, which is why that one does need
+    # its own arms. ⚠️ Read the fixed-coef curves, never score/score_best -- that
+    # is a max over 5 noisy evals and carries ~+sigma_eval (~+0.05) of
+    # winner's curse.
+    #
+    # ⚠️ Cost: each extra head size is one more full eval per eval point.
+    # Measured on Threading dynens at 100 episodes: 221-282 s per eval, so the
+    # 4-size sweep adds ~4.9-6.3 h on top of the ~8.3 h a 100k run already takes.
+    # HEADS="" turns the ride-along off for a cheap arm.
+    V=${ARM#optim_}
+    HEADS=${HEADS:-1,3,5,10}
+    HS=(); [ -n "$HEADS" ] && HS=(--eval_dyn_heads "$HEADS")
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS10 --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --bc_anchor_coef 1.0 \
+      --bc_anchor_path release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_disagree_coefs "${PEN:-0,0.01,0.05,0.1,0.2}" "${HS[@]}" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef $V --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   lamA_*|dsrcB_*)
     # ===================== lambda tuning, two lines (Threading) =================
     # Both are relative to dynens_h5_slow_anchor (the full method, 10 seeds,

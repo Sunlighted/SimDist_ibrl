@@ -384,6 +384,16 @@ class AdaptConfig(common_utils.RunConfig):
     # curve instead. (CLAUDE.md 38: this exact mechanism inflated a post-hoc
     # grouping by 2.4x.)
     eval_disagree_coefs: str = ""
+    # Comma-separated ensemble sizes to ALSO evaluate at each eval point, e.g.
+    # "1,3,5,10". Head 0 first, from the SAME weights -- this isolates plan-time
+    # ensemble averaging from "the encoder was trained with N heads" (findings 31
+    # attributed the whole 5-head gain to the former: 5 heads 0.970 vs 1 head
+    # 0.120 off one checkpoint). Logged as score/score_h<N>; score/score is
+    # untouched, so a run with this set stays comparable to one without.
+    # Each extra size costs one more full eval per eval point: measured on
+    # Threading dynens at 100 episodes, 221-282 s per eval, i.e. ~+1.2-1.6 h per
+    # size over a 100k run's 20 eval points. "" = off.
+    eval_dyn_heads: str = ""
     # Skip robosuite's offscreen renderer (state-based runs only). The stage-1
     # cfg.yaml on disk predates this field, so pyrallis fills the default 0 --
     # hence the explicit override onto base_cfg below. Required on MIG-partitioned
@@ -1362,6 +1372,36 @@ class AdaptWorkspace:
         first = out[float(coefs[0])]
         return first, max(out.values()), out
 
+    def _eval_head_sweep(self, seed: int) -> dict[int, float]:
+        """Re-evaluate at several ensemble sizes from the SAME weights.
+
+        Truncation is RESTORED afterwards -- unlike evaluate/eval.py's --dyn_heads,
+        which mutates the model once for a one-shot eval. Here the run continues
+        training after this, so slicing dynamics_extra destructively would silently
+        shrink the ensemble for every later round.
+        """
+        import torch.nn as nn
+        sizes = [int(x) for x in self.cfg.eval_dyn_heads.split(",") if x.strip()]
+        if not sizes:
+            return {}
+        m = self.agent.model
+        total = m.num_dynamics_heads()
+        keep_extra, keep_prior = m.dynamics_extra, m.dynamics_prior
+        out = {}
+        try:
+            for n in sizes:
+                if not 1 <= n <= total:
+                    print(f"[head-sweep] skip {n}: ckpt has {total} heads")
+                    continue
+                m.dynamics_extra = nn.ModuleList(list(keep_extra)[: n - 1])
+                if len(keep_prior) > 0:
+                    m.dynamics_prior = nn.ModuleList(list(keep_prior)[: n])
+                out[n] = self.eval(seed=seed, use_planner=1)
+        finally:
+            m.dynamics_extra, m.dynamics_prior = keep_extra, keep_prior
+            assert m.num_dynamics_heads() == total, "head sweep failed to restore"
+        return out
+
     def adapt(self):
         self._dyn_anchor = self._build_dyn_anchor()
         print(common_utils.wrap_ruler(
@@ -1377,6 +1417,8 @@ class AdaptWorkspace:
             self.stat[f"score/score_c{_c:g}"].append(_v)
         if base_all:
             self.stat["score/score_best"].append(base_best)
+        for _n, _v in self._eval_head_sweep(seed=0).items():
+            self.stat[f"score/score_h{_n}"].append(_v)
         pol0 = None
         if self.cfg.eval_policy_only:
             pol0 = self.eval(seed=0, use_planner=0)
@@ -1402,6 +1444,9 @@ class AdaptWorkspace:
                 seed=r * self.cfg.num_eval_episode)
             for _c, _v in score_all.items():
                 self.stat[f"score/score_c{_c:g}"].append(_v)
+            for _n, _v in self._eval_head_sweep(
+                    seed=r * self.cfg.num_eval_episode).items():
+                self.stat[f"score/score_h{_n}"].append(_v)
             if score_all:
                 self.stat["score/score_best"].append(score_best)
             pol = None

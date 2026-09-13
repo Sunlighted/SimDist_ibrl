@@ -31,6 +31,7 @@ def exp_dir(arm: str) -> str:
 
 # Arms each job script knows. A typo here costs a queue wait and then
 # "unknown arm", so it is checked up front.
+OPTIM = [f"optim_{v}" for v in ("0.05", "0.1", "0.5", "1.0", "2.0")]
 LAM_A = [f"lamA_{v}" for v in ("0.1", "0.3", "3", "10")]
 LAM_B = [f"dsrcB_{d}" for d in ("0.02", "0.035", "0.05", "0.08")]
 LAM_B_SQCOF = [f"{t}_dsrcB_{d}" for t in ("sq", "cof")
@@ -51,7 +52,7 @@ SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference
 ANCHOR_ABL = ["anch_f2wd", "anch_f3l2", "anch_f4a", "anch_f4b", "anch_f5",
               "anch_dat", "anch_es_src", "anch_es_dat"]
 THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
-             *ANCHOR_ABL, *LAM_A, *LAM_B,
+             *ANCHOR_ABL, *LAM_A, *LAM_B, *OPTIM,
              "valabl_dyn", "valabl_joint", "valabl_v2d", "valabl_d2v", "valabl_marg", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",

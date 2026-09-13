@@ -1,0 +1,15 @@
+optim_0.05 1
+optim_0.1 1
+optim_0.5 1
+optim_1.0 1
+optim_2.0 1
+optim_0.05 101
+optim_0.1 101
+optim_0.5 101
+optim_1.0 101
+optim_2.0 101
+optim_0.05 201
+optim_0.1 201
+optim_0.5 201
+optim_1.0 201
+optim_2.0 201

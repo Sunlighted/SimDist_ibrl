@@ -15,6 +15,7 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
+\newcommand{\pmsd}[1]{{\scriptsize$\pm$#1}}      % seed s.d. suffix in tables
 
 
 \title{Rethinking Sim-to-real Adaptation with World Models}
@@ -436,9 +437,33 @@ Fig.~\ref{fig:main-sim2sim} reports adaptation under the budget of Def.~\ref{def
 \subsection{Ablation Studies}
 \label{sec:ablation}
 
-[Ablation 1: w/o dynamics ensemble; w/o on-policy target fine-tuning]
+\input{fig_ablation}
 
-[Ablation 2: different additional loss items: parameter; other divergences; dataset action...]
+Fig.~\ref{fig:ablation}(a) removes each of the two modifications in turn. Both
+are load-bearing and neither substitutes for the other, and the arms separate in
+the order the analysis predicts: the tether acts before the first target
+transition, because it is the only one of the two that has already changed the
+proposal at the end of stage~2, while the ensemble can only act once there are
+transitions to fit. This is visible at $0$ steps, where the four arms start as
+two pairs split by whether the proposal was tethered.
+
+Fig.~\ref{fig:ablation}(b) asks what the tether has to be. Because a stronger
+tether trivially buys proximity to $\pi_s$, comparing forms at a fixed
+coefficient would compare strengths instead; we therefore calibrate every
+variant on stage~2 alone to the same $D_{\mathrm{src}}$ before running
+stage~3. Under that control the particular divergence barely matters --- a
+saturating (Hellinger) penalty and a TRPO-style hinge both match the deployed
+squared $L_2$ --- but two things do. First, the divergence must be measured in
+\emph{action} space: the same proximity imposed in parameter space costs
+$21.0$ points, because it cannot tell which parameter directions the policy
+output is sensitive to and has to shrink all of them. Second, the target must be
+$\pi_s$ itself rather than the actions recorded in the source dataset, which
+carry a systematic offset from $\pi_s$ that no coefficient removes. Filtering
+the dataset to expert and successful steps removes that offset, and the
+resulting arm is indeed no worse than ours --- but it is no better either, and
+filtering the \emph{states} the same way is what costs the coverage. The
+tether's job is to hold the proposal where the frozen value head is valid, and
+that region is defined over all the states the world model was fit on.
 
 \subsection{Hyperparameter tuning}
 
