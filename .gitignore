@@ -44,3 +44,4 @@ exps/_stale/
 cluster/ibrl.sif
 *.sif
 .pylibs/
+plots/
