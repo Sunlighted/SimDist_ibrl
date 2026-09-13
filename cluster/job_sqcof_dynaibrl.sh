@@ -178,8 +178,8 @@ esac
 case $ARM in
   sq_valabl_*)  EXP_DIR=${VALABL_DIR:-exps/valabl_square} ;;
   cof_valabl_*) EXP_DIR=${VALABL_DIR:-exps/valabl_coffee} ;;
-  sq_dsrcB_*)   EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_square} ;;
-  cof_dsrcB_*)  EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_coffee} ;;
+  sq_lamA_*|sq_dsrcB_*)   EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_square} ;;
+  cof_lamA_*|cof_dsrcB_*) EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_coffee} ;;
   sq_optim_*)   EXP_DIR=${OPTIM_DIR:-exps/optim_square} ;;
   cof_optim_*)  EXP_DIR=${OPTIM_DIR:-exps/optim_coffee} ;;
   sq_anch_*)    EXP_DIR=${ANCHFORM_DIR:-exps/anchform_square} ;;
@@ -418,6 +418,40 @@ case $ARM in
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef $V --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  sq_lamA_*|cof_lamA_*)
+    # LINE A on Square and Coffee: fixed bc_anchor_coef sweep, the companion to
+    # Threading's lamA_* (see job_threading_margin.sh). Shows what the multiplier
+    # does per task; the dsrcB_* arms show what happens when the CONSTRAINED
+    # quantity is held fixed instead.
+    #
+    # Each task keeps its own harness, so the lambda axis is the only thing that
+    # moves within a task. Note the deployed lambdas already differ 10x between
+    # tasks (Square 0.1, Coffee 1.0) at held-out D_SRC 0.0747 vs 0.0322 -- which
+    # is the non-portability this line documents.
+    #
+    # Only one pessimism coef (PEN, default 0): score + policy_only is what this
+    # line needs, and the 4-coef sweep is most of the wall clock.
+    LV=${ARM##*lamA_}
+    case $ARM in
+      sq_*) A_DEMOS=release/data/mimicgen/square_sat_600000_s${SEED}/dataset.hdf5
+            A_POOL=release/data/mimicgen/square_d0_source_rotw1_diverse/dataset.hdf5
+            A_PSET=(--planner_set "init_std=0.15,base_policy_std=0.0") ;;
+      *)    A_DEMOS=$DEMOS
+            A_POOL=release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5
+            A_PSET=() ;;
+    esac
+    for f in "$STAGE1_DYNENS" "$A_DEMOS" "$A_POOL"; do
+      [ -f "$f" ] || { echo "MISSING asset: $f"; exit 1; }
+    done
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
+      "${A_PSET[@]}" --bc_anchor_coef $LV --bc_anchor_path $A_POOL \
+      --target_demo_path $A_DEMOS \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_disagree_coefs "${PEN:-0}" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_dsrcB_*|cof_dsrcB_*)
     # LINE B on Square and Coffee: hold the HELD-OUT D_SRC at d with the dual
     # controller, lambda adaptive. The point of the line is that ONE d transfers
@@ -461,7 +495,7 @@ case $ARM in
       --target_demo_path $B_DEMOS \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "$B_DIS" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef 0.5 --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;

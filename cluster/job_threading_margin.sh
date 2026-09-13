@@ -442,6 +442,13 @@ case $ARM in
     #           across targets. lambda 0 and 1 already exist as dynens_h5_slow and
     #           dynens_h5_slow_anchor -- do not re-run them.
     #
+    # Only ONE pessimism coef is evaluated (PEN, default 0 = pure exploit): this
+    # line is about lambda, and score + policy_only answer it. Dropping the
+    # 4-coef sweep removes 3 of every 5 evals, which is most of the wall clock --
+    # a 100k dynens run is ~1 h of collect/train plus ~20 eval points, and each
+    # 100-episode MPPI eval costs 221-282 s. The penalty axis is measured in the
+    # optim_* arms instead.
+    #
     #   LINE B  dsrcB_<d>  bc_anchor_target_dsrc = d, lambda adaptive. The dual
     #           controller holds the HELD-OUT D_SRC at d (log-lambda step, gain
     #           1.5, period 20 BC steps, warmup 10%). This is the transferable
@@ -465,7 +472,7 @@ case $ARM in
       --target_demo_path $DEMOS --target_num_data 20 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "0,0.01,0.05,0.1" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef 0.5 --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
