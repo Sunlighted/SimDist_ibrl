@@ -69,7 +69,29 @@ cd common_utils && make -j8 && cd ..
 
 # 6) activate / set paths each session
 source set_env.sh
+
+# 7) point release/data at YOUR datasets (per-machine, NOT in git)
+#    Every config path is written as release/data/... but the datasets are
+#    hundreds of GB, so the repo carries no `release/data` -- you create it.
+#    Either a symlink to wherever your storage is:
+ln -s /your/storage/simdist/data release/data
+#    ...or a real directory, if the data lives next to the checkout:
+mkdir -p release/data
+#    `source set_env_drac.sh` prints `data -> <resolved path>`; check that line
+#    before launching anything. A dangling link reports exists=False while
+#    still being a link, which reads as "my data vanished".
 ```
+
+> ⚠️ **Never commit `release/data`.** It was committed once as a symlink into one
+> developer's personal scratch (`/scratch/<user>/simdist/data`). Because
+> `.gitignore`'s `data/` rule has a trailing slash it matches directories only, so
+> it did not stop the symlink from being added -- but it *does* match a real
+> `release/data/` directory, which makes its contents **ignored** rather than
+> untracked. Git refuses to clobber untracked files but **silently deletes ignored
+> ones** to make room for a tracked path. Everyone who pulled had their local
+> dataset directory deleted with no warning and `rc=0`, and was left with either a
+> link to someone else's data or a dangling link. `release/data` is now in
+> `.gitignore` explicitly.
 
 ### How
 ```bash
