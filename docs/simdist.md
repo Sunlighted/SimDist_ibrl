@@ -2668,6 +2668,34 @@ it stopped.
    `[seq-buffer]` with **8 shards** (§46⑪: a capped buffer fed from several files
    evicts from the FRONT and can silently keep only the last shards).
 
+#### f. Launch log (filled in as each arch lands)
+**Rung A — stage-1 `thr_pix224_aug_plainh3_stage1` COMPLETE at exactly 150000
+steps** (chunks 5364043 -> 5364063 -> 5390706, each ending in the designed
+TIMEOUT, resume points exact at 50000/100000, `--mem=204800M` and
+`--account=aip-rhinehar` propagated at every hop). Hook fired ONCE
+(`[then] submitted OK` on chunk 3; chunk 4 read `hook already fired ... not
+resubmitting` off the marker). 5 adapt + 5 chained evals submitted.
+
+All five rung-A runs self-report the design correctly:
+
+| seed | demo draw | horizon | `[anchor]` lines |
+|---|---|---|---:|
+| s1 | `[0, 20)` | `horizon=3 [kept]` | 0 |
+| s2 | `[20, 40)` | `horizon=3 [kept]` | 0 |
+| s3 | `[40, 60)` | `horizon=3 [kept]` | 0 |
+| s4 | `[60, 80)` | `horizon=3 [kept]` | 0 |
+| s5 | `[80, 100)` | `horizon=3 [kept]` | 0 |
+
+plus `[adapt] using ORIGINAL SimDist MPPI recipe (base=100+rand=250,
+init_std=1.0, min_std=0.05, iters=3, temp=0.4, elites=64, base_policy_std=0.1)`
+on every one. ⇒ rung A's geometry, anchor condition and **five disjoint demo
+draws** are all confirmed from the runs themselves, not assumed from the submit
+command.
+
+**Measured chunk rates** (11:59 walltime, ~30 min of which is the 8-shard load):
+`plain_h3` **50k usable steps/chunk** (3 chunks; matches §7z ③'s estimate
+exactly), `dynens_h5` **30k/chunk** (5 chunks, MAX_CHUNK=6 ⇒ one spare).
+
 **Conditional Phase 2, pre-registered:** only if the ensemble delta lands
 ambiguous (|delta| < ~0.10, or the two measures disagree in sign as in §47), add
 **2 more stage-1 seeds per architecture** and rerun rungs **A and B only** (C is
