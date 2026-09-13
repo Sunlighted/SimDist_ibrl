@@ -55,6 +55,7 @@ THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
              "valabl_dyn", "valabl_joint", "valabl_v2d", "valabl_d2v", "valabl_marg", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
+             "dynaibrl_plain_m005", "dynaibrl_plain_m01",
              "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m0", "dynaibrl_dynens_m001",
              "dynaibrl_dynens_sgft"]

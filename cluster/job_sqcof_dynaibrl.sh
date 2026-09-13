@@ -288,9 +288,15 @@ case $ARM in
     # form that pushes the deviation tail to the OTHER side of F1 (43 built it
     # exactly to break the tail/bc_loss collinearity).
     #
-    # The F1 cell is re-run rather than reused: each task's existing anchored
-    # baseline sits at its own lambda (Square 0.1, Coffee 1.0) and hence its own
-    # working point, so it is not a matched control for a freshly calibrated F5.
+    # ⚠️ DO NOT run the *_anch_f1 arms unless you need a fresh copy: each task's
+    # EXISTING anchored baseline already IS F1 at the same working point --
+    # sq_dynens_anch_d400000 (10 seeds) and cof_dynens_anch (10 seeds) match these
+    # arms field-for-field (stage-1, demo, num_data None, lambda, planner_set,
+    # eval_disagree_coefs, 100k, collect_disagree_coef 0.5). The only difference
+    # is --bc_anchor_holdout 1, which records held-out D_SRC and does not touch
+    # the loss. The f1 arms are kept only so the pair can be regenerated from one
+    # script if a harness detail ever changes. cluster/jobs_sqcof_anchf5.txt lists
+    # the F5 arms alone.
     #
     # ---- CALIBRATED per task on HELD-OUT D_SRC, 2026-09-12 (exps/anchform_cal) --
     #   bash scripts/calibrate_f5_sqcof.sh ; python scripts/report_f5_cal.py exps/anchform_cal

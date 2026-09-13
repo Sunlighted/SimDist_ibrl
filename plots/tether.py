@@ -36,8 +36,12 @@ transitions (eval_every_rounds=5), 100 episodes per eval point.
     flags as systematically optimistic vs an independent large-sample re-eval.
     Read the SPACING between arms, not the absolute level; headline numbers in
     the text should come from evaluate/eval.py.
-  * Band is +/- 1 s.e. over the 10 seeds. Per CLAUDE.md rule 1 the seed noise
-    floor on this task is ~0.035, so bands that overlap are not a difference.
+  * Band is style.BAND_TYPE over the 10 seeds -- currently +/- 1 s.d., the same
+    quantity ceiling_3task and ablation1 draw, so band widths are comparable
+    across the paper's figures. A s.d. band does NOT shrink with more seeds and
+    is ~3.2x wider than the s.e. it replaced, so overlapping bands here are not
+    evidence of no difference; per CLAUDE.md rule 1 the seed noise floor on this
+    task is ~3.5 points.
 
     python plots/threading_3arm.py                 # uses plots/cache/
     python plots/threading_3arm.py --refresh       # re-pull from W&B
@@ -52,7 +56,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from style import (FAMILIES, PALETTE, WIDTH_1COL, setup, clean_axes,
-                   save)
+                   save, band_of, BAND_TYPE)
 from wandb_fetch import fetch_group
 
 ICLR_TEXTWIDTH = 5.5
@@ -85,9 +89,9 @@ BLUE = FAMILIES["blue"]
 # reading order (what you do not do, what goes wrong, what we do) -- z-order is
 # a drawing concern and should not dictate how the key reads.
 ARMS = [                          # group, label, colour, lw, marker, markersize
-    ("plain_h5",   "untethered fine-tuning", BLUE["mid"], 1.2, "o", 3.0),
-    ("plain_nobc", "frozen proposal",        BLUE["light"],   1.2, "o", 3.0),
-    ("plain_anch", "tethered fine-tuning",   BLUE["deep"],  1.2, "^", 3.5),
+    ("plain_h5",   "untethered fine-tuning", BLUE["mid"], 1.2, "o", 3.5),
+    ("plain_nobc", "frozen proposal",        BLUE["light"],   1.2, "o", 3.5),
+    ("plain_anch", "tethered fine-tuning",   BLUE["deep"],  1.2, "^", 3.8),
 ]
 LEGEND_ORDER = ["frozen proposal", "untethered fine-tuning",
                 "tethered fine-tuning"]
@@ -145,9 +149,9 @@ def main():
         x, ys = load(group, args.refresh)
         ys = ys * 100.0                     # success rate in percent
         mean = ys.mean(axis=0)
-        se = ys.std(axis=0, ddof=1) / np.sqrt(ys.shape[0])
+        band = band_of(ys, BAND_TYPE)
 
-        ax.fill_between(x, mean - se, mean + se, color=color, alpha=0.18,
+        ax.fill_between(x, mean - band, mean + band, color=color, alpha=0.18,
                         linewidth=0, zorder=2)
         ax.plot(x, mean, color=color, lw=lw, zorder=3, solid_capstyle="round")
         # Open markers, stroked at the line's own weight in the line's own
@@ -162,7 +166,7 @@ def main():
         # One proxy artist so the key shows the line AND its marker.
         handles[label] = plt.Line2D([], [], color=color, lw=lw, **marker_kw)
         print(f"{group:11s} n={ys.shape[0]:2d}  zero-shot {mean[0]:.1f}%  "
-              f"final {mean[-1]:.1f}% +/- {se[-1]:.1f}  "
+              f"final {mean[-1]:.1f}% +/- {band[-1]:.1f}  "
               f"best {mean.max():.1f}% @ {x[mean.argmax()] / 1000:.0f}k")
 
     ax.set_xlabel(r"Environment Step ($\times 10^{3}$)")

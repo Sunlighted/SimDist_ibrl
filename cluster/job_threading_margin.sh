@@ -649,6 +649,36 @@ case $ARM in
       --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_plain_m005|dynaibrl_plain_m01)
+    # Constant-margin dose-response on the SINGLE-head stage-1, aligned field for
+    # field with dynaibrl_plain_m001 -- same stage-1, sat_160000 per-seed demos,
+    # 20 demos, 300k, eval every 5k, 100 episodes, sigma 0.1, eval_policy_only 1.
+    # Only margin(t) differs, and it is constant (init == final) so the schedule
+    # code path runs and logs dyna/prior_margin, same as the _m001 arm.
+    #
+    # Fills in the middle of the fixed-margin sweep that seeded CONST_MARGIN=0.01.
+    # That sweep was ONE seed, policy-only, 75-100k steady, on the workstation:
+    #     margin 0     -> 0.000   argmax decided by critic noise; ~5.8% action
+    #                             deviation is enough to kill the episode
+    #     margin 0.01  -> 0.873
+    #     margin 0.05  -> 0.775
+    #     margin 0.1   -> 0.632   bar so high the actor essentially never acts
+    # 0.873 vs 0.775 is the entire basis for picking 0.01, at n=1 -- well inside
+    # the noise floor CLAUDE.md rule 1 sets. These arms are the 10-seed version,
+    # and at 300k rather than 100k, so the ordering is measured rather than
+    # assumed. Pair them with dynaibrl_plain_m0 (margin 0) and _m001.
+    case $ARM in
+      *_m005) M=0.05 ;;
+      *_m01)  M=0.1  ;;
+    esac
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 300000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin_init $M --dyna.prior_margin_final $M \
+      --dyna.prior_margin_steps $MARGIN_STEPS \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_m001)
     # dynaibrl_plain with margin(t) CONSTANT at $CONST_MARGIN instead of the
     # 0.05 -> 0 anneal, shaping still off. Gives dynaibrl_plain_sgft the

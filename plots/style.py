@@ -26,6 +26,7 @@ sizes are literal points on the page -- never scale a figure in LaTeX.
 """
 import matplotlib
 matplotlib.use("Agg")
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
@@ -153,7 +154,8 @@ def save(fig, stem, outdir="figs"):
 #     bands and fills; as a standalone thin line it is at the legibility floor,
 #     so give it >= 1.6pt.
 FAMILIES = {
-    "blue":   {"deep": "#1D3765", "mid": "#487DB2", "light": "#AABCDB"},
+    "blue":   {"deep": "#1D3765", "mid": "#487DB2", "midlight": "#7698C3", "light": "#AABCDB"},
+    "aqua":   {"deep": "#86B7DB", "mid": "#A6C7E2", "light": "#C0D6EA"},
     "orange": {"deep": "#AC6E2A", "mid": "#E19D49", "light": "#EFC99B"},
     "green":  {"deep": "#376439", "mid": "#669877", "light": "#A4CBB7"},
     "purple": {"deep": "#885D94", "mid": "#A582AE", "light": "#C1A8C7"},
@@ -167,3 +169,36 @@ REF = {"oracle": "#6B7280", "zeroshot": "#9CA3AF"}
 
 # The main sim2sim figure's family assignment, so every panel agrees.
 METHOD_FAMILY = {"planning": "blue", "dyna": "orange", "model_free": "green"}
+
+
+# ---------------------------------------------------------------------------
+# Error bands
+# ---------------------------------------------------------------------------
+# Every curve figure in the paper must draw the SAME quantity, or the reader
+# cannot compare band widths across figures -- so the choice lives here, once,
+# and the scripts import it instead of each deciding.
+#
+#   "std"   +/- 1 sample s.d. over seeds. "How spread out are the seeds."
+#           Does NOT shrink with more seeds; a gap narrower than the bands can
+#           still be real.
+#   "sem"   +/- 1 s.e. = s.d./sqrt(n). "How precise is the plotted mean."
+#   "ci95"  +/- 1.96 s.e.
+#
+# In ceiling_3task the seed axis is pooled across the three tasks, so "std"
+# there also carries between-task difficulty spread, which is the larger term.
+BAND_TYPE = "std"
+
+
+def band_of(samples, band_type=None):
+    """Half-width of the band for `samples`, shape (n_seeds, n_points).
+
+    NaN-aware: a seed missing a point is dropped from that column only, and n is
+    counted per column, so a ragged arm is not silently given a narrower band.
+    """
+    bt = BAND_TYPE if band_type is None else band_type
+    std = np.nanstd(samples, axis=0, ddof=1)
+    if bt == "std":
+        return std
+    n = np.sum(~np.isnan(samples), axis=0)
+    se = std / np.sqrt(np.maximum(n, 1))
+    return 1.96 * se if bt == "ci95" else se

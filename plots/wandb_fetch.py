@@ -23,7 +23,7 @@ def _cache_path(project, group, x, ys):
 
 
 def fetch_group(project, group, x, y, entity=ENTITY, refresh=False,
-                state="finished", created_after=None):
+                state="finished", created_after=None, min_step=None):
     """Return {seed: {key: [...]}} for one W&B group, keyed by x and each y.
 
     `y` is a metric name or a list of them; every requested key comes back on
@@ -32,10 +32,15 @@ def fetch_group(project, group, x, y, entity=ENTITY, refresh=False,
 
     `created_after` is an ISO date string used to disambiguate a group that was
     run more than once -- W&B keeps both batches under the same group name and
-    there is nothing in the run name to tell them apart.
+    there is nothing in the run name to tell them apart. `min_step` does the
+    same job by budget: several groups here hold a short batch and a long
+    re-run of the same seeds, and the long one is the only one that reaches the
+    figure's x limit.
     """
     ys = [y] if isinstance(y, str) else list(y)
     path = _cache_path(project, group, x, ys)
+    if min_step is not None:
+        path = path[:-5] + f"__min{min_step}.json"
     if os.path.exists(path) and not refresh:
         with open(path) as f:
             return {int(k): v for k, v in json.load(f).items()}
@@ -49,6 +54,8 @@ def fetch_group(project, group, x, y, entity=ENTITY, refresh=False,
         if state is not None and r.state != state:
             continue
         if created_after is not None and str(r.created_at) < created_after:
+            continue
+        if min_step is not None and (r.summary.get("_step") or -1) < min_step:
             continue
         seed = r.config.get("seed")
         if seed is None:
