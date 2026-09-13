@@ -5,6 +5,14 @@ common_utils/build/
 .vscode
 wandb
 data/
+# NOT covered by `data/` above: a trailing slash matches DIRECTORIES only, so it
+# never matched `release/data` when that path is a SYMLINK -- which is how a link
+# pointing into one developer's personal scratch got committed once. Worse, the
+# `data/` rule DOES match a real `release/data/` dir, making its contents IGNORED
+# rather than untracked, and git silently DELETES ignored files to make room for a
+# tracked path. Anyone who pulled lost that directory with no warning. This path is
+# per-machine storage config: create it yourself (docs/setup.md 1).
+release/data
 *.png
 *.pdf
 *.mp4
