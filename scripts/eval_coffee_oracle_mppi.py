@@ -160,7 +160,36 @@ def main():
     ap.add_argument("--target_mass", type=float, default=-1)
     ap.add_argument("--target_pfric", type=float, default=-1)
     ap.add_argument("--target_hfric", type=float, default=-1)
-    ap.add_argument("--arms", default="policy,oracle")
+    ap.add_argument("--arms", default="policy,oracle",
+                    help="policy = proposal executed bare; oracle = CEM over REAL "
+                         "sim rollouts; learned = the SAME CEM rolled through the "
+                         "world model from --simdist_ckpt and scored by its own "
+                         "V_hat off the terminal LATENT. oracle - learned at a "
+                         "matched budget is the dynamics term (tasks.md 41c).")
+    ap.add_argument("--shift_from_cfg", type=int, default=0,
+                    help="Take the target shift from the SimDist stage-1 cfg that "
+                         "--simdist_ckpt / --proposal_simdist_ckpt descends from, "
+                         "instead of this file's TARGET_B constant. Use it: "
+                         "TARGET_B here is the C75kp25 recipe (kp 0.25 / lid 75 / "
+                         "mass 3), NOT the G5x one that tasks.md 40e settled on "
+                         "(kp 0.30 / lid 5 / mass 8 / friction 0.2 / pod_holder 5), "
+                         "so the default silently evaluates a different target. The "
+                         "stage-1 cfg is the target's only source of truth "
+                         "(CLAUDE.md iron law 19b).")
+    ap.add_argument("--proposal_simdist_ckpt", default="",
+                    help="Take the PROPOSAL from this SimDist ckpt's policy head "
+                         "instead of --weight's expert (env + value still from "
+                         "--weight unless overridden).")
+    ap.add_argument("--proposal_bc_ckpt", default="",
+                    help="Take the PROPOSAL from a plain BC policy (train_bc.py), "
+                         "e.g. one BC'd from scratch on the 20 target demos.")
+    ap.add_argument("--decode_roundtrip", type=int, default=0,
+                    help="Control for the learned arm's --value_weight cells: score "
+                         "with the model's OWN V_hat but push the latent through "
+                         "decode() and back through encode() first, so the gap to "
+                         "the plain V_hat cell is the decode cost ALONE. On Square "
+                         "that round trip cost -0.260, MORE than the value swap it "
+                         "was being confused with.")
     ap.add_argument("--episodes", type=int, default=100)
     ap.add_argument("--num_samples", type=int, default=32)
     ap.add_argument("--num_base", type=int, default=10)
@@ -208,6 +237,24 @@ def main():
         _v = getattr(args, _cli)
         if _v >= 0:
             tgt[_fld] = _v
+    if args.shift_from_cfg:
+        # Follow --proposal_simdist_ckpt / --simdist_ckpt back to the stage-1 dir
+        # that holds the MainConfig, and take its eval_domain_shift verbatim.
+        import yaml as _y
+        _ck = args.proposal_simdist_ckpt or args.simdist_ckpt
+        assert _ck, "--shift_from_cfg needs --simdist_ckpt or --proposal_simdist_ckpt"
+        _d = os.path.dirname(_ck)
+        _raw = _y.safe_load(open(os.path.join(_d, "cfg.yaml")))
+        if isinstance(_raw, dict) and _raw.get("stage1_ckpt"):
+            _d = os.path.dirname(_raw["stage1_ckpt"])
+            _raw = _y.safe_load(open(os.path.join(_d, "cfg.yaml")))
+        _ds = dict(_raw.get("eval_domain_shift") or {})
+        _ds.pop("mode", None)
+        _ds = {k: (tuple(v) if isinstance(v, list) else v) for k, v in _ds.items()}
+        tgt = {k: v for k, v in _ds.items() if k != "mask_hole_offset_in_obs"}
+        log(f"[setup] SHIFT FROM CFG {_d}: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(tgt.items())
+                        if not str(k).startswith("dr_") and v not in (1.0, 0.0)))
     if args.shift == "target":
         env_params["domain_shift"] = DomainShiftConfig(
             mode="fixed", mask_hole_offset_in_obs=False, **tgt)
@@ -271,10 +318,65 @@ def main():
         log(f"[setup] VALUE from {args.value_weight} "
             f"(proposal still from {args.weight})")
 
+    prop_wm = None
+    if args.proposal_simdist_ckpt:
+        import pyrallis as _pyr2
+        import train_simdist as _ts2
+        from rl.simdist_agent import SimDistAgent as _SDA2
+        pdir = os.path.dirname(args.proposal_simdist_ckpt)
+        import yaml as _yaml2                   # an adapt run writes an AdaptConfig
+        _r2 = _yaml2.safe_load(open(os.path.join(pdir, "cfg.yaml")))
+        if isinstance(_r2, dict) and _r2.get("stage1_ckpt"):
+            pdir = os.path.dirname(_r2["stage1_ckpt"])
+            log(f"[setup] proposal cfg follows stage1_ckpt -> {pdir}")
+        pcfg = _pyr2.load(_ts2.MainConfig,  # type: ignore
+                          open(os.path.join(pdir, "cfg.yaml")))
+        p_agent = _SDA2(True, main_env.observation_shape, main_env.prop_shape,
+                        main_env.action_dim, pcfg.rl_camera, pcfg.simdist)
+        p_agent.load_state_dict(torch.load(args.proposal_simdist_ckpt))
+        p_agent.train(False)
+        for p_ in p_agent.parameters():
+            p_.requires_grad_(False)
+        prop_wm = p_agent.to("cuda").model
+        log(f"[setup] PROPOSAL = SimDist policy head from {args.proposal_simdist_ckpt}")
+
+    prop_bc = None
+    if args.proposal_bc_ckpt:
+        assert not args.proposal_simdist_ckpt, "two proposals given"
+        import train_bc as _tbc
+        prop_bc = _tbc._load_model(args.proposal_bc_ckpt, main_env, "cuda")
+        prop_bc.train(False)
+        for p_ in prop_bc.parameters():
+            p_.requires_grad_(False)
+        log(f"[setup] PROPOSAL = BC policy from {args.proposal_bc_ckpt}")
+
+    def proposal_action(state2d):               # [B, obs] -> [B, A]
+        """The proposal, routed through one function so the `policy` arm and the
+        planner's base seeds can never drift apart."""
+        if prop_wm is not None:
+            return prop_wm.policy_action(state2d)
+        if prop_bc is not None:
+            return prop_bc.forward({"state": state2d}).detach()
+        return agent_action(agent, state2d)
+
     def value_fn(states):                       # [N, obs] -> [N]
+        """Terminal value on RAW states. --value_weight wins over --simdist_ckpt:
+        with both given the world model supplies dynamics only."""
+        if args.value_weight:
+            return value_agent.value({"state": states}, use_ibrl=True).view(-1)
         if wm is not None:
             return wm.predict_value(wm.encode(states), target=False).view(-1)
         return value_agent.value({"state": states}, use_ibrl=True).view(-1)
+
+    def value_fn_latent(z):                     # [N, z] -> [N]
+        """Terminal value on IMAGINED latents (the learned arm). With
+        --value_weight the latent must be decoded, a path the planner never uses
+        under shared_encoder=1, so --decode_roundtrip exists to price it."""
+        if args.value_weight:
+            return value_agent.value({"state": wm.decode(z)}, use_ibrl=True).view(-1)
+        if args.decode_roundtrip:
+            return wm.predict_value(wm.encode(wm.decode(z)), target=False).view(-1)
+        return wm.predict_value(z, target=False).view(-1)
 
     def rollout_real(sim_state, actions):
         return (pool.rollout(sim_state, actions) if pool is not None
@@ -286,7 +388,7 @@ def main():
         # closed-loop expert rollout would need a probe env stepped outside the
         # pool; the held action is the same open-loop seed SimDist's policy
         # rollout provides, and CEM refines it over `iterations`.)
-        a0 = agent_action(agent, state.view(1, -1)).view(1, 1, A)
+        a0 = proposal_action(state.view(1, -1)).view(1, 1, A)
         base = a0.expand(H, args.num_base, A).clone()
         if args.base_policy_std > 0:
             base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
@@ -340,6 +442,47 @@ def main():
             return "insertion"
         return "close-lid"
 
+    if "learned" in arms:
+        assert wm is not None, "--arms learned needs --simdist_ckpt (the world model)"
+        if args.value_weight:
+            log("[setup] WARNING learned arm + external critic => terminal latents "
+                "go through decode(z_H), never used at plan time under "
+                "shared_encoder=1. Price it with --decode_roundtrip before reading "
+                "the Delta as a value effect (on Square the decode cost -0.260).")
+
+    def plan_learned(state):
+        """The same CEM as plan(), with the learned world model in place of the
+        simulator. Candidate sampling, base seeds, elites, temperature and
+        iterations are shared code, so oracle - learned isolates model error."""
+        base = proposal_action(state.view(1, -1)).view(1, 1, A).expand(
+            H, args.num_base, A).clone()
+        if args.base_policy_std > 0:
+            base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
+        mean = torch.zeros(H, A, device=dev)
+        std = torch.full((H, A), args.init_std, device=dev)
+        num_rand = args.num_samples - args.num_base
+        z0 = wm.encode(state.view(1, -1))
+        for _ in range(args.iterations):
+            noise = torch.randn(H, num_rand, A, device=dev)
+            rand = (mean.unsqueeze(1) + std.unsqueeze(1) * noise).clamp(-1, 1)
+            actions = torch.cat([rand, base], dim=1)
+            z = z0.expand(actions.shape[1], -1).clone()
+            for t in range(H):
+                z = wm.next(z, actions[t])
+            returns = value_fn_latent(z) * gamma_H
+            SIGNAL.append((float(returns.std()), float(returns.mean()),
+                           float(returns.max() - returns.min())))
+            elite_val, elite_idx = torch.topk(returns, args.num_elites)
+            elite = actions[:, elite_idx]
+            score = torch.exp(args.temperature * (elite_val - elite_val.max()))
+            score = score / (score.sum() + 1e-9)
+            new_mean = (score.view(1, -1, 1) * elite).sum(1)
+            new_std = torch.sqrt(
+                (score.view(1, -1, 1) * (elite - new_mean.unsqueeze(1)) ** 2).sum(1))
+            mean = args.momentum * mean + (1 - args.momentum) * new_mean
+            std = new_std.clamp(min=args.min_std)
+        return mean[0]
+
     results, records = {}, {}
     for arm in arms:
         succ = 0
@@ -364,7 +507,9 @@ def main():
             for _t in range(ep_len):
                 state = obs["state"].to(dev)
                 if arm == "policy":
-                    act = agent_action(agent, state.view(1, -1)).view(-1)
+                    act = proposal_action(state.view(1, -1)).view(-1)
+                elif arm == "learned":
+                    act = plan_learned(state)
                 else:
                     sim_state = sim.get_state().flatten()
                     act = plan(state, sim_state)

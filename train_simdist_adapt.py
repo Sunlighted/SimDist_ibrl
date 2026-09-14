@@ -394,6 +394,18 @@ class AdaptConfig(common_utils.RunConfig):
     # Threading dynens at 100 episodes, 221-282 s per eval, i.e. ~+1.2-1.6 h per
     # size over a 100k run's 20 eval points. "" = off.
     eval_dyn_heads: str = ""
+    # Write <save_dir>/snap_<transitions>.pt every N adapt rounds (0 = off).
+    # The point is to move the EVAL-TIME sweeps off the training job: ensemble
+    # size and the pessimism coef both just re-score a fixed checkpoint, so
+    # sweeping them inside training multiplies the wall clock of every run (a
+    # 100-episode MPPI eval is 221-282 s and a 100k run has ~20 eval points ->
+    # each extra coef or head size is ~1.5 h). Train ONE run with snapshots, then
+    # score the grid offline with scripts/eval_snapshots.py. collect_disagree_coef
+    # is NOT an eval-time knob -- it changes what gets collected -- so it still
+    # needs one training run per value.
+    # Snapshots are full agent state_dicts (~29 MB each on Threading dynens);
+    # 100k / every 10 rounds = 11 files = ~320 MB.
+    snapshot_every_rounds: int = 0
     # Skip robosuite's offscreen renderer (state-based runs only). The stage-1
     # cfg.yaml on disk predates this field, so pyrallis fills the default 0 --
     # hence the explicit override onto base_cfg below. Required on MIG-partitioned
@@ -1424,6 +1436,8 @@ class AdaptWorkspace:
             pol0 = self.eval(seed=0, use_planner=0)
             self.stat["score/policy_only"].append(pol0)
         self.saver.save(self.agent.state_dict(), base_score, save_latest=True)
+        if self.cfg.snapshot_every_rounds > 0:
+            self.saver.save(self.agent.state_dict(), None, force_save_name="snap_0")
         p0s = f"  policy_only={pol0:.3f}" if pol0 is not None else ""
         print(f"[adapt @ 0 transitions] target_score={base_score:.3f}{p0s} (baseline)")
         self.stat.summary(0, reset=True)
@@ -1433,6 +1447,12 @@ class AdaptWorkspace:
             total_transitions += self.cfg.adapt_interval
             self._total_transitions = total_transitions
             self._train_dynamics()
+
+            # Before the eval branch: a snapshot round need not be an eval round.
+            if (self.cfg.snapshot_every_rounds > 0
+                    and r % self.cfg.snapshot_every_rounds == 0):
+                self.saver.save(self.agent.state_dict(), None,
+                                force_save_name=f"snap_{total_transitions}")
 
             if r % self.cfg.eval_every_rounds != 0 and r != n_rounds:
                 self.saver.save(self.agent.state_dict(), None, save_latest=True)

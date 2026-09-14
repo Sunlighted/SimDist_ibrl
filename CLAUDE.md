@@ -18,7 +18,7 @@ Last updated: 2026-09-11
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
 | **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **§48 5-seed 重做（跑中）：§44 的三项增广已实现 + `DEMO_OFFSET` 解除同一 draw 的封锁；读法与 Phase 2 已预注册** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
-| **`docs/tasks.md`** | ~790 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条。 |
+| **`docs/tasks.md`** | ~970 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要（oracle 列极差 0.07 vs learned 列 0.64）**。 |
 | **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）**。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
@@ -383,6 +383,19 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   （首次追平完美 dynamics）。**杠杆是 stage-2 的 anchor（+0.40），不是 stage-3 adapt（+0.03）**；
   选 target 看 `stage-1 MPPI 分数`不看 oracle；**难度必须与 gap 同相位且占数据主体**
   （C50 唯一崩掉：难度 86% 在只占 4% 转移的 close-lid 相）。附 6 个被证伪的假设 + 两个测量地板。
+- **§41c** ★★★ **learned vs oracle dynamics × 4 proposal × 2 value（`base_policy_std=0.1`）：
+  模型误差改变了其他部件重不重要。** oracle 列极差 **0.07**（0.980/0.910/0.920，规划增益
+  +0.50~+0.92，把裸跑 **0.000** 的 stage-1 头拉到 0.920）vs learned 列极差 **0.64**
+  （0.650/0.590/0.130/0.010，弱 proposal 下**规划有害**：裸跑 0.200 → 0.130）⇒ **Δdynamics
+  +0.330 / +0.780 / +0.910（z 6.4/17.6/31.5）**。★ learned 列由 **proposal 裸跑分**决定，
+  **不是**"离被适配 policy 的距离"（il_ft 判别臂：裸跑 0.500 未被适配 → 0.590 ≈ 被适配的
+  0.650，ns；⚠️ 我的预注册预测反向失败，"dynamics 只在 policy 邻域可修"在此不成立）。
+  ★ 换 value ≤+0.04（4 读数 2 个为零，异质性 p≈0.09）；V_tgt 配 source-only policy 只有
+  0.910，显著低于配另两种（z=−2.0/−2.6）⇒ **关键是 policy 是否仍在 value 的训练分布上**。
+  ★ **base 构造三种 6 读数全零**（含新增 `--base_real_rollout`）且贵 30–70% ⇒ 别再投。
+  ★ stage-1 头 source 0.960 / **target 0.000**（两套代码互证）⇒ stage-2 是必需品。
+  ⚠️ 与 §41b 口径不同（`base_policy_std` 0.0 vs 0.1）不可相减；初稿的「dynamics +0.185~+0.245」
+  已作废（base 构造未配对）。
 - **§41b** ★★ 受控重测推翻 §41 的 2×2：**缺口是 dynamics 不是 value**。同预算 dynamics 误差
   **+0.175 (z=5.1)** ≫ proposal +0.030 > **value +0.015 (ns)**，任务残差 0.015；value 的效应是
   **proposal-conditional**（弱 proposal 上 +0.330，target-BC 过的 proposal 上归零）；oracle 下

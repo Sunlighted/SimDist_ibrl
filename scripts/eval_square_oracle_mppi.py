@@ -152,7 +152,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weight", default="exps/mimicgen/square_ibrl_rotw1_seed1/model0.pt")
     ap.add_argument("--shift", default="target", choices=["source", "target"])
-    ap.add_argument("--arms", default="policy,oracle")
+    ap.add_argument("--arms", default="policy,oracle",
+                    help="policy = proposal executed bare (the bar); "
+                         "oracle = CEM over REAL sim rollouts; "
+                         "learned = the SAME CEM but candidates rolled through "
+                         "the LEARNED world model from --simdist_ckpt, scored by "
+                         "its own V_hat read straight off the terminal LATENT. "
+                         "learned vs oracle at a matched budget is the dynamics "
+                         "term. With --value_weight the learned arm decodes the "
+                         "terminal latent so an external critic can score it; that "
+                         "decode path is never used at plan time under "
+                         "shared_encoder=1, so its error lands on those cells only "
+                         "-- see value_fn_latent().")
     ap.add_argument("--episodes", type=int, default=100)
     ap.add_argument("--num_samples", type=int, default=32)
     ap.add_argument("--num_base", type=int, default=10)
@@ -206,6 +217,16 @@ def main():
                          "BOTH use -- which is what makes 'swap the proposal' a "
                          "single-variable change. Costs H sequential sim steps "
                          "per plan call plus one extra GL context.")
+    ap.add_argument("--decode_roundtrip", type=int, default=0,
+                    help="Control for the learned arm's --value_weight cells. Score "
+                         "the terminal with the model's OWN V_hat, but push the "
+                         "latent through decode() and back through encode() first. "
+                         "Proposal, value, dynamics and planner are all unchanged, "
+                         "so the gap to the plain V_hat cell is the cost of the "
+                         "decode round trip ALONE -- which is what separates 'the "
+                         "external critic is worse here' from 'decoding the "
+                         "terminal latent is lossy'. Those two are otherwise "
+                         "confounded in every learned + external-critic cell.")
     ap.add_argument("--proposal_bc_ckpt", default="",
                     help="Take the PROPOSAL from a plain BC policy (train_bc.py) "
                          "instead of an expert or a SimDist head -- e.g. a policy "
@@ -424,9 +445,29 @@ def main():
         return agent_action(agent, state2d)
 
     def value_fn(states):                       # [N, obs] -> [N]
+        """Terminal value on RAW states (the oracle arm's terminals).
+        --value_weight wins over --simdist_ckpt: when both are given the world
+        model supplies dynamics only and the external critic scores."""
+        if args.value_weight:
+            return value_agent.value({"state": states}, use_ibrl=True).view(-1)
         if wm is not None:
             return wm.predict_value(wm.encode(states), target=False).view(-1)
         return value_agent.value({"state": states}, use_ibrl=True).view(-1)
+
+    def value_fn_latent(z):                     # [N, z] -> [N]
+        """Terminal value on IMAGINED LATENTS (the learned arm's terminals).
+
+        With --value_weight the latent has to be decoded, because an external
+        critic only eats raw states. That decoder is NOT exercised at plan time
+        in normal operation: under shared_encoder=1 the planner reads V_hat
+        straight off the latent (rl/world_model.py decode() docstring), so its
+        error lands on these cells and nowhere else. Read the resulting Delta as
+        'external critic AND decode', not as the value swap alone."""
+        if args.value_weight:
+            return value_agent.value({"state": wm.decode(z)}, use_ibrl=True).view(-1)
+        if args.decode_roundtrip:
+            return wm.predict_value(wm.encode(wm.decode(z)), target=False).view(-1)
+        return wm.predict_value(z, target=False).view(-1)
 
     def rollout_real(sim_state, actions):
         return (pool.rollout(sim_state, actions) if pool is not None
@@ -486,6 +527,47 @@ def main():
             return "transport"
         return "insertion"
 
+    if "learned" in arms:
+        assert wm is not None, "--arms learned needs --simdist_ckpt (the world model)"
+        if args.value_weight:
+            log("[setup] WARNING learned arm + external critic => terminal latents "
+                "go through decode(z_H), a path never used at plan time under "
+                "shared_encoder=1. Its error lands on this cell only; the Delta "
+                "vs the V_hat cell is 'critic AND decode', not the critic alone.")
+
+    def plan_learned(state):
+        """The same CEM as plan(), with the learned world model in place of the
+        simulator. Everything else -- candidate sampling, base seeds, elites,
+        temperature, iterations -- is shared code, so `oracle - learned` at this
+        budget isolates model error and nothing else."""
+        base = base_seq(state.view(1, -1), args.num_base, H)
+        if args.base_policy_std > 0:
+            base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
+        mean = torch.zeros(H, A, device=dev)
+        std = torch.full((H, A), args.init_std, device=dev)
+        num_rand = args.num_samples - args.num_base
+        z0 = wm.encode(state.view(1, -1))
+        for _ in range(args.iterations):
+            noise = torch.randn(H, num_rand, A, device=dev)
+            rand = (mean.unsqueeze(1) + std.unsqueeze(1) * noise).clamp(-1, 1)
+            actions = torch.cat([rand, base], dim=1)
+            z = z0.expand(actions.shape[1], -1).clone()
+            for t in range(H):
+                z = wm.next(z, actions[t])
+            returns = value_fn_latent(z) * gamma_H
+            SIGNAL.append((float(returns.std()), float(returns.mean()),
+                           float(returns.max() - returns.min())))
+            elite_val, elite_idx = torch.topk(returns, args.num_elites)
+            elite = actions[:, elite_idx]
+            score = torch.exp(args.temperature * (elite_val - elite_val.max()))
+            score = score / (score.sum() + 1e-9)
+            new_mean = (score.view(1, -1, 1) * elite).sum(1)
+            new_std = torch.sqrt(
+                (score.view(1, -1, 1) * (elite - new_mean.unsqueeze(1)) ** 2).sum(1))
+            mean = args.momentum * mean + (1 - args.momentum) * new_mean
+            std = new_std.clamp(min=args.min_std)
+        return mean[0]
+
     results, records = {}, {}
     for arm in arms:
         succ = 0
@@ -508,6 +590,8 @@ def main():
                 state = obs["state"].to(dev)
                 if arm == "policy":
                     act = proposal_action(state.view(1, -1)).view(-1)
+                elif arm == "learned":
+                    act = plan_learned(state)
                 else:
                     sim_state = sim.get_state().flatten()
                     act = plan(state, sim_state)

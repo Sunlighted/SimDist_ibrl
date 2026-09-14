@@ -251,8 +251,9 @@ STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
 # two stage-1s", not "ensemble averaging".
 STAGE1_DYNENS=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
 # 10-head sibling, same diverse_v2 source and horizon, trained to the same 800k
-# distill steps. Only the optim_* arms use it: --eval_dyn_heads can only truncate
-# DOWN, so sweeping 1/3/5/10 needs a checkpoint that actually has 10.
+# distill steps. Nothing in this script uses it any more -- the ensemble-size
+# sweep moved offline (--eval_dyn_heads on saved snapshots) -- but it is the only
+# 10-head checkpoint on any task, so keep the path recorded here.
 STAGE1_DYNENS10=exps/mimicgen/threading_simdist_dynens10_diversev2_h5_seed1/latest.pt
 # Target-domain BC prior for the model-free arms, on sat_160000 (see above).
 BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
@@ -394,12 +395,19 @@ case $ARM in
     # ensemble-size ride-along at every eval point so the plot shows how both
     # move over training.
     #
-    # ⚠️ Runs on the 10-HEAD stage-1 (dynens10), not the 5-head one the baselines
-    # use, so that --eval_dyn_heads can sweep 1/3/5/10 from the SAME weights at
-    # every eval point. That makes these arms NOT directly comparable to
-    # dynens_h5_slow_anchor; read them against each other. findings 31 attributes
-    # the whole 5-head gain to plan-time averaging (5 heads 0.970 vs 1 head 0.120
-    # off one checkpoint), which is exactly what score/score_h<N> measures here.
+    # Runs on the SAME 5-head stage-1 as dynens_h5_slow_anchor, so these arms sit
+    # on the published ladder and can be read against it.
+    #
+    # ONE eval per point: score + policy_only, PEN defaulting to 0 (pure exploit).
+    # The ensemble-size and penalty sweeps used to ride along here and made each
+    # run 2x the wall clock -- a 100-episode MPPI eval is 221-282 s and there are
+    # ~20 eval points, so every extra coef/head size is ~1.5 h. Both axes are
+    # measured offline instead: train ONE 100k run locally with
+    # --snapshot_every_rounds, then re-score each snapshot with evaluate/eval.py
+    # at whatever grid of heads and pessimism coefs is wanted. Those two knobs are
+    # eval-time only (they re-score a fixed checkpoint), so nothing is lost by
+    # moving them out of training; collect_disagree_coef is NOT, which is why it
+    # still needs one arm per value.
     #
     # The PENALTY axis rides along for free in the same runs: eval_disagree_coefs
     # re-scores each eval point at several pessimism coefs (logged as
@@ -410,20 +418,14 @@ case $ARM in
     # is a max over 5 noisy evals and carries ~+sigma_eval (~+0.05) of
     # winner's curse.
     #
-    # ⚠️ Cost: each extra head size is one more full eval per eval point.
-    # Measured on Threading dynens at 100 episodes: 221-282 s per eval, so the
-    # 4-size sweep adds ~4.9-6.3 h on top of the ~8.3 h a 100k run already takes.
-    # HEADS="" turns the ride-along off for a cheap arm.
     V=${ARM#optim_}
-    HEADS=${HEADS:-1,3,5,10}
-    HS=(); [ -n "$HEADS" ] && HS=(--eval_dyn_heads "$HEADS")
-    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS10 --save_dir $OUT --seed $SEED \
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
       --bc_anchor_coef 1.0 \
       --bc_anchor_path release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "${PEN:-0,0.01,0.05,0.1,0.2}" "${HS[@]}" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef $V --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;

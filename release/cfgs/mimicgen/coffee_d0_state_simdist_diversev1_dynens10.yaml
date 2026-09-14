@@ -70,7 +70,7 @@ expert_collect_steps: 0
 num_warm_up_episode: 20
 
 # ---- stage-2 demos (loaded at setup even though finetune_steps=0) ----
-target_demo_path: release/data/mimicgen/coffee_d0_target_C50/dataset.hdf5
+target_demo_path: release/data/mimicgen/coffee_g5x_sat400k_s1/dataset.hdf5
 target_num_data: 20
 
 distill_steps: 1000000

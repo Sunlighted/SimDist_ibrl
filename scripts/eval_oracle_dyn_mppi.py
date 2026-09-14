@@ -306,6 +306,17 @@ def main():
                     help="Restore the policy head from this ckpt (normally the "
                          "run's own stage-1), undoing stage-2 target-demo BC while "
                          "keeping the adapted dynamics. Gives a PURE-SOURCE proposal.")
+    ap.add_argument("--proposal_bc_ckpt", default="",
+                    help="Take the PROPOSAL from a plain BC policy (train_bc.py) "
+                         "instead of the run's own policy head -- e.g. a policy BC'd "
+                         "from scratch on the 20 target demos. Routed through the "
+                         "planner's proposal_policy hook (rl/simdist_planner.py:128) "
+                         "so the MPPI candidate seeds come from it, and the `policy` "
+                         "arm reports the same network bare. Mutually exclusive with "
+                         "--policy_from, which instead rolls the run's own head back "
+                         "to stage-1. Together the three options give the "
+                         "proposal-provenance rows of tasks.md 41c: own head "
+                         "(src+tgt) / this flag (tgt only) / --policy_from (src only).")
     ap.add_argument("--base_open_loop", type=int, default=0,
                     help="Hold the policy's FIRST action for all H steps instead "
                          "of re-querying it along the imagined rollout (oracle arm "
@@ -462,6 +473,7 @@ def main():
     agent = ws.agent.to("cuda")
     model, planner = agent.model, agent.planner
 
+
     # shrink the planner budget (both arms identical)
     p = planner.cfg
     p.num_samples, p.num_base_override = args.num_samples, args.num_base
@@ -558,6 +570,21 @@ def main():
         log("[setup] STRICT DISABLED (raw position-only success)")
 
     main_env = PixelRobosuite(**ep_nr)
+    # An external BC proposal, wired into BOTH the planner's candidate seeds and
+    # the `policy` arm, so the bare score and the planned score describe the same
+    # network (proposal_action() in eval_square_oracle_mppi.py does the same).
+    prop_bc = None
+    if args.proposal_bc_ckpt:
+        assert not args.policy_from, \
+            "--proposal_bc_ckpt and --policy_from both replace the proposal"
+        import train_bc as _tbc
+        prop_bc = _tbc._load_model(args.proposal_bc_ckpt, main_env, "cuda")
+        prop_bc.train(False)
+        for _p in prop_bc.parameters():
+            _p.requires_grad_(False)
+        planner.proposal_policy = lambda st: prop_bc.forward({"state": st}).detach()
+        log(f"[setup] PROPOSAL = BC policy from {args.proposal_bc_ckpt} "
+            f"(planner.proposal_policy + the policy arm)")
     probe_env = PixelRobosuite(**ep_nr)
     # CRITICAL: the domain shift is applied inside reset() (robosuite's hard_reset
     # rebuilds the sim, so the mutations must be re-applied every reset). A freshly
@@ -645,13 +672,20 @@ def main():
 
     # ---- noise-injection setup (oracle arm sigma sweep) ----
     obs_dim = main_env.observation_shape[0]
+    def proposal_action(state2d):
+        """The proposal, wherever it comes from. One function so the `policy`
+        arm and the planner's seeds can never drift apart."""
+        if prop_bc is not None:
+            return prop_bc.forward({"state": state2d}).detach()
+        return model.policy_action(state2d)
+
     sigmas = [float(s) for s in str(args.oracle_noise_sigma).split(",") if s != ""]
     # per-dim state std from a short policy rollout -> puts sigma in std units.
     _sb = []
     _o, _ = main_env.reset()
     for _ in range(400):
         with torch.no_grad():
-            _a = model.policy_action(_o["state"].view(1, -1)).view(-1).clamp(-1, 1)
+            _a = proposal_action(_o["state"].view(1, -1)).view(-1).clamp(-1, 1)
         _o, _, _term, _, _ = main_env.step(_a.detach().cpu())
         _sb.append(_o["state"])
         if _term:
@@ -730,7 +764,7 @@ def main():
             for t in range(ep_len):
                 with torch.no_grad():
                     if kind == "policy":
-                        a = model.policy_action(obs["state"].view(1, -1)).view(-1).clamp(-1, 1)
+                        a = proposal_action(obs["state"].view(1, -1)).view(-1).clamp(-1, 1)
                     elif kind == "learned":
                         a = planner.plan(obs["state"], eval_mode=True)
                     elif kind == "random":

@@ -672,14 +672,195 @@ matched-budget 对照直接可跑；但 `--weight` 必须指向带 `MainConfig` 
 （做法：把 stage-1 的 `cfg.yaml` 和 adapt 的权重放进一个临时目录，如 `exps/tmp/sq_matched_budget/`）。
 
 #### TODO
-- [ ] **P1/P2/P3 未完成**（plain / dyn-ens / dyn-ens+anchor 在 oracle 下的配对阶梯，seed101，
-      共用 demo 集 `square_sat_400000_s101`）—— 起了三格并发把 nvidia 驱动打死，见记忆
-      `gotcha-gpu-density-mppi-runs`。重跑要**串行**或把 `--probe_workers` 降到 6–8。
-      读数：`P3−P2` = anchor 在 dynamics 完美时还值不值钱；`P2−P1` = dynens 的收益里有多少不是 plan-time 平均。
+- [x] **P1/P2/P3 其实已经跑完了**（2026-08-28 21:15–23:26 串行，seed101，共用 demo 集
+      `square_sat_400000_s101`，n=200/格，`base_policy_std=0.0` 口径）：
+
+      | 格 | stage-2/3 臂 | proposal 裸跑 | **oracle MPPI** |
+      |---|---|---:|---:|
+      | P1 | plain | 0.560 | **0.900 ± 0.021** |
+      | P2 | dyn-ens | 0.740 | **0.965 ± 0.013** |
+      | P3 | dyn-ens + anchor | 0.700 | **0.970 ± 0.012** |
+
+      读数：**`P3−P2` = +0.005** ⇒ dynamics 完美时 anchor 不值钱（但基线 0.965、余量只剩 0.035，
+      按铁律 #18 这个 null 是算术必然，不算证据）。**`P2−P1` = +0.065** ⇒ dynens 的收益有一部分
+      不是 plan-time 平均（oracle 下 dynamics 误差已为零，仍然差 0.065 ⇒ 来自 policy 头/anchor 差异）。
+      ⚠️ **provenance：`sq2x2_P*.log` 已被删除，上面的数字只存在于 2026-08-28 会话记录**，
+      事后不可核（同 [[feedback-ckpt-provenance-topksaver]] 的教训）。要引用请重跑。
+      ⚠️ 之前记成"未完成"是错的 —— 打死驱动的是第一次并发尝试，后来串行重跑成功了。
 - [ ] G/L 系列只有 seed2 一个 ckpt，方法级结论需 ≥2 seed。
 - [ ] 结论 4 的"上界"仍受小预算限制：oracle 臂每个候选要一次真实 sim rollout，
       复刻 N=350/H=5/iters=3 要 ~27× 算力（200 局约 40h）⇒ 0.940 多半被低估。
 
+---
+
+### 41c. ★★★ learned vs oracle dynamics × 4 种 proposal × 2 种 value —— **模型误差决定了"别的部件重不重要"**（2026-09-14）
+
+#### 口径（全部一致，跨格可比）
+Square rotw1 120–180° · σ=0.1 · **strict=false** · planner
+`N=32 (base 10) H=3 iters=2 elites=8 temp=2.0 init_std=0.15 base_policy_std=0.1`
+· base 种子 **held-action**（除特别标注）· 单 stage-1 seed
+（plain `square_simdist_rotw1_h5_seed1`；stage-2/3 = `sq_plain_d400000_seed101`）。
+learned 列的 dynamics + V̂ **三行共用同一个 world model**（`sq_plain_d400000_seed101`）⇒ 列内只有
+proposal 在变，与 oracle 列精确配对。日志 + GPU trace 全部存档：`exps/tmp/sq_oracle_ladder/`。
+⚠️ **§41b 那批是 `base_policy_std=0.0`，与本节不可直接相减**（该旋钮本身实测零效应：
+L(plain) learned std=0.0 **0.735** vs std=0.1 **0.735**，n=200 各一次）。
+
+#### ★★★ 主表
+
+| proposal | 裸跑 | WM 见过? | **learned + V̂** | 规划增益 | **oracle + V̂** | **oracle + V_tgt** | **Δ dynamics** | z |
+|---|---:|:-:|---:|---:|---:|---:|---:|---:|
+| stage-2 头（source 蒸馏 + target-demo BC） | 0.480 | ✅ | **0.650** | +0.170 | 0.980 | 0.980 | **+0.330** | 6.4 |
+| il_ft BC（source BC 热启动 + target demo） | 0.500 | ❌ | **0.590** | +0.090 | — | 0.960 | — | — |
+| from-scratch BC（只有 20 条 target demo） | 0.200 | ❌ | **0.130** | **−0.070** | 0.910 | 0.990 | **+0.780** | 17.6 |
+| stage-1 头（纯 source 蒸馏） | **0.000** | ❌ | **0.010** | +0.010 | 0.920 | 0.910 | **+0.910** | **31.5** |
+
+n：learned 列 100/格；oracle 列 stage-2 行 50、其余 100。
+
+#### ★★★ 结论 1：**oracle 列极差 0.07，learned 列极差 0.64 —— 差 9 倍**
+- **oracle dynamics**：规划增益 **+0.50 / +0.71 / +0.92**，把任何 proposal（含裸跑 **0.000** 的）
+  都拉到 **0.91–0.98**。⇒ **完美模型让 planner 与 proposal 基本无关。**
+- **learned dynamics**：规划增益 +0.17 / +0.09 / **−0.07** / +0.01，proposal 差时**规划反而有害**
+  （from-scratch BC：裸跑 0.200 → 规划后 **0.130**）。⇒ **学出来的模型让 planner 受 proposal 支配。**
+
+⇒ **模型误差不只是压低天花板，它改变了其他部件重不重要。** 这是 findings §36「proposal 只在
+binding 时值钱」的机制版：**learned dynamics 下 proposal 是 binding 的，oracle 下不是。**
+⚠️ oracle 列不是严格平的（stage-2 0.980 vs BC 0.910，z=2.01 勉强显著），但 0.07 vs 0.64 的
+对比不受影响。
+
+#### ★★ 结论 2：换 value ≤ +0.04（oracle 下），4 个读数里 2 个为零
+| proposal | base | V̂ | V_tgt | Δ | z |
+|---|---|---:|---:|---:|---:|
+| stage-2 (0.480) | held | 0.980 | 0.980 | 0.000 | 0.0 |
+| stage-2 (0.480) | learned-WM rollout | 0.920 | 1.000 | +0.080 | 2.1 |
+| from-scratch BC (0.200) | held | 0.910 | 0.990 | +0.080 | 2.6 |
+| stage-1 (0.000) | held | 0.920 | 0.910 | −0.010 | −0.3 |
+
+逆方差合并 **+0.037 ± 0.016 (z=2.2)**，异质性 **Q=6.4, df=3, p≈0.09** ⇒ 不是同一个效应量，
+**别当一个数引用**。正确表述：「至多 +0.04，比 dynamics 项小一个数量级，且不是每次都测得到」。
+★ **V_tgt 列内跨行**：stage-1 行 (0.910) 显著低于另两行（vs W2 0.990 **z=−2.64**；
+vs O2c 0.980 **z=−2.01**）⇒ **target value 不是普遍有效的**。
+★ **V̂ 列的对照排除了"policy 弱"这个替代解释**：V̂ 列里 stage-1 (0.920) ≈ BC (0.910)，
+而 V_tgt 列里两者分化 (0.910 / 0.990) ⇒ 分化只由换 value 产生。
+⚠️ **第 2 行是唯一的反例**（同 proposal、同 value，只差 base 构造，给出 +0.080 vs 0.000）。
+大概率是 O1 那格 (0.920) 向下波动（O1c 同配置 0.980，n=50 差值 SE 0.038），但"挑掉偏低的格"
+是事后解释（铁律 #3）⇒ **O1/O2 需重跑到 n=200 才能定。**
+
+#### ★★ 结论 3：learned 列由 **proposal 的裸跑分**决定，**不是**"离被适配的 policy 有多远"
+learned 列的单调（0.650/0.590/0.130/0.010）同时跟着两个共线变量：(a) 离 stage-3 适配所用
+policy 的距离；(b) proposal 自己的裸跑分。**专门造臂分开**（铁律 #10 推论）：
+**il_ft BC —— 裸跑 0.500 ≈ stage-2 的 0.480，但 WM 从没见过它。**
+
+| 对比 | Δ | z | 判定 |
+|---|---:|---:|---|
+| LI (0.590) vs L2 (0.650)（被适配过 vs 没被适配过，裸跑相当） | −0.060 | **−0.88 (ns)** | 无差别 |
+| LI (0.590) vs LB (0.130)（裸跑 0.500 vs 0.200，都没被适配过） | +0.460 | **7.7** | 巨大 |
+
+⇒ **(b) 胜。** ⚠️ **我的预注册预测失败**：我先判给了 (a)，还写了"和
+`docs/on-policy-adaptation.md` 的「dynamics 只在 policy 邻域可修」严格一致" —— **这条推广在
+本数据上不成立**，是过度解读。记在这里以免重犯（同 §44b 那次反向失败）。
+
+#### ★ 结论 4：base 候选的构造方式**测不出差别**（三种构造、6 个读数）
+`base_seq` 三条路（`scripts/eval_square_oracle_mppi.py:378-415`）：held-action（查 1 次策略、
+**不用任何 dynamics**）/ `--simdist_base_rollout`（learned WM 滚 H 步）/ **`--base_real_rollout`**
+（新增，真实模拟器滚 H 步）。
+
+| 配对 | dynamics | Δ | z |
+|---|---|---:|---:|
+| O1c−O1（去掉 base 里的 learned WM） | oracle | +0.060 | — |
+| O2c−O2（同上） | oracle | −0.020 | — |
+| **W1r−W1（held → 真实 sim，余量 0.09）** | oracle | **−0.060** | −1.3 (ns) |
+| **S2r−S2（held → 真实 sim，余量 0.08）** | oracle | **0.000** | 0.0 |
+| GATE−L2（rollout → held） | **learned** | **+0.075** | 1.3 (ns) |
+
+6 个读数散在 −0.060~+0.075、**两两反号**，**有余量的两格也是零**。真实 sim 闭环 base 还让
+oracle 臂贵 **+30%~70%**（实测 52–55 分 vs 32–42 分 /100 局）。
+⇒ **别再投 base 构造这条线**，包括「逐候选闭环 + 噪声进策略输入」那个更重的版本。
+⚠️ 三种构造**都是事前加抖动**：`rollout_real` 只重放固定的 `[H,N,A]` 数组，抖动在调用前叠好
+⇒ 策略永远看不见噪声、走偏也不纠正。要改必须让 worker 自带策略（CPU 推理以免新增 GPU
+context）或逐步 IPC 往返 + 32 份 env 状态。**按本结论不值得做。**
+⚠️ 22/32 个随机候选（`:451-452`）**根本不查策略**（第一轮 `mean` 是零向量）。
+「policy 生成一个动作然后按住 H 步」只描述 base 那 10 个。
+⚠️ **learned 和 oracle 两列必须用同一种 base 构造才能相减** —— 本节初稿的「dynamics
++0.185~+0.245」就是拿 rollout base 的 learned (0.735) 比 held base 的 oracle，**已作废**，
+配对后是 +0.330 / +0.780 / +0.910。
+
+#### ★ 结论 5：source 蒸馏的策略在 target 上是 **0.000**，两套代码互证
+| ckpt | source | target |
+|---|---:|---:|
+| stage-1 头（本节 harness） | **0.960** (n=50) | **0.000** (n=100) |
+| stage-1 自己的 train.log（`use_planner:0`） | 0.867–0.933 | 0.000–0.033 |
+
+加载路径控制实验通过（同一路径 source 上 0.960）⇒ 0.000 是真实域间隙。
+**dynens 那条 stage-1 也是 target 0.000** ⇒ 与 dynamics 头数无关，是 Square shift 的性质。
+⇒ stage-2（target demo BC）**不是可选项**。
+
+#### ★ 结论 6：0.48 的 proposal 里几乎全是 **source 先验**
+| proposal | 知识来源 | target 裸跑 |
+|---|---|---:|
+| stage-1 头 | 只有 source 蒸馏 | 0.000 |
+| **from-scratch BC** | **只有 20 条 target demo** | **0.180**@n=50 / **0.200**@n=100 |
+| il_ft BC | source BC 热启动 + 20 条 target demo | 0.500 |
+| stage-2 头 | source 蒸馏 + 20 条 target demo BC | 0.480 |
+
+去掉 source 热启动这**一个**变量，BC 掉 0.30。⚠️ from-scratch 的 `latest.pt` 只有 **0.020**
+⇒ 训练后期在 target 上退化，而 `model0.pt` 是 TopkSaver 按 **source** 分数选的
+（`eval_target_during_training=0`，见 `scripts/train_target_bc_priors.sh` 自己的 caveat 1）
+⇒ 对只见过 target demo 的策略是错配判据。il_ft 跨 seed 摆幅很大（s1 0.620 / s301 0.660 /
+s501 0.380 / s101 0.500）⇒ 单 seed 的 proposal 强度不可引用。
+
+#### 论文表述建议（三句，对应 claim 1/2/3）
+1. 把 learned dynamics 换成 oracle：**+0.330 ~ +0.910**（随 proposal 变，三行全部 z>6）；
+   相比之下任何 proposal 或 value 的替换在 oracle 下都 ≤0.08。
+2. V_tgt 并非普遍有效：配 source-only policy 时只有 **0.910**，显著低于它配另两种 policy 时的
+   0.980/0.990（z=−2.01 / −2.64）。
+3. V̂ 与 V_tgt **在两种保留 source 分布的 policy 上打平**（Δ 0.000 / −0.010），只在纯
+   target-demo 的 policy 上落后 0.080 ⇒ **关键是 policy 是否仍处于 value 训练时的分布**。
+★ 统一说法：**模型误差改变了其他部件的重要性** —— dynamics 完美时 proposal/value 都不要紧
+（极差 0.07 / ≤0.08），dynamics 是学出来的时候 proposal 变成支配因素（极差 0.64）且弱
+proposal 下规划有害。
+
+#### TODO
+- [ ] **O1/O2 重跑到 n=200** —— 结论 2 的唯一反例，且 §41b 的「value +0.330 / 交互 −0.285」
+      也挂在 A 格上（`init_std=0.15` + `base_policy_std=0` 把 CEM 钉在 0.135 的 proposal 上；
+      旧 σ=0 扫描里 `init_std=0.30` 给出 oracle 0.920）。**A 格也要按 `init_std 0.30` +
+      `base_policy_std 0.1` 重测**，交互项的符号随 A 翻转（A=0.595 → −0.68 log-odds；
+      A=0.90 → +1.12）。
+- [ ] **H=1 vs H=3 在 oracle 下未测**（H=1 时 base 构造问题彻底消失）。唯一先例是
+      Threading + **learned**（findings §131）H=1 0.600 < H=3 0.825 < H=5 0.850, n=40
+      ⇒ learned 上 H 大会累积模型误差、oracle 上没有这个惩罚 ⇒ 不可移植；跨任务也不可移植
+      （铁律 #9）。测法：W 行（有余量）× H∈{1,3}，n=100。
+- [ ] **`learned + V_tgt` 未测**，因为外部 critic 要原始状态 ⇒ 终端 latent 必须过 `decode()`，
+      而 `shared_encoder=1` 下 plan 阶段**从不调用 decode**（`rl/world_model.py` decode 注释）
+      ⇒ 解码误差只落在那一格、正好污染要测的 Δ。脚本里已加硬断言拒绝这个组合。
+      要测必须先单独标定 decode 误差。
+- [ ] 全部单 stage-1 seed；结论 2 的正效应那一半（BC 行 +0.080）只有一个 seed。
+- [ ] oracle 列 stage-2 行是 n=50（差值 SE 0.034 而余量 ≤0.04）⇒ 该行内部 delta 本质不可读。
+
+#### Where（新增，默认关、逐位兼容）
+`scripts/eval_square_oracle_mppi.py`：
+- **`--arms learned`** —— 与 oracle 臂共用全部 CEM 代码，只把 `rollout_real` 换成 `wm.next()`
+  滚 H 步、终端值用 `wm.predict_value(z_H)` 从 latent 直接读（**无 decode**）。
+  **验证门**：`--simdist_base_rollout 1` + n=200 复现 `evaluate/eval.py` 的 0.735 ⇒ 实测
+  **0.725（145/200）**，200 局只差 2 局 ⇒ 移植正确。与 `--value_weight` 互斥（硬断言）。
+- `--proposal_bc_ckpt` —— 用 train_bc.py 的 BC 当 proposal（无 world model ⇒
+  `--simdist_base_rollout` 自动失效并告警；`base_policy_std=0` 时告警 10 个 base 同一份）。
+- `--base_real_rollout` —— base 种子在**真实模拟器**里闭环滚 H 步（主进程多 1 个 EGL context，
+  计入并发预算）。优先于 `--simdist_base_rollout`。
+- 修了一处误导日志：`VALUE = ...` 行的 `(proposal from ...)` 之前不认 BC 分支，会写成 "the expert"。
+资产：`exps/mimicgen/square_bc_tgtonly_rotw1_seed101`（from-scratch target-demo BC，
+配方 = `scripts/train_target_bc_priors.sh` 但 `--load_model none`）。
+
+#### ⚠️ 本轮的运维教训（已写进 [[gotcha-gpu-density-mppi-runs]] 第 11–13 条）
+4 格并发 oracle eval 把 nvidia 驱动打死（41 个 D 态、`nvidia-smi` 自己 D 了 57 分钟、
+别的用户的任务一起死、整机重启、4 格实验全废）。三个具体错误：
+① 用 `nvidia-smi --query-compute-apps | wc -l` 数 context —— 它**只列有 CUDA context 的进程**，
+probe worker 是 EGL-only，**从来不在这个列表里**；② §41b 的补救写成"串行**或**降 workers"，
+我降了 workers（16→6）却把并发格数从 3 提到 4–5 —— **并发 run 数才是紧约束**；
+③ 当天新写的 `--base_real_rollout` 在主进程多建一个 EGL context，只在 `probe_workers=2` +
+机器空闲时 smoke 过就直接上 4 格并发。
+**串行重跑全部成功**（单格显存足迹实测仅 7–8 GB/卡 ⇒ 显存从来不是约束）。
+现在起任何 GPU 批量任务都先挂 `gpu_trace`（30s 采样显存/util/context），存档在
+`exps/tmp/sq_oracle_ladder/gpu_trace*.log` 当基线。
 ---
 
 ### 40e. ★ Coffee 三个 target 横评 —— **G5x + `bc_anchor_coef 1.0` 追平 oracle**（2026-08-22）

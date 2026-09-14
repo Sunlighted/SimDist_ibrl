@@ -266,25 +266,81 @@ Swapping the planner's three inputs independently (Table~\ref{tab:factorial-bott
 The third component is the proposal, the one Sec.~\ref{sec:two-conditions} predicts will matter. [] shows that leaving the proposal frozen at the source expert forfeits the target information in the demonstrations, while fine-tuning it on target demonstrations will help it but causes catastrophic forgetting in wider distribution trained on source. [] also indicates that keeping value and proposal in the same trained distribution is more important than fitting them in new distribution. We find adding a source regulation, i.e., a KL divergence item between source distilled policy and learned policy, to the cloning objective resolves the conflict. This is the same mechanism Sec.~\ref{sec:two-conditions} isolated, implemented differently: Dyna protects the collected distribution with a gate on the argmax to improve the collection quality, planning protects it with a penalty on the proposal to make it be supervised in widen distribution. Both measure the same thing: how far the executed distribution has drifted from the prior the model was fit around. It balances the trade-off between adaptation warmup in the new dynamics with the preservation of behavior near the states trained by the value function.
 
 
+% One float, two independently numbered captions: \captionsetup{type=table} in
+% the left minipage retargets \caption to the table counter (and keeps hyperref
+% anchoring correct, which a bare \captionof does not). Both captions sit BELOW
+% their content so the two columns line up; move the table's above the tabular
+% if you prefer the usual table convention -- the columns then start ragged.
 \begin{figure*}[t]
 \centering
-\includegraphics[width=\textwidth]{figs/placeholder.pdf}
+\begin{minipage}[t]{0.60\textwidth}
+\captionsetup{type=table}
+\centering
+% 6 columns do not fit 0.60\textwidth at \footnotesize, so: tighter column
+% separation, \to rather than \rightarrow, and \resizebox as the guarantee.
+% NOTE \resizebox{\linewidth}{!} forces the table to EXACTLY \linewidth -- it
+% scales UP as readily as down, so if a column is later dropped the font will
+% grow past the body size. Delete the \resizebox (and its closing brace) if the
+% table ever fits on its own.
+\setlength{\tabcolsep}{3pt}
+\resizebox{\linewidth}{!}{%
+\footnotesize
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+schedule & Threading & Square & Coffee & TPA & mean \\
+\midrule
+(i) dynamics only \textbf{(ours)}
+  & \textbf{78.7} \pmsd{8.0} & \textbf{62.0} \pmsd{8.5} & \textbf{56.0} & \ph{--} & \textbf{65.6} \\
+(ii) joint
+  & 0.0 \pmsd{0.0} & 2.5 \pmsd{2.1} & 0.0 & \ph{--} & 0.8 \\
+(iii) value $\to$ dynamics
+  & 0.0 \pmsd{0.0} & 0.5 \pmsd{0.7} & 0.0 & \ph{--} & 0.2 \\
+(iv) dynamics $\to$ value
+  & 0.3 \pmsd{0.6} & 0.0 & 4.0 & \ph{--} & 1.4 \\
+(v) marginal value
+  & 16.3 \pmsd{18.9} & 0.0 & 0.0 & \ph{--} & 5.4 \\
+\bottomrule
+\end{tabular}}
 \caption{%
   \textbf{Adapting the value function degrades planning, in every ordering and
-  at every strength.} Final target success rate for five adaptation schedules
-  under an identical target budget:
-  (i) \emph{dynamics only} (SimDist);
-  (ii) \emph{joint} --- value and dynamics adapted simultaneously;
-  (iii) \emph{value $\rightarrow$ dynamics};
-  (iv) \emph{dynamics $\rightarrow$ value};
-  (v) \emph{marginal value} --- the value head nudged with a small
-  learning rate / few steps / small trust region [TODO: name the exact knob].
-  Dynamics-only is best on all [TODO: four] tasks; no ordering rescues value
-  adaptation, and the marginal variant merely interpolates towards the failure
-  rather than avoiding it. Error bars are the seed spread and the grey band is
-  the evaluation noise margin, so bars inside it are not distinguishable.
+  at every strength.} Target success rate at the end of the target budget for
+  five schedules: (i) \emph{dynamics only} (SimDist); (ii) \emph{joint} --- value
+  and dynamics adapted simultaneously; (iii) \emph{value $\rightarrow$
+  dynamics}; (iv) \emph{dynamics $\rightarrow$ value}; (v) \emph{marginal value}
+  --- the value head nudged with a small residual instead of refit
+  [TODO: name the exact knob].
+  We report the final $100$k evaluation point rather than a window average
+  because every arm has converged by then: the dynamics-only curve is flat to
+  within its seed spread over the last $40$k, and the four value arms are pinned
+  at zero from $20$k onward.
+  Dynamics-only is best on all three tasks and no ordering rescues value
+  adaptation. The two sequential arms are given \emph{twice} the budget
+  ($2\times100$k; the number reported is the end of the second phase), so they
+  fail with more target interaction, not less.
+  Row (iv) is the causal statement the other rows cannot make: it is not that
+  value adaptation never works, it is that it \emph{destroys} a working
+  controller --- the same runs reach $65$--$84$ at the end of their dynamics
+  phase and fall below $2$ within $20$k of the value phase starting.
+  Row (v) shows the failure is not a step-size artefact: a deliberately marginal
+  update lands between the two and does not avoid the collapse.
+  [TODO: $k$ seeds per cell; runs still in flight, numbers and $\pm$ one seed
+  s.d. to be refreshed. Cells with no $\pm$ are single-seed. TPA has not been
+  run yet, so the mean column is over the three tasks measured so far and will
+  move once that column lands.]
 }
-\label{fig:value-adapt-bars}
+\label{tab:value-adapt}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.38\textwidth}
+\centering
+% TODO(fig): replace this box with \includegraphics[width=\linewidth]{figs/oracle_dyn_diag.pdf}
+\fbox{\parbox[c][1.75in][c]{0.95\linewidth}{\centering\footnotesize
+  \textcolor{gray}{[oracle-dynamics diagnostic --- to be drawn]}}}
+\caption{%
+  \textbf{[TODO: oracle-dynamics diagnostic.]}
+  [TODO: one sentence on what the panel shows and what it rules out.]
+}
+\label{fig:oracle-dyn-diag}
+\end{minipage}
 \end{figure*}
 
 \begin{table*}[t]

@@ -351,16 +351,14 @@ case $ARM in
       --target_demo_path $B_DEMOS \
       --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "$B_DIS" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef 0.5 --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   cof_optim_*)
     # exp1 on Coffee: optimistic sweep. Penalty rides along inside each run via
-    # eval_disagree_coefs; the ensemble-size sweep does NOT -- Coffee has only a
-    # 5-head stage-1 (coffee_s1g5x_dynens), and --eval_dyn_heads can only
-    # truncate down. Head size is measured on Threading, which has a 10-head
-    # checkpoint trained to the same 800k steps as its 5-head sibling.
+    # a single eval per point (score + policy_only). Head size and pessimism are
+    # eval-time knobs and are swept OFFLINE on saved snapshots.
     #
     # Matches cof_dynens_anch field-for-field apart from collect_disagree_coef:
     # same stage-1, coffee_g5x_sat400k per-seed demos, num_data left at None
@@ -373,39 +371,23 @@ case $ARM in
       --target_demo_path $DEMOS \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "${PEN:-0,0.01,0.05,0.1,0.2}" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef $V --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   sq_optim_*)
     # ===== exp1 on Square: optimistic-exploration sweep, same design as
     # Threading's optim_* (see job_threading_margin.sh). Penalty and ensemble
-    # size ride along inside each run via eval_disagree_coefs / eval_dyn_heads,
     # so one arm per optimistic value is enough.
     #
-    # ⚠️ HEAD-SWEEP CAVEAT, SQUARE-SPECIFIC. --eval_dyn_heads can only truncate
-    # DOWN, so a 10-head checkpoint is required -- but Square's
-    # square_simdist_rotw1_dynens10_seed1 is trained to only 130k distill steps
-    # against the 5-head one's 1.2M (9x). Sweeping heads off it measures an
-    # UNDERTRAINED model, not the effect of ensemble size. Two modes:
-    #   HEADS=""  (DEFAULT, and what we run) -> the well-trained 5-HEAD stage-1,
-    #                          no head sweep. The optimistic and penalty axes are
-    #                          clean and the arm stays comparable to
-    #                          sq_dynens_anch_*. Head size is measured on
-    #                          Threading instead, where both checkpoints are
-    #                          trained to the same 800k steps.
-    #   HEADS=1,3,5,10      -> switch to the 10-head ckpt and sweep, accepting
-    #                          that the absolute scores are not comparable to
-    #                          anything else on Square.
+    # ONE eval per point (score + policy_only, PEN default 0). The head and
+    # penalty sweeps are eval-time knobs -- they re-score a fixed checkpoint --
+    # so they run OFFLINE on saved snapshots instead of doubling the wall clock
+    # of every run here. Square could not have swept heads anyway: its 10-head
+    # stage-1 is trained to 130k distill steps against the 5-head one's 1.2M
+    # (9x), so sweeping off it would measure an undertrained model.
     V=${ARM#sq_optim_}
-    HEADS=${HEADS:-}
-    if [ -n "$HEADS" ]; then
-      O_CK=exps/mimicgen/square_simdist_rotw1_dynens10_seed1/latest.pt
-      HS=(--eval_dyn_heads "$HEADS")
-    else
-      O_CK=$STAGE1_DYNENS
-      HS=()
-    fi
+    O_CK=$STAGE1_DYNENS
     [ -f "$O_CK" ] || { echo "MISSING stage-1: $O_CK"; exit 1; }
     $PY train_simdist_adapt.py --stage1_ckpt $O_CK --save_dir $OUT --seed $SEED \
       --planner_set "init_std=0.15,base_policy_std=0.0" \
@@ -414,7 +396,7 @@ case $ARM in
       --target_demo_path release/data/mimicgen/square_sat_600000_s${SEED}/dataset.hdf5 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
-      --eval_disagree_coefs "${PEN:-0,0.01,0.05,0.1,0.2}" "${HS[@]}" \
+      --eval_disagree_coefs "${PEN:-0}" \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --collect_disagree_coef $V --original_mppi 1 \
       --use_wb $USE_WB --state_only_no_render 1 ;;

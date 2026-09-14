@@ -172,7 +172,7 @@ strict_success:
   enabled: false
   max_needle_speed: 0.0
   max_tripod_disp: 0.04
-target_demo_path: release/data/mimicgen/threading_d0_target_dynamics/dataset.hdf5
+target_demo_path: release/data/mimicgen/square_sat_600000_s101/dataset.hdf5
 target_num_data: 20
 task_name: Square_D0
 train_domain_shift:
