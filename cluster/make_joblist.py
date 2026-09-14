@@ -43,8 +43,13 @@ SQCOF += [f"{t}_valabl_{a}" for t in ("sq", "cof")
           for a in ("dyn", "joint", "v2d", "d2v", "marg")]
 SQCOF += [f"{t}_optim_{v}" for t in ("sq", "cof")
           for v in ("0.05", "0.1", "0.5", "1.0", "2.0")]
-SQCOF += [f"{t}_lamA_{v}" for t in ("sq", "cof")
-          for v in ("0", "0.1", "0.3", "1", "3", "10")]
+# lambda=0 is the no-anchor arm and already exists with 10 seeds on every task
+# (Threading dynens_h5_slow, Square sq_dynens_d600000, Coffee cof_dynens), as
+# does each task's deployed lambda (Square 0.1 sq_dynens_anch_d600000, Coffee 1.0
+# cof_dynens_anch, Threading 1.0 dynens_h5_slow_anchor). Only the unmeasured
+# values are listed here; pull the rest from those groups when plotting.
+SQCOF += [f"sq_lamA_{v}" for v in ("0.3", "1", "3", "10")]
+SQCOF += [f"cof_lamA_{v}" for v in ("0.1", "0.3", "3", "10")]
 SQCOF += LAM_B_SQCOF
 SQCOF += [f"{t}_anch_{f}" for t in ("sq", "cof") for f in ("f1", "f5")]
 SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference

@@ -16,6 +16,7 @@
 \usepackage{algpseudocode}
 \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
 \newcommand{\pmsd}[1]{{\scriptsize$\pm$#1}}      % seed s.d. suffix in tables
+\newcommand{\twoknob}[2]{\begin{tabular}[c]{@{}l@{}}#1\\#2\end{tabular}}  % two-line cell, centred on the row baseline
 
 
 \title{Rethinking Sim-to-real Adaptation with World Models}
@@ -644,6 +645,8 @@ base-policy noise std & $0$--$0.1$ (swept) \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\input{app_tether}
 
 \subsection{Baseline details}
 \label{app:baselines}

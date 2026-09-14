@@ -1,0 +1,154 @@
+# Coffee_D0 SimDist STAGE-1 distillation on the 100k source diverse dataset.
+# Modeled on square_d0_state_simdist_diversev2.yaml; the Coffee-specific bits are
+# the task, the source agent, the replay path, and the C50 target eval shift.
+#
+# DATA  release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5
+#       100k trajectories, 51.9% success, 7.2 GB, mean 245 steps, state 66.
+#       Recipe (matches Threading v4, CLAUDE.md 17): domain=source (mode=none),
+#       expert = the sigma-0.1 IBRL expert rolled as its IBRL HYBRID (prior
+#       attached), the 20 quality-spectrum snapshots rolled as BARE RL heads,
+#       p_expert 0.5, hand_init_sigma 0.1, contiguous action noise sigma in
+#       [0.05, 0.2].
+#
+# ★ num_dynamics_heads: 5 -- NOT the default 1. CLAUDE.md 31 measured this as the
+#   single biggest model-based lever on Threading: 0.965 vs 0.879 target strict
+#   success (+0.135, z~17), and a head-count sweep showed it saturates at ~3.
+#   The gain is plan-time ensembling (rollout variance cancels), not a better
+#   encoder: truncating the SAME ckpt to 1 head at eval collapses it to 0.120.
+#   Costs one extra MLP forward per head per planner step.
+#
+# ★ planner.init_std 0.5 (Square's value), NOT Threading's 0.15. CLAUDE.md 40c:
+#   on Coffee the narrow Threading default capped the ORACLE arm (perfect
+#   dynamics!) at 50%, while 0.40 at the same budget gave 90% and on C50 gave
+#   98%. Coffee's value landscape is ~2.4x steeper than Threading's
+#   (std_i(gamma^H V)/V_level = 0.033 vs 0.0068), so the "narrow it so random
+#   candidates don't dilute the proposal" argument does not transfer.
+#   use_planner: 0 here, so this only bites at stage-3 / eval time -- but the
+#   value is set correctly now so nobody inherits 0.15 by accident.
+#
+# TARGET C50 = kp 0.30 / lid_damping 50 / mass 3.0 / pod_fric 0.5 / holder_fric 2.0
+#   sigma-0.1 baselines (500 games): source expert zero-shot 37.80%;
+#   ORACLE (real-sim rollouts + source value, init_std 0.40) 98.0%;
+#   target IBRL expert 98.20%. The oracle and the online-RL ceiling agree, so
+#   ~98% is this domain's real ceiling and any SimDist gap is model error.
+#
+# finetune_steps: 0 -- stage 2 is run separately (train_simdist_adapt.py).
+# NOTE target_demo_path is loaded UNCONDITIONALLY by train_simdist.py:310 (with
+# an assert), regardless of finetune_steps, so it must point at real Coffee
+# demos or stage 1 dies at setup.
+#
+#   python train_simdist.py \
+#     --config_path release/cfgs/mimicgen/coffee_d0_state_simdist_diversev1.yaml \
+#     --save_dir exps/mimicgen/coffee_simdist_diversev1_h5_seed1
+
+task_name: Coffee_D0
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+image_size: 224
+rl_image_size: 96
+rl_camera: robot0_eye_in_hand
+discount: 0.99
+seed: 1
+use_wb: 1
+save_dir: exps/mimicgen/coffee_simdist_diversev1_dynens10_seed1
+
+# ---- stage-1 data + teacher ----
+source_agent: exps/mimicgen/coffee_ibrl_source_sig01_seed1/model0.pt
+source_replay_path: release/data/mimicgen/coffee_d0_source_diverse_v1/dataset.hdf5
+source_replay_num_data: -1
+seq_replay_max_episode: 105000
+policy_replay_path: ''
+policy_replay_num_data: -1
+expert_demo_path: ''
+expert_demo_num_data: -1
+bc_expert_only: 1
+expert_collect_steps: 0
+num_warm_up_episode: 20
+
+# ---- stage-2 demos (loaded at setup even though finetune_steps=0) ----
+target_demo_path: release/data/mimicgen/coffee_d0_target_C50/dataset.hdf5
+target_num_data: 20
+
+distill_steps: 1000000
+batch_size: 256
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+eval_source: 1
+env_reward_scale: 1.0
+stddev_max: 0.0
+stddev_min: 0.0
+stddev_step: 200000
+
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+simdist:
+  use_planner: 0            # in-training eval uses the policy head directly
+  finetune_dynamics: 1
+  finetune_policy: 1
+  finetune_steps: 0         # stage 2 lives in train_simdist_adapt.py
+  finetune_lr: 0.0003
+  world_model:
+    encoder_type: latent
+    latent_dim: 512
+    mlp_hidden_dim: 512
+    num_layer: 2
+    activation: mish
+    layer_norm: 1
+    simnorm_dim: 8
+    shared_encoder: 1
+    detach_pi: 1
+    discrete_heads: 1
+    num_bins: 101
+    vmin: -10.0
+    vmax: 10.0
+    horizon: 5
+    lr: 0.0003
+    enc_lr_scale: 0.3
+    grad_clip: 20.0
+    rho: 0.5
+    tau: 0.01
+    consistency_coef: 20.0
+    reward_coef: 0.1
+    value_coef: 0.1
+    policy_coef: 10.0
+    decoder_coef: 1.0
+    reward_pos_weight: 1.0
+    num_dynamics_heads: 10   # see header -- default is 1
+  planner:
+    horizon: 5
+    num_samples: 512
+    num_elites: 64
+    iterations: 6
+    mixture_coef: 0.8
+    init_std: 0.5           # see header -- NOT Threading's 0.15
+    min_std: 0.05
+    temperature: 0.5
+    momentum: 0.1
+    discount: 0.99
+    base_policy_std: 0.0
+    use_reward: 1
+    warm_start: 0
+    num_base_override: -1
+    seed_mean_from_policy: 0
+
+# SOURCE domain for collection/training; C50 TARGET for eval.
+train_domain_shift:
+  mode: none
+eval_domain_shift:
+  mode: fixed
+  gripper_kp_scale: 0.30
+  lid_damping_scale: 50.0
+  mass_scale: 3.0
+  friction_scale: 0.5
+  pod_holder_friction_scale: 2.0
+  mask_hole_offset_in_obs: false
+
+strict_success:
+  enabled: false

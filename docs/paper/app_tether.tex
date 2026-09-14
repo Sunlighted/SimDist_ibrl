@@ -1,0 +1,171 @@
+\subsection{Tether variants}
+\label{app:tether}
+
+This appendix defines the nine variants compared in
+Fig.~\ref{fig:ablation}(b) and states the calibration protocol that makes them
+comparable.
+
+\paragraph{A general form.}
+Every variant is an instance of
+\begin{equation}
+\mathcal{L}_{\mathrm{tether}}(\theta) \;=\; \lambda\,
+\mathbb{E}_{s\sim\mathcal{D}}\Big[\,
+g\big(\lVert M\,(\pi_\theta(s)-\pi_{\mathrm{ref}}(s))\rVert_2\big)\Big],
+\label{eq:tether-general}
+\end{equation}
+which exposes exactly four free positions: the shape $g$ of the penalty, the
+state distribution $\mathcal{D}$ on which proximity is measured, the metric $M$
+on action space, and the reference $\pi_{\mathrm{ref}}$ the proposal is pulled
+towards. The deployed setting is $g(x)=x^2$, $\mathcal{D}=\mathcal{D}^d_s$,
+$M=I$ and $\pi_{\mathrm{ref}}=\pi_s$. Block~(i) of
+Fig.~\ref{fig:ablation}(b) varies $g$ and $M$, block~(ii) varies $\mathcal{D}$,
+and block~(iii) varies $\pi_{\mathrm{ref}}$. A fifth degree of freedom --
+penalising single-step actions versus whole trajectories -- is left untested.
+
+\paragraph{The lift scale $\sigma$.}
+The policy head is a deterministic $\tanh$-MLP, so it has no density and no
+divergence can be taken between two of its outputs directly. The only way to
+speak of a divergence is to lift both policies to isotropic Gaussians
+$\mathcal{N}(\pi(s),\sigma^2 I)$ sharing one width $\sigma$. We stress that
+$\sigma$ is a property of this lift and not of the policy: nothing in the method
+samples from it, no loss estimates it, and it may be chosen freely. Its only
+role is to set the scale against which a deviation counts as large, so the
+divergences below depend on $\pi_\theta$ and $\pi_s$ only through the
+dimensionless ratio $d(s)/\sigma$, with
+$d(s) = \lVert\pi_\theta(s)-\pi_s(s)\rVert_2$.
+
+\paragraph{Why the name of the $f$-divergence is not a design choice.}
+For two equal-covariance Gaussians every standard divergence is a function of
+$d$ alone:
+\begin{equation}
+\mathrm{KL} = \frac{d^2}{2\sigma^2},\quad
+W_2^2 = d^2,\quad
+H^2 = 1-e^{-d^2/8\sigma^2},\quad
+\mathrm{TV} = 2\Phi\!\Big(\frac{d}{2\sigma}\Big)-1,\quad
+\chi^2 = e^{d^2/\sigma^2}-1 ,
+\label{eq:divergences}
+\end{equation}
+with $\Phi$ the standard normal CDF. Two consequences follow, and together they
+determine which arms are worth running.
+
+First, all five agree to leading order: each equals $c\,d^2/\sigma^2 +
+\mathcal{O}\big((d/\sigma)^4\big)$ for a constant $c$ that $\lambda$ absorbs.
+Whenever the proposal stays well inside the lift scale they are the \emph{same}
+penalty, and $W_2^2$ is not even approximately but exactly the deployed squared
+$L_2$. So ``use KL instead'' or ``use $W_2$ instead'' does not name a different
+method here; it names the method we already run, which is why
+Fig.~\ref{fig:ablation}(b) labels that row \emph{squared $L_2$ / KL} rather than
+listing KL and $W_2$ as separate arms.
+
+Second, where they do differ --- at deviations comparable to or larger than
+$\sigma$ --- they differ only through the \emph{shape} $g$ of
+Eq.~\ref{eq:tether-general}, and that shape has three qualitative regimes:
+sub-quadratic and bounded, so that far-drifted states are progressively released
+($H^2$, and $\mathrm{TV}$, which saturates likewise); quadratic, so that every
+state keeps pulling in proportion ($\mathrm{KL}$, $W_2$); and super-quadratic,
+so that a deviation past some scale is what the loss is about ($\chi^2$, and the
+hinge). The experiment therefore varies the shape axis rather than enumerating
+names, taking one representative per regime: the saturating penalty for the
+first, the deployed squared $L_2$ for the second, and a hard trust region for
+the third. We use the hinge rather than $\chi^2$ for the super-quadratic regime
+because $e^{d^2/\sigma^2}$ has unbounded gradient and would confound the shape
+with an optimisation failure, whereas the hinge realises the same
+``free until a threshold, then punished'' behaviour with a bounded curvature and
+is the standard trust region of TRPO. $\mathrm{TV}$ is not run separately: it is
+a monotone reparametrisation of a saturating penalty and would duplicate $H^2$.
+
+What is \emph{not} interchangeable is the second-order structure. For a Gaussian
+policy with fixed $\sigma$ the Fisher information is $F = G/\sigma^2$, where $G$
+is the Gauss--Newton matrix of the policy output on $\mathcal{D}^d_s$, so the
+deployed penalty is a KL trust region measured in the correct Fisher metric.
+That is the metric $M$ of Eq.~\ref{eq:tether-general}, and it is what the
+\emph{parameter-space $L_2$} and \emph{weight decay} rows give up.
+
+\paragraph{(i) The shape $g$ and the metric $M$.}
+Let $d(s) = \lVert \pi_\theta(s)-\pi_s(s)\rVert_2$.
+\begin{itemize}\itemsep2pt
+\item \textbf{Squared $L_2$ / KL (ours).} $g(x)=x^2$, i.e.
+      $\lambda\,\mathbb{E}_s[d(s)^2]$. Quadratic in the deviation, so every
+      state contributes and large deviations dominate.
+\item \textbf{Saturating (Hellinger$^2$).}
+      $g(x) = 1-e^{-x^2/\tau}$, i.e. $\lambda\,\mathbb{E}_s[1-e^{-d(s)^2/\tau}]$,
+      exactly $H^2$ from Eq.~\ref{eq:divergences} with $\tau = 8\sigma^2$; the
+      calibrated $\tau$ is thus a statement about where the saturation knee
+      sits, and $\tau\to\infty$ recovers the deployed squared penalty. States
+      that have already drifted far are progressively released, which makes
+      this arm the mirror image of the hinge on the $g$ axis.
+\item \textbf{Trust region (hinge).} $g(x) = \mathrm{relu}(x-\epsilon)^2$, i.e.
+      $\lambda\,\mathbb{E}_s[\mathrm{relu}(d(s)-\epsilon)^2]$: a soft-penalty
+      realisation of the hard constraint $\mathrm{KL}\le\delta$ of TRPO, with
+      $\epsilon = \sigma\sqrt{2\delta}$. Deviations below $\epsilon$ are free.
+      The two hinge rows share this form exactly and differ only in the radius
+      of that free zone, but the radius decides what the penalty is for.
+      With $\epsilon=0.05$, comparable to the working point itself, most states
+      still sit outside the free zone and the arm behaves like the deployed
+      quadratic penalty, which is what it scores. With $\epsilon=0.20$, several
+      times the working point, almost every state is free and the penalty has
+      no grip on the bulk of the distribution; calibration compensates by
+      raising $\lambda$ from $0.3$ to $100$, so the loss becomes zero for
+      typical states and enormous for the few beyond the radius. It stops
+      tethering a distribution and starts clipping outliers, and the diagnostics
+      say so: it is the only variant that never quite reaches the working point
+      ($D_{\mathrm{src}}=0.031$ against $0.025$--$0.027$ elsewhere), it pays
+      $1.9\times$ the cloning loss of the tight setting ($0.026$ vs $0.014$),
+      and it produces the \emph{thinnest} deviation tail of any arm --- which,
+      together with its $11$-point deficit, is one of the observations that
+      rules out tail shape as the causal channel.
+\item \textbf{Parameter-space $L_2$.} $c\,\lVert\theta-\theta_s\rVert_2^2$,
+      where $\theta_s$ are the stage-1 policy-head weights. This is the same KL
+      trust region with the Fisher metric replaced by the identity. It is the
+      only row that changes $M$ rather than $g$, and it is expensive: the
+      fine-tuning update lies almost entirely in directions to which the policy
+      output is insensitive, so an isotropic parameter penalty cannot tell those
+      directions apart and has to shrink all of them, paying roughly
+      $3.4\times$ the cloning loss for the same proximity.
+\item \textbf{Weight decay.} Adam \texttt{weight\_decay} on the policy head.
+      This is not a divergence at all: its attractor is $\theta=0$, not
+      $\theta_s$. As the coefficient grows the policy is driven towards
+      $\pi_\theta\equiv 0$, whose distance to the source policy is
+      $\mathbb{E}_s\lvert\pi_s(s)\rvert$, and the achievable proximity bottoms
+      out an order of magnitude short of the working point before turning back
+      up. Generic capacity control cannot produce a policy close to $\pi_s$;
+      naming $\pi_s$ as the reference is necessary.
+\end{itemize}
+
+\paragraph{(ii) The state distribution $\mathcal{D}$.}
+The deployed setting measures proximity on all of $\mathcal{D}^d_s$, the same
+source data the world model was fit on. The variant restricts it to the steps
+that carry both an expert flag and a success flag ($14.6\%$ of transitions) --
+the subset on which $\pi_s$ itself was cloned, and therefore the subset where
+the recorded actions are closest to $\pi_s$.
+
+\paragraph{(iii) The reference $\pi_{\mathrm{ref}}$.}
+The deployed setting pulls towards the frozen source policy $\pi_s$ evaluated at
+$s$. The variants replace it with the action recorded in the source dataset at
+that transition, either over all of $\mathcal{D}^d_s$ or over the
+expert\,$\wedge$\,success subset. Recorded actions carry a systematic offset
+from $\pi_s$ -- an elementwise $0.170$ over the full dataset -- which no
+coefficient removes, so that arm cannot reach the working point at any
+$\lambda$. Filtering to expert\,$\wedge$\,success cuts the offset to $0.025$ and
+does restore the working point, which is why the two rows in block~(iii) fail
+for different reasons.
+
+\paragraph{Calibration.}
+A larger $\lambda$ trivially buys proximity to $\pi_s$, so comparing the
+variants at a common coefficient would compare strengths rather than forms.
+Before any target interaction we therefore run stage~2 alone for each variant
+and sweep its knob until it matches the deployed arm on
+\begin{equation}
+D_{\mathrm{src}} \;=\; \frac{1}{d_a}\,
+\mathbb{E}_{s\sim\mathcal{D}^d_s}\big\lVert
+\pi_\theta(s)-\pi_s(s)\big\rVert_1 ,
+\label{eq:dsrc}
+\end{equation}
+the elementwise mean absolute deviation from the source policy over source
+states, with $d_a$ the action dimension. Stage~3 is only run once a variant sits
+at $D_{\mathrm{src}}\approx0.025$. This is what makes the resulting
+$\lambda$ values span four orders of magnitude in
+Fig.~\ref{fig:ablation}(b): they are the output of the calibration, not a
+choice. Two variants -- weight decay and the unfiltered recorded actions --
+cannot reach the working point at any strength and are reported at their
+attainable floor; for those rows the floor \emph{is} the result.

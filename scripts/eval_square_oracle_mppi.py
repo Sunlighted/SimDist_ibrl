@@ -192,6 +192,33 @@ def main():
                          "then differs between this arm and a SimDist adapt run, "
                          "which is what isolates dynamics error. Default 0 keeps "
                          "the held-action seed bit-for-bit.")
+    ap.add_argument("--base_real_rollout", type=int, default=0,
+                    help="Build the base candidate SEQUENCES by rolling the "
+                         "proposal closed-loop through the REAL simulator (a "
+                         "probe env stepped in this process), instead of through "
+                         "a learned world model (--simdist_base_rollout) or by "
+                         "holding one action for H steps. Takes precedence over "
+                         "--simdist_base_rollout. Two reasons to prefer it here: "
+                         "(1) --simdist_base_rollout leaves a LEARNED component "
+                         "inside an arm whose entire point is zero model error; "
+                         "(2) a BC proposal has no world model, so it is the only "
+                         "construction that a SimDist head and a BC head can "
+                         "BOTH use -- which is what makes 'swap the proposal' a "
+                         "single-variable change. Costs H sequential sim steps "
+                         "per plan call plus one extra GL context.")
+    ap.add_argument("--proposal_bc_ckpt", default="",
+                    help="Take the PROPOSAL from a plain BC policy (train_bc.py) "
+                         "instead of an expert or a SimDist head -- e.g. a policy "
+                         "BC'd on the 20 TARGET demos, whose bare score is ~0.2. "
+                         "This is the WEAK-proposal regime: the ceiling cells are "
+                         "all within 0.06 of 1.0, where an additive null is "
+                         "arithmetically forced (CLAUDE.md iron law #18), so a "
+                         "proposal with real headroom is the only way to see "
+                         "whether the planner is buying anything. NOTE: a BC "
+                         "policy has no world model, so --simdist_base_rollout is "
+                         "unavailable and the base seeds fall back to the "
+                         "held-action construction -- pass --base_policy_std > 0 "
+                         "or all `num_base` seeds are identical copies.")
     ap.add_argument("--value_weight", default="",
                     help="Take the terminal value from THIS agent instead of the "
                          "source expert (proposal still comes from --weight). "
@@ -253,6 +280,15 @@ def main():
             probe = PixelRobosuite(**{**env_params, "device": "cpu"})
             probe.reset()
 
+    # The base-seed rollout is closed-loop, so it cannot go through the pool
+    # (workers only replay a fixed action sequence); it needs its own env here.
+    base_probe = None
+    if args.base_real_rollout and "oracle" in arms:
+        base_probe = probe if probe is not None else PixelRobosuite(
+            **{**env_params, "device": "cpu"})
+        base_probe.reset()
+        log("[setup] BASE SEEDS = proposal rolled closed-loop in the REAL sim")
+
     A = main_env.action_dim
     H = args.horizon
     dev = "cuda"
@@ -283,7 +319,7 @@ def main():
             p.requires_grad_(False)
         wm = sd_agent.to("cuda").model
         log(f"[setup] VALUE = distilled V_hat from {args.simdist_ckpt} "
-            f"(proposal from {'--proposal_simdist_ckpt' if args.proposal_simdist_ckpt else 'the expert'})")
+            f"(proposal from {'--proposal_simdist_ckpt' if args.proposal_simdist_ckpt else '--proposal_bc_ckpt' if args.proposal_bc_ckpt else 'the expert'})")
     prop_wm = None
     if args.proposal_simdist_ckpt:
         import pyrallis as _pyr2
@@ -310,6 +346,27 @@ def main():
         log(f"[setup] PROPOSAL = SimDist policy head from "
             f"{args.proposal_simdist_ckpt} (env + value still from --weight)")
 
+    prop_bc = None
+    if args.proposal_bc_ckpt:
+        assert not args.proposal_simdist_ckpt, \
+            "--proposal_bc_ckpt and --proposal_simdist_ckpt both set a proposal"
+        import train_bc as _tbc
+        # Reuse main_env for the obs/action shapes; building a second
+        # PixelRobosuite would cost another GL context for nothing
+        # (memory gotcha-gpu-density-mppi-runs).
+        prop_bc = _tbc._load_model(args.proposal_bc_ckpt, main_env, "cuda")
+        prop_bc.train(False)
+        for p_ in prop_bc.parameters():
+            p_.requires_grad_(False)
+        if args.simdist_base_rollout:
+            log("[setup] WARNING --simdist_base_rollout ignored: a BC proposal "
+                "has no world model to roll through; base seeds are held-action.")
+        if args.base_policy_std <= 0:
+            log("[setup] WARNING base_policy_std=0 with a held-action base => all "
+                f"{args.num_base} base candidates are IDENTICAL copies.")
+        log(f"[setup] PROPOSAL = BC policy from {args.proposal_bc_ckpt} "
+            f"(env + value still from --weight)")
+
     if args.value_weight:
         value_agent, _ve, _vp = train_rl.load_model(args.value_weight, "cuda")
         value_agent.train(False)
@@ -317,6 +374,24 @@ def main():
             p.requires_grad_(False)
         log(f"[setup] VALUE from {args.value_weight} "
             f"(proposal still from {args.weight})")
+
+    def base_seq_real(state2d, num, H, sim_state):
+        """[H, num, A] base seeds from a closed-loop rollout in the REAL sim.
+
+        Same closed loop as SimDist's own _policy_rollout, with the learned
+        model replaced by the simulator: query the proposal, step, re-query at
+        the state the simulator actually produced. Every proposal can do this
+        (a BC head has no world model to roll through), and it keeps the oracle
+        arm free of learned dynamics everywhere, not just in the scoring."""
+        restore(base_probe, sim_state)
+        s = state2d
+        acts = []
+        for _ in range(H):
+            a = proposal_action(s)                       # [1, A]
+            acts.append(a)
+            obs, _, _, _, _ = base_probe.step(a.view(-1).detach().cpu())
+            s = obs["state"].to(dev).view(1, -1)
+        return torch.stack(acts, dim=0).expand(H, num, A).clone()
 
     def base_seq(state2d, num, H):
         """[H, num, A] base candidate sequences.
@@ -344,6 +419,8 @@ def main():
         never drift apart."""
         if prop_wm is not None:
             return prop_wm.policy_action(state2d)
+        if prop_bc is not None:
+            return prop_bc.forward({"state": state2d}).detach()
         return agent_action(agent, state2d)
 
     def value_fn(states):                       # [N, obs] -> [N]
@@ -361,7 +438,9 @@ def main():
         # closed-loop expert rollout would need a probe env stepped outside the
         # pool; the held action is the same open-loop seed SimDist's policy
         # rollout provides, and CEM refines it over `iterations`.)
-        base = base_seq(state.view(1, -1), args.num_base, H)
+        base = (base_seq_real(state.view(1, -1), args.num_base, H, sim_state)
+                if base_probe is not None
+                else base_seq(state.view(1, -1), args.num_base, H))
         if args.base_policy_std > 0:
             base = (base + torch.randn_like(base) * args.base_policy_std).clamp(-1, 1)
 

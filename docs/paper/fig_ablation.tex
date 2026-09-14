@@ -21,11 +21,11 @@ tether & strength & $D_{\mathrm{src}}$ & SR @50k \\
 \quad squared $L_2$ / KL \textbf{(ours)}
                             & $\lambda{=}1$        & $0.025^{\dagger}$ & \textbf{94.4} \pmsd{1.1}$^{\ddagger}$ \\
 \quad saturating (Hellinger$^2$)
-                            & $\tau{=}0.03$        & $0.025$ & 96.0 \pmsd{1.4} \\
-\quad trust region (hinge)  & $\epsilon{=}0.05$    & $0.027$ & 93.6 \pmsd{3.1} \\
-\quad trust region, wide    & $\epsilon{=}0.20$    & $0.031$ & 82.9 \pmsd{5.9} \\
-\quad parameter-space $L_2$ & $c{=}0.25$           & $0.025$ & 72.1 \pmsd{6.1} \\
-\quad weight decay          & $10^{-3}$            & $0.209$ & 77.7 \pmsd{8.7} \\
+                            & \twoknob{$\tau{=}.03$}{$\lambda{=}.013$} & $0.025$ & 96.0 \pmsd{1.4} \\
+\quad trust region, tight  & \twoknob{$\epsilon{=}.05$}{$\lambda{=}.3$} & $0.027$ & 93.6 \pmsd{3.1} \\
+\quad trust region, wide   & \twoknob{$\epsilon{=}.20$}{$\lambda{=}100$} & $0.031$ & 82.9 \pmsd{5.9} \\
+\quad parameter-space $L_2$ & $\lambda{=}0.25$      & $0.025$ & 72.1 \pmsd{6.1} \\
+\quad weight decay          & $\mathrm{wd}{=}10^{-3}$ & $0.209$ & 77.7 \pmsd{8.7} \\
 \addlinespace[1pt]
 \multicolumn{4}{@{}l}{\emph{(ii) which states} --- target $\pi_s$}\\
 \quad expert\,$\wedge$\,success only
@@ -54,7 +54,13 @@ tether & strength & $D_{\mathrm{src}}$ & SR @50k \\
   $D_{\mathrm{src}} = \mathbb{E}_{s \sim \mathcal{D}^d_s}\lVert
   \pi_\theta(s)-\pi_s(s)\rVert_1 / d_a$, as the deployed setting. Without this
   step a comparison of \emph{forms} is confounded by \emph{strength}. Only then
-  is stage~3 run. Matching $D_{\mathrm{src}}$ is what makes rows (i)
+  is stage~3 run. In the strength column the shape parameter ($\tau$,
+  $\epsilon$) is fixed by design and $\lambda$ is the quantity the sweep
+  sets, which is why it spans four orders of magnitude; a row showing a
+  single entry has no shape parameter, and weight decay is written
+  $\mathrm{wd}$ because its attractor is $\theta{=}0$ rather than $\pi_s$,
+  so it is not a $\lambda$ in the sense of Eq.~\ref{eq:tether}.
+  Matching $D_{\mathrm{src}}$ is what makes rows (i)
   comparable, and the two rows that cannot reach the working point at any
   strength --- weight decay ($0.209$) and the recorded dataset action
   ($0.154$) --- are reported at their attainable floor and fail for that reason.
