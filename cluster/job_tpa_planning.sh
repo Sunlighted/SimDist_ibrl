@@ -15,6 +15,9 @@
 #
 #   tpa_plan_plain_nd20        single-head stage-1, NO anchor (bc_anchor_coef 0)
 #   tpa_plan_dynens_anch3_nd20 5-head stage-1, anchor lambda=3
+#   tpa_valabl_{joint,v2d,d2v,marg}_nd20   the value-adapt ablation, all on the
+#                              dynens + lambda=3 recipe; cell (i) "dynamics only"
+#                              IS tpa_plan_dynens_anch3_nd20, not re-run
 #
 # Both use the utd200 stage-3 update (--dyn_update_steps 200), the variant that
 # removed TPA's early stage-3 collapse 3/3 seeds (memory
@@ -133,12 +136,18 @@ POOL=release/data/mimicgen/tpa_anchor_pool_4k/dataset.hdf5
 STAGE1_PLAIN=exps/mimicgen/tpa_simdist_plain_diversev1_h5_seed1/latest.pt
 STAGE1_DYNENS=exps/mimicgen/tpa_simdist_diversev1_h5_seed1/latest.pt
 
-EXP_DIR=${EXP_DIR:-exps/tpa_planning}
+case $ARM in
+  tpa_valabl_*) EXP_DIR=${EXP_DIR:-exps/valabl_tpa} ;;
+  *)            EXP_DIR=${EXP_DIR:-exps/tpa_planning} ;;
+esac
 OUT=$EXP_DIR/${ARM}_seed${SEED}
 
 case $ARM in
-  tpa_plan_plain_nd*)       STAGE1=$STAGE1_PLAIN;  LAM=0.0 ;;
+  tpa_plan_plain_nd*)        STAGE1=$STAGE1_PLAIN;  LAM=0.0 ;;
   tpa_plan_dynens_anch3_nd*) STAGE1=$STAGE1_DYNENS; LAM=3.0 ;;
+  # value ablation: same stage-1 / anchor as the dynens planning arm, only the
+  # heads that move (and their order) change.
+  tpa_valabl_*_nd*)          STAGE1=$STAGE1_DYNENS; LAM=3.0 ;;
   *) echo "unknown arm '$ARM'"; exit 1 ;;
 esac
 # the arm name carries the demo count; refuse a mismatch with ND
@@ -149,13 +158,68 @@ for f in "$STAGE1" "$DEMOS" "$POOL" "$(dirname "$STAGE1")/cfg.yaml"; do
 done
 echo "[setup] stage1=$STAGE1 lambda=$LAM demos=$DEMOS nd=$ND"
 
-$PY train_simdist_adapt.py --stage1_ckpt "$STAGE1" --save_dir "$OUT" --seed "$SEED" \
-  --target_demo_path "$DEMOS" --target_num_data "$ND" \
-  --bc_anchor_coef "$LAM" --bc_anchor_path "$POOL" \
+COMMON="--stage1_ckpt $STAGE1 --seed $SEED \
+  --target_demo_path $DEMOS --target_num_data $ND \
+  --bc_anchor_coef $LAM --bc_anchor_path $POOL \
   --dyn_update_steps 200 \
-  --planner_set "init_std=0.15" --original_mppi 1 \
+  --planner_set init_std=0.15 --original_mppi 1 \
   --collect_disagree_coef 0.0 --dyn_anchor_coef 0.0 \
-  --max_transitions 100000 --adapt_interval 1000 \
+  --adapt_interval 1000 \
   --eval_every_rounds 10 --num_eval_episode 50 --num_eval_proc 10 \
   --eval_policy_only 1 \
-  --use_wb "$USE_WB" --state_only_no_render 1
+  --use_wb $USE_WB --state_only_no_render 1"
+
+case $ARM in
+  tpa_plan_*)
+    $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" --max_transitions 100000 ;;
+
+  # ---- value-adapt ablation (docs/on-policy-adaptation.md 2) ---------------
+  #   valabl_dyn     (i)   dynamics only -- identical to tpa_plan_dynens_anch3,
+  #                        so it is NOT in the job list; use that arm as cell (i)
+  #   valabl_joint   (ii)  value + dynamics together, 100k
+  #   valabl_v2d     (iii) value 100k THEN dynamics 100k
+  #   valabl_d2v     (iv)  dynamics 100k THEN value 100k
+  #   valabl_marg    (v)   marginal (residual) value + dynamics, 100k
+  #
+  # The sequential arms run BOTH phases in one job (2 x 100k). Phase A writes to
+  # $OUT.phaseA and phase B warm-starts from it via --init_ckpt while KEEPING
+  # --stage1_ckpt: that path reads dirname/cfg.yaml as a MainConfig, and an adapt
+  # run writes an AdaptConfig there (gotcha-eval-adapt-ckpt-cfg-collision).
+  #
+  # ⚠️ (v) fits its residual by MSE on Monte-Carlo returns while (ii)-(iv) use the
+  # value head's two-hot CE. That is inherent: the head is categorical
+  # (discrete_heads=1, 101 bins) and a scalar residual has no logit-space
+  # counterpart, so it sits on the DECODED scalar -- the quantity MPPI ranks with.
+  #
+  # ⚠️ Expected negative. on-policy-adaptation 2 measured all three orders
+  # collapsing on Threading and findings 33 gives the mechanism (MPPI's entire
+  # candidate-discrimination signal is std_i(gamma^H V) = 0.0068 = 1.4% of range).
+  # findings 33 also notes the damage shrinks 8.7x on a dynens base, and TPA's
+  # stage-3 is dominated by rollout compounding (memory
+  # project_tpa_compounding_rho) -- so TPA is where "value adapt is harmless
+  # because dynamics error dominates" would show up if it is true anywhere.
+  # This is the three-task confirmation, not a search.
+  #
+  # ⚠️ TIME. TPA is the slow task: the sequential arms are 2 x 100k. The 100k
+  # single-phase arms measured ~9.8 h locally at 5/100 eval; at this 10/50 cadence
+  # they are ~5-6 h, so v2d/d2v need ~11-12 h -- inside the 14 h wall, but there
+  # is no resume, so a preempted job restarts from zero.
+  tpa_valabl_joint_nd*)
+    $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" \
+      --adapt_mode both  --max_transitions 100000 ;;
+  tpa_valabl_marg_nd*)
+    $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" \
+      --adapt_mode both  --marginal_value 1 --max_transitions 100000 ;;
+  tpa_valabl_v2d_nd*)
+    $PY train_simdist_adapt.py $COMMON --save_dir "$OUT.phaseA" \
+      --adapt_mode value --max_transitions 100000 \
+    && $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" \
+      --adapt_mode dyn   --max_transitions 100000 \
+      --init_ckpt "$OUT.phaseA/latest.pt" ;;
+  tpa_valabl_d2v_nd*)
+    $PY train_simdist_adapt.py $COMMON --save_dir "$OUT.phaseA" \
+      --adapt_mode dyn   --max_transitions 100000 \
+    && $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" \
+      --adapt_mode value --max_transitions 100000 \
+      --init_ckpt "$OUT.phaseA/latest.pt" ;;
+esac
