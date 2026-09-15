@@ -124,7 +124,7 @@ python train_simdist_adapt.py \
     --bc_anchor_coef "${ANCHOR_COEF:-1.0}" \
     --bc_train_encoder "${BC_TRAIN_ENC:-0}" \
     --bc_anchor_path "$ANCHOR" \
-    --dyn_anchor_coef "${DYN_ANCHOR_COEF:-0.1}" \
+    --dyn_anchor_coef "${DYN_ANCHOR_COEF:-0.0}" \
     --dyn_anchor_path "$ANCHOR" \
     --max_transitions "${MAX_TRANS:-100000}" \
     --adapt_interval "${INTERVAL:-1000}" \

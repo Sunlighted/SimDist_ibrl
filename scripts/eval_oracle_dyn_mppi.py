@@ -346,6 +346,15 @@ def main():
                          "which planner.plan feeds decode(z) (simdist_planner.py:207). "
                          "So the gap to the plain V_hat cell is the decode round trip "
                          "alone. Run it with --arms learned only.")
+    ap.add_argument("--demo_path_override", default="",
+                    help="Point the workspace's TARGET demo buffer at this dataset "
+                         "when the run's own one is gone. AdaptWorkspace loads that "
+                         "buffer at construction, but it is TRAINING-side only "
+                         "(stage-2 BC / stage-3 batches / _anchor_far_weights); this "
+                         "script never samples it, so the override cannot change an "
+                         "eval number -- it only lets the workspace build. Needed for "
+                         "threading_simdist_adapt_long_h5_seed1, whose "
+                         "threading_d0_target_dynamics went with release/data.")
     ap.add_argument("--base_open_loop", type=int, default=0,
                     help="Hold the policy's FIRST action for all H steps instead "
                          "of re-querying it along the imagined rollout (oracle arm "
@@ -456,6 +465,10 @@ def main():
     cfg.use_wb = 0
     cfg.mp_eval = 0
     cfg.save_dir = "/tmp/claude-1003/-home-Chenyang-ibrl/08677077-8099-4d03-9973-403b524caa19/scratchpad/oracle_ws"
+    if args.demo_path_override:
+        log(f"[setup] DEMO PATH OVERRIDE (training-side buffer only, not read by eval): "
+            f"{cfg.target_demo_path} -> {args.demo_path_override}")
+        cfg.target_demo_path = args.demo_path_override
     ws = AdaptWorkspace(cfg)
     base_sd = torch.load(os.path.join(args.run_dir, args.ckpt))
     if args.policy_from:

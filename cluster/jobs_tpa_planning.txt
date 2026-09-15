@@ -1,0 +1,21 @@
+# arm seed   (lines 1-10 plain no-anchor, 11-20 dynens + anchor 3; 20 demos)
+tpa_plan_plain_nd20 1
+tpa_plan_plain_nd20 101
+tpa_plan_plain_nd20 201
+tpa_plan_plain_nd20 301
+tpa_plan_plain_nd20 401
+tpa_plan_plain_nd20 501
+tpa_plan_plain_nd20 601
+tpa_plan_plain_nd20 701
+tpa_plan_plain_nd20 801
+tpa_plan_plain_nd20 901
+tpa_plan_dynens_anch3_nd20 1
+tpa_plan_dynens_anch3_nd20 101
+tpa_plan_dynens_anch3_nd20 201
+tpa_plan_dynens_anch3_nd20 301
+tpa_plan_dynens_anch3_nd20 401
+tpa_plan_dynens_anch3_nd20 501
+tpa_plan_dynens_anch3_nd20 601
+tpa_plan_dynens_anch3_nd20 701
+tpa_plan_dynens_anch3_nd20 801
+tpa_plan_dynens_anch3_nd20 901

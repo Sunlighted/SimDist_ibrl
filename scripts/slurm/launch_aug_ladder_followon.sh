@@ -25,7 +25,7 @@
 #   seed all rungs share the draw => paired deltas (~0.027); across seeds the
 #   draws differ => the error bar on the mean delta carries 0.092 honestly.
 # ★ Budget is IDENTICAL on every arm or cmp_adapt_runs.py refuses to compare:
-#   NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 DYN_ANCHOR_COEF=0.1.
+#   NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 DYN_ANCHOR_COEF=0.0.
 #   INTERVAL=2000 is the MINIMUM that reaches 100k inside 23:59 -- raise INTERVAL
 #   if you ever must economise, NEVER EVAL_N (it drives TopkSaver selection, so
 #   changing it is a protocol change; iron law #15 / §46i).
@@ -78,7 +78,7 @@ for rung_spec in $RUNGS; do
           DEMOS="$DEMOS" ANCHOR="$ANCHOR_POOL" \
           SAVE="$ADAPT_DIR" \
           NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 \
-          DYN_ANCHOR_COEF=0.1 ANCHOR_COEF="$COEF" DEMO_OFFSET="$OFF" \
+          DYN_ANCHOR_COEF=0.0 ANCHOR_COEF="$COEF" DEMO_OFFSET="$OFF" \
           sb --parsable --job-name="a48${RUNG}s${SEED}" \
                  --time=23:59:00 --mem=96G --cpus-per-task=12 \
                  --account="$ACCT" scripts/slurm/adapt.slrm)

@@ -100,7 +100,7 @@ python train_simdist_adapt.py \
     --bc_anchor_coef 1.0 \
     --bc_anchor_path "$PIXREPLAY" \
     --bc_anchor_episodes 20 --bc_anchor_states 512 --bc_anchor_batch 32 \
-    --dyn_anchor_coef 0.1 \
+    --dyn_anchor_coef 0.0 \
     --dyn_anchor_path "$PIXREPLAY" \
     --dyn_anchor_episodes 20 --dyn_anchor_states 512 --dyn_anchor_batch 32 \
     --max_transitions 900 \
