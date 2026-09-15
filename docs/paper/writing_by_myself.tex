@@ -189,41 +189,17 @@ Method & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & 
 \subsection{What Makes Dyna Work: reducing the model error and keeping the collected data near the prior}
 \label{sec:two-conditions}
 
-\begin{table*}[t]
+% Channel decomposition (Table) beside the ceiling experiment (Figure): one float,
+% two independently numbered captions. The dose-response half of the old
+% tab:margin now lives in the appendix as tab:app-margin-dose.
+\begin{figure*}[t]
 \centering
-\caption{%
-  \textbf{What the prior-preference margin buys, and through which channel.}
-  \textbf{(a)} Sweeping the margin $m$ produces an inverted U: at $m=0$ the
-  learned actor takes over before the critic can rank it and the arm collapses;
-  at $m=0.1$ it never takes over and the arm reproduces the prior exactly (win
-  rate $0.00$ throughout). \textbf{(b)} The margin is applied in the channels
-  marked $\checkmark$ and zeroed elsewhere; the evaluated policy is identical in
-  all four rows, so the arms differ only in what happened during training.
-  Removing it from the TD target is free; removing it from the data channels is
-  not. ``win rate'' is the fraction of steps at which the actor wins the argmax,
-  reported separately for collection and for the backup.
-  [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
-  in-training eval.]
-}
-\label{tab:margin}
-\begin{minipage}[t]{0.40\textwidth}
+\begin{minipage}[t]{0.57\textwidth}
+\captionsetup{type=table}
 \centering
-\small (a) dose--response (no demonstrations)\\[2pt]
-\begin{tabular}{lccc}
-\toprule
-$m$ & SR @100k & $N_{50}\downarrow$ & win rate (collect) \\
-\midrule
-$0$     & \ph{0.00} & \ph{---}  & \ph{0.68} \\
-$0.01$  & \ph{\textbf{0.87}} & \ph{\textbf{20k}} & \ph{0.07} \\
-$0.05$  & \ph{0.77} & \ph{---}  & \ph{0.01} \\
-$0.1$   & \ph{0.62} & \ph{---}  & \ph{0.00} \\
-\bottomrule
-\end{tabular}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.56\textwidth}
-\centering
-\small (b) which channel the margin acts through ($m=0.01$)\\[2pt]
-\begin{tabular}{lccccc}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}cccccc@{}}
 \toprule
 \multicolumn{2}{c}{margin applied in} & & & \multicolumn{2}{c}{win rate} \\
 \cmidrule(lr){1-2}\cmidrule(lr){5-6}
@@ -235,13 +211,36 @@ $\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
 ---          & ---          & \ph{0.630} & \ph{85k} & \ph{0.81} & \ph{0.65} \\
 \bottomrule
 \end{tabular}
+\caption{%
+  \textbf{Which channel the prior-preference margin acts through} ($m=0.01$).
+  The margin is applied in the channels marked $\checkmark$ and zeroed
+  elsewhere; the evaluated policy is identical in all four rows, so the arms
+  differ only in what happened during training. Removing it from the TD target
+  is free; removing it from the data channels is not. ``Win rate'' is the
+  fraction of steps at which the actor wins the argmax, reported separately for
+  collection and for the backup. The dose--response over $m$ is in
+  Appendix Table~\ref{tab:app-margin-dose}.
+  [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
+  in-training eval.]
+}
+\label{tab:margin-channel}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.40\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figs/ceiling_3task.pdf}
+\caption{%
+  \textbf{Ceiling exp}
+}
+\label{fig:ceiling}
 \end{minipage}
-\end{table*}
-
+\end{figure*}
 
 Once value transfer is equalized, the remaining gap between model-based and model-free methods must originate in properties that only a world model can provide. We first suspected that errors within the world model itself affect adaptation; i.e., the data it generates in the latent space are insufficiently accurate. The asymptote experiment in [] reveals this issue: when the target-domain budget is increased well beyond the default allocation, model-free IBRL (with value transfer) continues to improve and eventually converges to optimality. In contrast, both Dyna and planning variants plateau instead, indicating that this plateau is related to model accuracy rather than the budget. We made a minor modification to Dyna to improve its accuracy: using an ensemble model instead of a single model. Experiments demonstrate that this modification brings improvements, yet Dyna's adaptation speed remains slower than that of IBRL.
 
-The second factor we find is the distribution of the data that the agent collects while adapting. Dyna-IBRL selects actions through the IBRL argmax (Eq.~\ref{eq:ibrl}), and we add a preference margin $m$ that requires the learned actor to beat the prior by at least $m$ before it is executed. After sweeping $m$, we find $m=0.01$ is the best for IBRL adaptation, as it effectively uses the prior to warm up. When $m$ reduces (like $m=0$), the actor wins the argmax immediately,
+
+
+
+The second factor we find is the distribution of the data that the agent collects while adapting. Dyna-IBRL selects actions through the IBRL argmax (Eq.~\ref{eq:ibrl}), and we add a preference margin $m$ that requires the learned actor to beat the prior by at least $m$ before it is executed. After sweeping $m$ (Appendix Table~\ref{tab:app-margin-dose}), we find $m=0.01$ is the best for IBRL adaptation, as it effectively uses the prior to warm up. When $m$ reduces (like $m=0$), the actor wins the argmax immediately,
 before the critic can meaningfully rank either candidate, and the policy needs more budget to learn to be optimal. When $m$ increases (like $m=0.1$), the actor never wins the argmax at
 any logging point, so the prior carries every episode and little adaptation occurs, and policy performance improves slowly. 
 
@@ -816,7 +815,34 @@ weighting temperature $\beta$ & $3.0$ \\
 [Computational Cost]
 
 \section{Supplementary experiments}
-[which channel the margin acts through ($m=0.01$)]
+
+\subsection{Prior-preference margin: dose--response}
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Sweeping the prior-preference margin $m$ in Dyna-IBRL produces an
+  inverted U} (no demonstrations). At $m=0$ the learned actor takes over before
+  the critic can rank it and the arm collapses; at $m=0.1$ it never takes over
+  and the arm reproduces the prior exactly (win rate $0.00$ throughout). The
+  channel through which the best setting, $m=0.01$, acts is decomposed in
+  Table~\ref{tab:margin-channel}.
+  [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
+  in-training eval.]
+}
+\label{tab:app-margin-dose}
+\begin{tabular}{lccc}
+\toprule
+$m$ & SR @100k & $N_{50}\downarrow$ & win rate (collect) \\
+\midrule
+$0$     & \ph{0.00} & \ph{---}  & \ph{0.68} \\
+$0.01$  & \ph{\textbf{0.87}} & \ph{\textbf{20k}} & \ph{0.07} \\
+$0.05$  & \ph{0.77} & \ph{---}  & \ph{0.01} \\
+$0.1$   & \ph{0.62} & \ph{---}  & \ph{0.00} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 [VAML, value ensemble, reduce value error all fail]
 [add more target demo to improve policy proposal success rate can not improve MPPI]]
 

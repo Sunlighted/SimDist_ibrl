@@ -1,50 +1,55 @@
 #!/bin/bash
 #SBATCH --job-name=snap_sweep
-#SBATCH --array=1-11
+#SBATCH --array=1-90
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=24G
-#SBATCH --time=2:00:00
+#SBATCH --time=1:30:00
 #SBATCH --output=cluster/logs/%x_%A_%a.out
 #
-#   sbatch --account=def-<pi> --export=ALL,RUN=<dir>,STAGE1=<dir> \
-#          cluster/job_snapshot_sweep.sh
+#   JOBS=cluster/jobs_threading_snapsweep.txt \
+#     sbatch --account=def-<pi> --array=1-9 --export=ALL,JOBS cluster/job_snapshot_sweep.sh
 #
-# Re-score one adapt run's periodic snapshots over the EVAL-TIME grid: ensemble
-# size x pessimism coef. One array task per snapshot.
+# ONE array task = ONE wandb run = one (sweep, value, seed). It re-scores every
+# snapshot of a finished adapt run (snap_0 .. snap_100000, 11 evals of 100 games)
+# at a single eval-time setting and logs each point to wandb as it lands:
+#     project optim_threading
+#     group   <sweep><value>          e.g. penalty_planning0.01, ens_heads3
+#     name    <sweep><value>_seed<N>  e.g. penalty_planning0.01_seed1
+#     keys    adapt/transitions (x), score/score  -- same as the adapt runs
 #
-# WHY THIS EXISTS. Both knobs only re-score a fixed checkpoint, so sweeping them
-# inside training multiplies the wall clock of EVERY training run: a 100-episode
-# MPPI eval is 221-282 s and a 100k run has ~20 eval points, i.e. ~1.5 h per
-# extra coef or head size. Training one run with --snapshot_every_rounds 10 and
-# sweeping here costs the grid ONCE instead of once per arm. collect_disagree_coef
-# (optimistic exploration) is NOT an eval-time knob -- it changes what gets
-# collected -- so it stays as one training arm per value (optim_* in
-# job_threading_margin.sh).
+# JOBS line format:  <sweep> <value> <seed> <run_dir> <stage1_dir>
+#   sweep = penalty_planning (dynamics_disagree_coef, all heads)
+#         | ens_heads        (--dyn_heads, coef 0)
 #
-# ⚠️ evaluate/eval.py cannot read an adapt save_dir: train_simdist's load_model
-# reads cfg.yaml next to the weight, and an adapt dir's cfg.yaml is an
-# AdaptConfig dump whose `target_num_data: null` breaks MainConfig parsing. The
-# shim dir below pairs the STAGE-1 cfg.yaml with the snapshot weights -- which is
-# also the correct env, since the target is defined by the stage-1 cfg (rule 19b).
+# WHY: both knobs only re-score a fixed checkpoint, so they came out of training
+# (a sweep inside every training run doubled its wall clock). Optimistic
+# exploration (collect_disagree_coef) changes what is collected and stays as
+# training arms (optim_* in job_threading_margin.sh).
 #
-# ⚠️ HEADS can only truncate DOWN, so the run must come from a 10-head stage-1
-# (threading_simdist_dynens10_diversev2_h5_seed1 is the only one on any task).
+# Time: 11 x ~72-100 s per 100-game eval + model load ~ 15-25 min -> 1:30:00
+# stays in the b1 tier (<=3:00:00). Resumable: done snapshots are kept in
+# <run>/sweeps/<name>.tsv and the wandb id is derived from the name.
 set -uo pipefail
-
-RUN=${RUN:?set RUN=<adapt save_dir holding snap_*.pt>}
-STAGE1=${STAGE1:?set STAGE1=<stage-1 dir holding cfg.yaml>}
-HEADS=${HEADS:-1,3,5,10}
-COEFS=${COEFS:-0,0.01,0.05,0.1,0.2}
-NUM_GAME=${NUM_GAME:-100}
-MP=${MP:-10}
-SIGMA=${SIGMA:-0.1}
-STRICT=${STRICT:-1}
-PSET=${PSET:-}
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
-export WANDB_MODE=${WANDB_MODE:-offline}
+# Real-time logging was asked for, so ONLINE by default here (nibi compute nodes
+# have egress). The deadlock that made the training scripts default to offline
+# bites long-running processes; this driver is one process for ~20 min and
+# finish()es. WANDB_MODE=offline + `wandb sync` still works if needed.
+export WANDB_MODE=${WANDB_MODE:-online}
 
 cd $SLURM_SUBMIT_DIR
+WANDB_KEY_FILE=${WANDB_KEY_FILE:-$HOME/.config/wandb/key}
+if [ -z "${WANDB_API_KEY:-}" ] && [ -r "$WANDB_KEY_FILE" ]; then
+    WANDB_API_KEY=$(tr -d '[:space:]' < "$WANDB_KEY_FILE")
+fi
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export APPTAINERENV_WANDB_API_KEY="$WANDB_API_KEY"
+if [ "$WANDB_MODE" = "online" ] && [ -z "$WANDB_API_KEY" ] \
+   && ! grep -qs 'api\.wandb\.ai' "$HOME/.netrc"; then
+    echo "[wandb] no API key and no ~/.netrc entry -> falling back to WANDB_MODE=offline"
+    export WANDB_MODE=offline
+fi
 # Default to the container when the image is on disk. Requiring SIF to be
 # exported was a footgun: a submission that forgot `--export=ALL,SIF` fell
 # through to the venv branch and died 119 lines in with
@@ -94,57 +99,20 @@ echo "[env] $PY"
 
 echo "[gpu] node=$(hostname)  job=${SLURM_JOB_ID:-?}  task=${SLURM_ARRAY_TASK_ID:-?}"
 
-# ---- pick this task's snapshot -------------------------------------------
-# sort -V, not `sort -t_ -k2 -n`: the cluster path has underscores of its own
-# (SimDist_ibrl, optim_local, ...), so field 2 is not the transition count.
-mapfile -t SNAPS < <(ls "$RUN"/snap_*.pt 2>/dev/null | sort -V)
-if [ "${#SNAPS[@]}" -eq 0 ]; then
-  echo "no snap_*.pt in $RUN -- was it trained with --snapshot_every_rounds ?"
-  exit 1
+JOBS=${JOBS:?set JOBS=<job list>}
+LINE=$(grep -vE '^\s*(#|$)' "$JOBS" | sed -n "${SLURM_ARRAY_TASK_ID}p")
+if [ -z "$LINE" ]; then
+  echo "task $SLURM_ARRAY_TASK_ID past the end of $JOBS -- nothing to do"; exit 0
 fi
-IDX=$(( ${SLURM_ARRAY_TASK_ID:-1} - 1 ))
-if [ "$IDX" -ge "${#SNAPS[@]}" ]; then
-  echo "task $SLURM_ARRAY_TASK_ID past the end (${#SNAPS[@]} snapshots) -- nothing to do"
-  exit 0
-fi
-SNAP=${SNAPS[$IDX]}
-TR=$(basename "$SNAP" .pt); TR=${TR#snap_}
-echo "[sweep] snapshot $SNAP  (transitions=$TR)  of ${#SNAPS[@]}"
-
-# ---- shim dir: stage-1 cfg + this snapshot -------------------------------
-SHIM=$RUN/_eval_shim
-mkdir -p "$SHIM"
-[ -e "$SHIM/cfg.yaml" ] || ln -s "$(realpath "$STAGE1/cfg.yaml")" "$SHIM/cfg.yaml"
-[ -e "$SHIM/$(basename "$SNAP")" ] || ln -s "$(realpath "$SNAP")" "$SHIM/"
-W=$SHIM/$(basename "$SNAP")
-
-OUT=$RUN/sweep_${TR}.tsv
-: > "$OUT"
-echo -e "transitions\theads\tcoef\tsuccess\tnum_game" >> "$OUT"
-
-IFS=',' read -r -a HS <<< "$HEADS"
-IFS=',' read -r -a CS <<< "$COEFS"
-for h in "${HS[@]}"; do
-  for c in "${CS[@]}"; do
-    # --planner_set is applied AFTER --original_mppi, so the coef survives the
-    # recipe reset that --original_mppi performs.
-    P="dynamics_disagree_coef=$c"
-    [ -n "$PSET" ] && P="$P,$PSET"
-    LOG=$RUN/eval_${TR}_h${h}_c${c}.log
-    $PY evaluate/eval.py --weight "$W" --mode simdist \
-        --num_game "$NUM_GAME" --mp "$MP" \
-        --shift_from_cfg 1 --strict_success "$STRICT" \
-        --hand_init_perturb_joint_sigma "$SIGMA" \
-        --original_mppi 1 --planner_set "$P" --dyn_heads "$h" \
-        > "$LOG" 2>&1
-    SR=$(grep -oE "success rate: [0-9.]+%" "$LOG" | tail -1 | grep -oE "[0-9.]+")
-    if [ -z "$SR" ]; then
-      echo "  FAIL heads=$h coef=$c -- see $LOG"
-      tail -3 "$LOG"
-    else
-      echo -e "$TR\t$h\t$c\t$SR\t$NUM_GAME" >> "$OUT"
-      echo "  ok   heads=$h coef=$c  success=${SR}%"
-    fi
-  done
+read -r SWEEP VALUE SEED RUN STAGE1 <<< "$LINE"
+echo "[jobs] $JOBS  -> sweep=$SWEEP value=$VALUE seed=$SEED run=$RUN"
+for f in "$RUN" "$STAGE1/cfg.yaml"; do
+  [ -e "$f" ] || { echo "MISSING $f"; exit 1; }
 done
-echo "[sweep] wrote $OUT"
+ls "$RUN"/snap_*.pt >/dev/null 2>&1 || { echo "no snap_*.pt in $RUN"; exit 1; }
+
+$PY scripts/eval_snapshot_run.py --run "$RUN" --stage1 "$STAGE1" \
+    --sweep "$SWEEP" --value "$VALUE" --seed "$SEED" \
+    --project "${PROJECT:-optim_threading}" \
+    --num_game "${NUM_GAME:-100}" --mp "${MP:-10}" \
+    --python python

@@ -1,0 +1,9 @@
+thr_snap_o0.5 101
+thr_snap_o0.5 201
+thr_snap_o0.5 301
+thr_snap_o0.5 401
+thr_snap_o0.5 501
+thr_snap_o0.5 601
+thr_snap_o0.5 701
+thr_snap_o0.5 801
+thr_snap_o0.5 901

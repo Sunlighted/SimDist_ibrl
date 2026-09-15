@@ -288,6 +288,10 @@ def main():
     H = args.horizon
     dev = "cuda"
     gamma_H = args.discount ** H
+    log(f"[setup] planner N={args.num_samples} (base {args.num_base}) H={H} "
+        f"iters={args.iterations} elites={args.num_elites} temp={args.temperature} "
+        f"init_std={args.init_std} min_std={args.min_std} momentum={args.momentum} "
+        f"base_policy_std={args.base_policy_std}")
 
     # Terminal value. Defaults to the SOURCE expert (the whole point of the arm);
     # --value_weight swaps in another agent's critic while leaving the proposal
@@ -299,6 +303,14 @@ def main():
         import train_simdist
         from rl.simdist_agent import SimDistAgent
         sdir = os.path.dirname(args.simdist_ckpt)
+        # An adapt run writes an AdaptConfig, and parsing that as MainConfig dies
+        # on `target_num_data: null` (memory gotcha-eval-adapt-ckpt-cfg-collision).
+        # Follow stage1_ckpt back to the dir that holds the real MainConfig.
+        import yaml as _yaml0
+        _r0 = _yaml0.safe_load(open(os.path.join(sdir, "cfg.yaml")))
+        if isinstance(_r0, dict) and _r0.get("stage1_ckpt"):
+            sdir = os.path.dirname(_r0["stage1_ckpt"])
+            log(f"[setup] value cfg follows stage1_ckpt -> {sdir}")
         scfg = _pyr.load(train_simdist.MainConfig,  # type: ignore
                          open(os.path.join(sdir, "cfg.yaml")))
         sd_agent = SimDistAgent(True, main_env.observation_shape, main_env.prop_shape,
@@ -309,14 +321,14 @@ def main():
             p.requires_grad_(False)
         wm = sd_agent.to("cuda").model
         log(f"[setup] VALUE = distilled V_hat from {args.simdist_ckpt} "
-            f"(proposal still the expert)")
+            f"(proposal: {'--proposal_simdist_ckpt' if args.proposal_simdist_ckpt else '--proposal_bc_ckpt' if args.proposal_bc_ckpt else 'the expert'})")
     if args.value_weight:
         value_agent, _ve, _vp = train_rl.load_model(args.value_weight, "cuda")
         value_agent.train(False)
         for p in value_agent.parameters():
             p.requires_grad_(False)
         log(f"[setup] VALUE from {args.value_weight} "
-            f"(proposal still from {args.weight})")
+            f"(proposal: {'--proposal_simdist_ckpt' if args.proposal_simdist_ckpt else '--proposal_bc_ckpt' if args.proposal_bc_ckpt else args.weight})")
 
     prop_wm = None
     if args.proposal_simdist_ckpt:

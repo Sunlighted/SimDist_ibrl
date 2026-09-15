@@ -253,8 +253,12 @@ def plan_oracle(planner, model, state, probe_env, sim_state, agent, pool=None,
     z0 = model.encode(state.view(1, -1))
 
     num_base = planner._num_base()
-    base_actions = planner._policy_rollout(z0, num_base) if num_base > 0 else None
-    if base_actions is not None and OPEN_LOOP_BASE[0]:
+    if num_base > 0 and planner.base_seq_fn is not None:
+        # Same hook contract as MppiPlanner.plan: batched [B,H,num,act].
+        base_actions = planner.base_seq_fn(state.view(1, -1), num_base)[0]
+    else:
+        base_actions = planner._policy_rollout(z0, num_base) if num_base > 0 else None
+    if base_actions is not None and OPEN_LOOP_BASE[0] and planner.base_seq_fn is None:
         # DOWNGRADE the base seeds to open loop: hold the policy's FIRST action
         # for all H steps instead of re-querying it along the imagined rollout.
         # Step 0 is bit-identical to the closed-loop version (it comes from the
@@ -317,6 +321,31 @@ def main():
                          "to stage-1. Together the three options give the "
                          "proposal-provenance rows of tasks.md 41c: own head "
                          "(src+tgt) / this flag (tgt only) / --policy_from (src only).")
+    # The five knobs below were NOT exposed, so plan_oracle and planner.plan read
+    # them off the run's own planner cfg -- i.e. each task silently used its own
+    # temperature / init_std / min_std / base_policy_std / momentum. That breaks
+    # a cross-task comparison at a unified budget (tasks.md 41c uses the Square
+    # small budget on all four tasks). Default None keeps the run's value.
+    ap.add_argument("--temperature", type=float, default=None)
+    ap.add_argument("--init_std", type=float, default=None)
+    ap.add_argument("--min_std", type=float, default=None)
+    ap.add_argument("--base_policy_std", type=float, default=None)
+    ap.add_argument("--momentum", type=float, default=None)
+    ap.add_argument("--base_held", type=int, default=0,
+                    help="Base seeds = the proposal queried ONCE on the RAW state "
+                         "and held for H steps, in BOTH arms. Matches the held-action "
+                         "base of eval_square_oracle_mppi.py / eval_coffee_oracle_mppi.py. "
+                         "Stronger than --base_open_loop (oracle arm only), which still "
+                         "takes its first action from _policy_rollout(z0): with an "
+                         "external --proposal_bc_ckpt that goes through decode(z0), "
+                         "putting decode error into the BC row's base seeds alone "
+                         "(on Square the decode round trip moved scores by -0.26/+0.08).")
+    ap.add_argument("--decode_roundtrip", type=int, default=0,
+                    help="Learned-arm control for the --value_agent cells: score with "
+                         "the model's OWN V_hat, but via value_fn = V_hat(encode(.)), "
+                         "which planner.plan feeds decode(z) (simdist_planner.py:207). "
+                         "So the gap to the plain V_hat cell is the decode round trip "
+                         "alone. Run it with --arms learned only.")
     ap.add_argument("--base_open_loop", type=int, default=0,
                     help="Hold the policy's FIRST action for all H steps instead "
                          "of re-querying it along the imagined rollout (oracle arm "
@@ -482,6 +511,9 @@ def main():
     planner.discounts = (p.discount ** torch.arange(args.horizon, device="cuda")).view(args.horizon, 1)
     planner.final_discount = p.discount ** args.horizon
     p.use_reward = 0  # score by terminal value only (sparse r_hat ~ 0); same for both arms
+    for _k in ("temperature", "init_std", "min_std", "base_policy_std", "momentum"):
+        if getattr(args, _k) is not None:
+            setattr(p, _k, getattr(args, _k))
 
     ep_nr = dict(ws.eval_env_params)
     if args.shift == "jam":
@@ -678,6 +710,23 @@ def main():
         if prop_bc is not None:
             return prop_bc.forward({"state": state2d}).detach()
         return model.policy_action(state2d)
+
+    if args.base_held:
+        _Hh = p.horizon
+        def _held_base(states, num):             # batched: [B,obs] -> [B,H,num,act]
+            a = proposal_action(states)          # [B, act] on the RAW state, no decode
+            return a.view(a.shape[0], 1, 1, -1).expand(-1, _Hh, num, -1).clone()
+        planner.base_seq_fn = _held_base
+    if args.decode_roundtrip:
+        assert not args.value_agent, "--decode_roundtrip prices the V_hat path only"
+        planner.value_fn = lambda st: model.predict_value(model.encode(st), target=False).view(-1)
+        log("[setup] DECODE CONTROL: value_fn = V_hat(encode(decode(z)))")
+    log(f"[setup] planner N={p.num_samples} (base {p.num_base_override}) H={p.horizon} "
+        f"iters={p.iterations} elites={p.num_elites} temp={p.temperature} "
+        f"init_std={p.init_std} min_std={p.min_std} momentum={p.momentum} "
+        f"base_policy_std={p.base_policy_std} seed_mean_from_policy="
+        f"{getattr(p, 'seed_mean_from_policy', 0)} base="
+        f"{'held(raw state)' if args.base_held else ('open_loop' if args.base_open_loop else 'closed-loop rollout')}")
 
     sigmas = [float(s) for s in str(args.oracle_noise_sigma).split(",") if s != ""]
     # per-dim state std from a short policy rollout -> puts sigma in std units.

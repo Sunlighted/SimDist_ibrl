@@ -236,6 +236,7 @@ case $ARM in
   valabl_*)          EXP_DIR=${VALABL_DIR:-exps/valabl_threading} ;;
   lamA_*|dsrcB_*)    EXP_DIR=${LAMTUNE_DIR:-exps/lamtune_threading} ;;
   optim_*)           EXP_DIR=${OPTIM_DIR:-exps/optim_threading} ;;
+  thr_snap_*)        EXP_DIR=${SNAP_DIR:-exps/optim_local} ;;
 esac
 OUT=$EXP_DIR/${ARM}${SUFFIX}_seed${SEED}
 DEMOS=release/data/mimicgen/threading_d0_sat_160000_s${SEED}/dataset.hdf5
@@ -251,9 +252,8 @@ STAGE1_PLAIN=exps/mimicgen/threading_simdist_diversev2_h5_seed1/latest.pt
 # two stage-1s", not "ensemble averaging".
 STAGE1_DYNENS=exps/mimicgen/threading_simdist_dynens_diversev2_h5_seed1/latest.pt
 # 10-head sibling, same diverse_v2 source and horizon, trained to the same 800k
-# distill steps. Nothing in this script uses it any more -- the ensemble-size
-# sweep moved offline (--eval_dyn_heads on saved snapshots) -- but it is the only
-# 10-head checkpoint on any task, so keep the path recorded here.
+# distill steps. Used by thr_snap_o0.5, the snapshot-source runs for the offline
+# ensemble-size sweep: --dyn_heads can only truncate DOWN, so they need 10 heads.
 STAGE1_DYNENS10=exps/mimicgen/threading_simdist_dynens10_diversev2_h5_seed1/latest.pt
 # Target-domain BC prior for the model-free arms, on sat_160000 (see above).
 BC_PRIOR=exps/mimicgen/il_ft_target_s160_seed${SEED}/model0.pt
@@ -377,6 +377,29 @@ case $ARM in
                  --adapt_mode value --max_transitions 100000 \
                  --init_ckpt $OUT.phaseA/latest.pt ;;
     esac ;;
+  thr_snap_o0.5)
+    # Snapshot SOURCE runs for the offline eval-time sweeps (ensemble size x
+    # pessimism coef, cluster/job_snapshot_sweep.sh). Field-for-field the recipe
+    # of the local seed-1 run exps/optim_local/thr_snap_o0.5_seed1, so seed 1
+    # (trained locally, shipped in thr_snap_o0.5.tar) and seeds 101..901 (here)
+    # are one family:
+    #   10-HEAD stage-1 (--dyn_heads can only truncate down), anchor coef 1.0 on
+    #   the full diverse_v2 pool, collect_disagree_coef 0.5, 100k, and a
+    #   snapshot every 10 rounds -> snap_0 .. snap_100000 (11 files, ~45 MB each).
+    # In-training eval is deliberately thin (20 games every 10 rounds, one coef):
+    # the numbers that matter come from the sweep jobs at 100 games per point.
+    # save_dir goes to exps/optim_local so the sweep job list's paths match.
+    $PY train_simdist_adapt.py --stage1_ckpt $STAGE1_DYNENS10 --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --bc_anchor_coef 1.0 \
+      --bc_anchor_path release/data/mimicgen/threading_d0_source_diverse_v2/dataset.hdf5 \
+      --max_transitions 100000 --adapt_interval 1000 \
+      --snapshot_every_rounds 10 \
+      --eval_every_rounds 10 --num_eval_episode 20 --num_eval_proc 10 \
+      --eval_disagree_coefs "0" \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --collect_disagree_coef 0.5 --original_mppi 1 \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   optim_*)
     # ===== exp1: optimistic-exploration sweep, with an ensemble-size sweep ride-along
     # collect_disagree_coef = the OPTIMISTIC bonus: at COLLECT time the planner's

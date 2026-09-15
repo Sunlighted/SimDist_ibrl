@@ -61,7 +61,7 @@ SQCOF += ["sq_plain_d600000", "sq_plain_d400000",      # SimDist MPPI reference
 ANCHOR_ABL = ["anch_f2wd", "anch_f3l2", "anch_f4a", "anch_f4b", "anch_f5",
               "anch_dat", "anch_es_src", "anch_es_dat"]
 THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
-             *ANCHOR_ABL, *LAM_A, *LAM_B, *OPTIM,
+             *ANCHOR_ABL, *LAM_A, *LAM_B, *OPTIM, "thr_snap_o0.5",
              "valabl_dyn", "valabl_joint", "valabl_v2d", "valabl_d2v", "valabl_marg", "ibrl_m005anneal0", "ibrl_m001", "ibrl_m001_qsrc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
