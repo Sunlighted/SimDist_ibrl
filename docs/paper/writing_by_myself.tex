@@ -8,6 +8,7 @@
 \usepackage{hyperref}
 \usepackage{url}
 \usepackage{graphicx}
+\usepackage[export]{adjustbox}  % relative trim (.15\width) inside \includegraphics
 \usepackage{booktabs}
 \usepackage{caption}      % for \captionof inside minipage
 \usepackage{subcaption}   % for \subcaptionbox / subfigure
@@ -17,6 +18,43 @@
 \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
 \newcommand{\pmsd}[1]{{\scriptsize$\pm$#1}}      % seed s.d. suffix in tables
 \newcommand{\twoknob}[2]{\begin{tabular}[c]{@{}l@{}}#1\\#2\end{tabular}}  % two-line cell, centred on the row baseline
+% --- uniform task panels -----------------------------------------------------
+% The five renders have different pixel sizes AND different aspect ratios, so
+% \includegraphics[width=..] alone gives five different heights and a ragged
+% row. \taskpanel puts each image in a box of FIXED width x \taskpanelht and
+% scales it to fit inside with keepaspectratio, so every panel occupies exactly
+% the same area and nothing is stretched. An image whose aspect differs from the
+% box gets white margins rather than distortion -- to remove those, crop the
+% source file (or add trim=<l> <b> <r> <t>,clip to the \includegraphics below).
+% Falls back to a labelled grey box when the file is not there yet, so the
+% document still compiles before the renders are dropped into figs/.
+\newlength{\taskpanelht}\setlength{\taskpanelht}{2.45cm}
+\newcommand{\taskpanel}[1]{%
+  \parbox[c][\taskpanelht][c]{\linewidth}{\centering
+    \IfFileExists{#1}%
+      {\includegraphics[width=\linewidth,height=\taskpanelht,keepaspectratio]{#1}}%
+      {\fboxsep2pt\fbox{\parbox[c][\dimexpr\taskpanelht-2\fboxsep-2\fboxrule\relax][c]%
+        {\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+        {\centering\scriptsize\textcolor{gray}{#1}}}}}}
+% Same panel, but CROP the image to the panel's aspect before fitting, so it
+% fills the box instead of being letterboxed. #1 = fraction cut off EACH of the
+% left and right edges, #2 = fraction cut off each of top and bottom; set the
+% one you do not need to 0. Needs adjustbox's relative trim (plain graphicx
+% only takes absolute lengths here).
+%
+% Choosing the fraction: the panel is 0.19\textwidth wide by \taskpanelht high,
+% i.e. aspect a_p = 1.08 at ICLR's 5.5in text width. For an image of aspect a_i:
+%   a_i > a_p (too wide)  -> #1 = (1 - a_p/a_i)/2, #2 = 0
+%   a_i < a_p (too tall)  -> #1 = 0, #2 = (1 - a_i/a_p)/2
+% e.g. a 16:9 render (a_i = 1.78) needs #1 = 0.196.
+\newcommand{\taskpanelcrop}[3]{%
+  \parbox[c][\taskpanelht][c]{\linewidth}{\centering
+    \IfFileExists{#3}%
+      {\includegraphics[width=\linewidth,height=\taskpanelht,keepaspectratio,
+                        trim={#1\width} {#2\height} {#1\width} {#2\height},clip]{#3}}%
+      {\fboxsep2pt\fbox{\parbox[c][\dimexpr\taskpanelht-2\fboxsep-2\fboxrule\relax][c]%
+        {\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+        {\centering\scriptsize\textcolor{gray}{#3}}}}}}
 
 
 \title{Rethinking Sim-to-real Adaptation with World Models}
@@ -544,6 +582,33 @@ that region is defined over all the states the world model was fit on.
 \section{Environmental details}
 
 \subsection{simulation environments}
+
+\begin{figure*}[t]
+\centering
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_threading.png}\caption{Threading}\label{fig:env-threading}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_square.png}\caption{Square}\label{fig:env-square}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_coffee.png}\caption{Coffee}\label{fig:env-coffee}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_tpa.png}\caption{ThreePieceAssembly}\label{fig:env-tpa}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  % 0.196 assumes a 16:9 render; recompute with the formula above if it is not.
+  \taskpanelcrop{0.196}{0}{figs/task_locomotion.jpg}\caption{Locomotion}\label{fig:env-loco}
+\end{subfigure}
+\caption{%
+  \textbf{The five evaluation environments.} Four contact-rich manipulation
+  tasks from MimicGen and one locomotion task from IsaacLab.
+  [TODO: one sentence per panel naming the contact event that makes it hard, and
+  say whether the render is the source or the target domain.]
+}
+\label{fig:envs}
+\end{figure*}
 
 We use four contact-rich manipulation tasks from MimicGen~\citep{pmlr-v229-mandlekar23a}, including Threading, Square, Coffee and ThreePieceAssembly, and one locomotion task from IsaacLab~\citep{NVIDIA_Isaac_Sim}. All five are simulated, which is what lets us run several hundred evaluation episodes per condition and, more importantly, run the same controller with the true target simulator in place of the learned model (the oracle-dynamics in Sec.~\ref{sec:planner-adapt}). Neither is possible on hardware.
 

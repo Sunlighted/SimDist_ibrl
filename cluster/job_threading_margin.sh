@@ -737,6 +737,51 @@ case $ARM in
       --dyna.prior_margin_init 0.0 --dyna.prior_margin_final 0.0 \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
+  dynaibrl_m001|dynaibrl_m001dataonly|dynaibrl_m001bootonly|dynaibrl_m0demo)
+    # ===== WHICH CHANNEL the prior-preference floor acts through ==============
+    # Four arms, one variable each, all with the 20 target demos preloaded into
+    # the TD replay. margin_on_eval stays 1 in every arm, so THE EVALUATED POLICY
+    # IS IDENTICAL -- the arms differ only in what happened during training.
+    #
+    #   dynaibrl_m001          m=0.01 in every channel
+    #   dynaibrl_m001dataonly  m NOT in the TD target   (--dyna.margin_on_boot 0)
+    #   dynaibrl_m001bootonly  m ONLY in the TD target  (margin_on_act 0 + imagine 0)
+    #   dynaibrl_m0demo        no margin anywhere       (m=0)
+    #
+    # seed 1 of all four already exists in exps/simdist_threading_3arm (run
+    # locally via cluster/job_threading_margin_channels.sh, w80-100: 0.878 /
+    # 0.882 / 0.790 / --). These are the 10-seed replications; --skip-done or a
+    # narrowed --array keeps seed 1 from being overwritten.
+    #
+    # The two win rates the panel needs are ALREADY logged every round, no code
+    # change: dyna/collect_rl_frac (how often the RL actor wins the argmax while
+    # COLLECTING) and dyna/bootstrap_rl_frac (the same inside the TD target).
+    # On seed 1 both fall over training -- collect 0.443 -> 0.086, bootstrap
+    # 0.482 -> 0.143 -- i.e. the prior takes over. dyna/prior_margin logs m(t).
+    #
+    # ⚠️ 5-HEAD stage-1, unlike the dynaibrl_plain_* arms above, matching the
+    # seed-1 runs this replicates.
+    # ⚠️ 100k here, NOT the 300k the dynaibrl_plain_* arms use: the w80-100 window
+    # the numbers above are quoted from is a 100k window.
+    # ⚠️ --dyna.preload_demos 1 is passed EXPLICITLY although it currently
+    # defaults to 1 -- the panel-(a) seed-1 runs predate the flag and behaved as
+    # 0, which is how that pair became incomparable in the first place.
+    case $ARM in
+      dynaibrl_m001)          CH_M=0.01; CH_X=() ;;
+      dynaibrl_m001dataonly)  CH_M=0.01; CH_X=(--dyna.margin_on_boot 0) ;;
+      dynaibrl_m001bootonly)  CH_M=0.01; CH_X=(--dyna.margin_on_act 0
+                                              --dyna.margin_on_imagine 0) ;;
+      dynaibrl_m0demo)        CH_M=0.0;  CH_X=() ;;
+    esac
+    [ -f "$STAGE1_DYNENS" ] || { echo "MISSING $STAGE1_DYNENS"; exit 1; }
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS \
+      --save_dir $OUT --seed $SEED \
+      --target_demo_path $DEMOS --target_num_data 20 \
+      --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
+      --num_eval_episode 100 --num_eval_proc 10 \
+      --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
+      --dyna.prior_margin $CH_M --dyna.preload_demos 1 "${CH_X[@]}" \
+      --use_wb $USE_WB --state_only_no_render 1 ;;
   dynaibrl_plain_m005|dynaibrl_plain_m01)
     # Constant-margin dose-response on the SINGLE-head stage-1, aligned field for
     # field with dynaibrl_plain_m001 -- same stage-1, sat_160000 per-seed demos,

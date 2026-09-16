@@ -66,6 +66,9 @@ THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
              "ibrl_m0_qsrc", "ibrl_m0",
              "dynaibrl_plain", "dynaibrl_plain_m0", "dynaibrl_plain_m001",
              "dynaibrl_plain_m005", "dynaibrl_plain_m01",
+             # margin-channel panel: which channel the floor acts through
+             "dynaibrl_m001", "dynaibrl_m001dataonly",
+             "dynaibrl_m001bootonly", "dynaibrl_m0demo",
              "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m0", "dynaibrl_dynens_m001",
              "dynaibrl_dynens_sgft"]
