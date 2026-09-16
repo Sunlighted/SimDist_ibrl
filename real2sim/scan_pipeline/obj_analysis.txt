@@ -1,0 +1,14 @@
+
+=== peg.MOV  (523 frames) ===
+  blur  (lapvar)   median=   134.0   frac<100 (blurry) = 40%
+  texture (ORB kp) median=     370   frac<300 (weak)   = 48%
+  flat-pixel frac  median=    0.87   frac>0.5 (mostly featureless) = 100%
+  exposure  mean= 198.7  std= 5.36  range= 23.6   DRIFTING (auto-exposure?)
+  motion (px/sample) median=  0.00
+
+=== board.MOV  (1067 frames) ===
+  blur  (lapvar)   median=   206.1   frac<100 (blurry) = 0%
+  texture (ORB kp) median=     913   frac<300 (weak)   = 8%
+  flat-pixel frac  median=    0.71   frac>0.5 (mostly featureless) = 100%
+  exposure  mean= 162.4  std=15.61  range= 83.7   DRIFTING (auto-exposure?)
+  motion (px/sample) median=  0.02

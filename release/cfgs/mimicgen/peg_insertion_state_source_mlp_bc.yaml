@@ -1,0 +1,55 @@
+# PegInsertion_D0 (real2sim square peg-in-hole, env/peg_insertion.py) --
+# single-step MLP BC on 1000 scripted-expert demos, trained + evaluated on the
+# SOURCE domain. Serves as the BC prior for the source IBRL run
+# (peg_insertion_state_ibrl_source.yaml).
+#
+# PegInsertion_D0 state = 37 (eef_pos[3] + eef_quat[4] + gripper_qpos[2] +
+# object[28]), action_dim = 7 (OSC_POSE + gripper). ~60 mean steps/demo,
+# pre-grasped start (no grasp phase by design, docs/real2sim.md §3).
+#
+# Demos: scripts/collect_peg_demos.py at hand_init_perturb_joint_sigma=0.1 --
+# the SAME sigma the IBRL run trains/evals at, so prior and RL share the init
+# distribution by construction (unlike Square, where official demos are 0.02).
+#
+#   python train_bc.py --config_path release/cfgs/mimicgen/peg_insertion_state_source_mlp_bc.yaml \
+#       --save_dir exps/mimicgen/peg_source_mlp_bc_n1000_seed1
+
+seed: 1
+
+dataset:
+  path: release/data/peg_insertion/demos_n1000/dataset.hdf5
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  # STRICTLY greater than the longest demo (dataset.py asserts len < eval_len);
+  # demos are capped at 300 by the collector.
+  eval_episode_len: 350
+  val_ratio: 0.0
+  # eval at the SAME sigma the demos were collected at (and the IBRL run uses)
+  hand_init_perturb_joint_sigma: 0.1
+
+# same MLP head as the Square/Threading source MLP BC
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+use_wb: 1
+save_dir: exps/mimicgen/peg_source_mlp_bc_n1000_seed1

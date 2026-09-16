@@ -1,0 +1,43 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=gsbench
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=2:59:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/gs_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/gs_%j.out
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+mkdir -p logs
+# gsplat JIT-compiles its CUDA kernels on first use and needs nvcc; cudacore 12.9
+# is the closest available to the cu128 torch wheel.
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9"
+source .venv/bin/activate
+OUT=/scratch/yifanr/gsbench/results.jsonl
+
+echo "=== $(hostname) ==="; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+python -c "import torch,gsplat;print('torch',torch.__version__,'gsplat',gsplat.__version__)"
+
+echo "=== warm gsplat JIT ==="
+timeout 1800 python bench_gsrenderer.py --n_envs 2 --n_cams 1 --steps 3 --warmup 2 || exit 1
+
+run () { # envs cams res inflate
+  echo ""; echo "#### envs=$1 cams=$2 res=$3 inflate=$4"
+  timeout 900 python bench_gsrenderer.py --n_envs "$1" --n_cams "$2" --res "$3" \
+      --inflate_to "$4" --steps 50 --out "$OUT"
+  echo "rc=$?"
+}
+
+# A. reproduce-ish: shipped asset scale (~76k gaussians), 3 cams @224, env sweep
+for e in 1 16 64 256; do run $e 3 224 0; done
+# B. real-reconstruction scale (~730k gaussians, PolaRiS-class)
+for e in 1 16 64; do run $e 3 224 730000; done
+# C. camera-count axis at the scale we would actually use
+run 64 1 224 730000
+run 64 2 224 730000
+echo ""; echo "=== results ==="; cat "$OUT"

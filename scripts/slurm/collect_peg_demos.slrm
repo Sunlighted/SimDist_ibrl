@@ -1,0 +1,57 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=collect_peg
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=2:59:00
+#SBATCH --output=logs/collect_peg_%j.out
+#SBATCH --error=logs/collect_peg_%j.out
+#
+# ★ SLURM SIZING: 2:59:00 -> b1 (168 nodes). 1000 scripted episodes x ~65 steps
+#   with 2-camera 96px EGL rendering; the scripted expert is deterministic-fast
+#   (no policy inference). GPU is for the EGL context only.
+#   Account aip-rhinehar per docs/real2sim.md (far better FairShare than
+#   aip-gigor).
+#
+# Collect scripted-expert demos for PegInsertion_D0 (real2sim Phase C).
+#   sbatch scripts/slurm/collect_peg_demos.slrm
+# Overridables: N (demos), OUT (dir), SEED, SIGMA.
+
+set -uo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+
+N="${N:-1000}"
+OUT="${OUT:-release/data/peg_insertion/demos_n1000}"
+SEED="${SEED:-0}"
+SIGMA="${SIGMA:-0.1}"
+
+echo "=== node $(hostname) | N=$N OUT=$OUT SEED=$SEED SIGMA=$SIGMA ==="
+nvidia-smi --query-gpu=name --format=csv,noheader | head -1
+
+python scripts/collect_peg_demos.py \
+    --num_demos "$N" \
+    --out_dir "$OUT" \
+    --seed "$SEED" \
+    --sigma "$SIGMA" \
+    --episode_length 300 \
+    --state_only 0 \
+    --image_size 96 \
+    --device cuda
+echo "collect rc=$?"
+
+echo "=== artifacts ==="
+ls -la "$OUT"
+python - <<EOF
+import h5py
+f = h5py.File("$OUT/dataset.hdf5")
+n = len(f["data"].keys())
+lens = [f["data"][k].attrs["num_samples"] for k in f["data"].keys()]
+import numpy as np
+print(f"demos: {n}, steps: mean {np.mean(lens):.1f} min {min(lens)} max {max(lens)}")
+EOF
+echo "=== done ==="

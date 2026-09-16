@@ -1,0 +1,7 @@
+{"task": "DROID-FoodBussing", "mode": "full", "num_envs": 1, "res": "720x1280", "n_cameras": 2, "steps": 60, "seconds": 15.058, "ms_per_step": 250.96, "env_steps_per_s": 3.98, "transitions_per_s": 3.98}
+{"task": "DROID-FoodBussing", "mode": "norub", "num_envs": 1, "res": "720x1280", "n_cameras": 2, "steps": 60, "seconds": 15.04, "ms_per_step": 250.66, "env_steps_per_s": 3.99, "transitions_per_s": 3.99}
+{"task": "DROID-FoodBussing", "mode": "rtx", "num_envs": 1, "res": "720x1280", "n_cameras": 2, "steps": 60, "seconds": 10.675, "ms_per_step": 177.92, "env_steps_per_s": 5.62, "transitions_per_s": 5.62}
+{"task": "DROID-FoodBussing", "mode": "full", "num_envs": 1, "res": "224x224", "n_cameras": 2, "steps": 60, "seconds": 12.678, "ms_per_step": 211.29, "env_steps_per_s": 4.73, "transitions_per_s": 4.73}
+{"task": "DROID-FoodBussing", "mode": "rtx", "num_envs": 1, "res": "224x224", "n_cameras": 2, "steps": 60, "seconds": 10.371, "ms_per_step": 172.85, "env_steps_per_s": 5.79, "transitions_per_s": 5.79}
+{"task": "DROID-FoodBussing", "mode": "rtx", "num_envs": 4, "res": "224x224", "n_cameras": 2, "steps": 40, "seconds": 8.223, "ms_per_step": 205.59, "env_steps_per_s": 4.86, "transitions_per_s": 19.46}
+{"task": "DROID-FoodBussing", "mode": "rtx", "num_envs": 16, "res": "224x224", "n_cameras": 2, "steps": 40, "seconds": 14.0, "ms_per_step": 350.01, "env_steps_per_s": 2.86, "transitions_per_s": 45.71}

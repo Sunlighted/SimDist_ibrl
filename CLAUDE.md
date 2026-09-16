@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-09-11
+Last updated: 2026-09-13
 
 ---
 
@@ -25,6 +25,7 @@ Last updated: 2026-09-11
 | `docs/flow_qc_ug.md` | ~110 | （早于本次拆分就存在）flow actor + Q-chunking + UG 的在线 model-free RL 方案书 —— "不再修 SimDist、改把 policy 做强"那条支线。 |
 | **`docs/pixel-progress.md`** | ~112 | **做 pixel/视觉版之前必读 —— 现在是完整实验日志。** 所有已测数字：stage-1 四个 checkpoint（pixel 0.968/0.980 ≥ state）、target adapt 的 2×2（state 0.540 / pixel 0.028；dynamics-only 0.393 vs 0.023）、demo-count 扫（pixel 0.08→0.24，**state 0.360→0.75**）、latent probe（含它**不能**支撑的结论）、编码器 bench、环境坑。 |
 | `docs/pixel-gap-closing-prompt.md` | ~230 | 要接着推 pixel 的时候：交给 agent 的完整任务书（Phase A 增广 / B 数据对齐 state / C 224+ResNet-18），含活跃任务共用 checkout 的风险与回归门。
+| **`docs/real2sim.md`** | ~90 | **真机方向（sim2real via real2sim）的唯一真源**。架构决定 = MuJoCo + `_GaussianRenderer` batched gsplat、**不用 PolaRiS/Isaac**（全部实测：PolaRiS 3.98 steps/s、Isaac 固定地板 173 ms/step vs gsplat 558 tps/GPU@2cam·763k）；vertical slice 已通（PolaRiS 机器人 splat MIT+metric，丢 `panda_link0`，per-body 校正 + 4 个坑）；任务 = 方形 peg-in-hole ~3 mm/边（§39 地板 1.3 mm）；阶段 A–F 现状表。job 提交用 `aip-rhinehar`（FairShare 远好于 aip-gigor）。 |
 | **`CLAUDE_ARCHIVE.md`** | ~2020 | 只在需要回查已归档分支（§10/11/13/14/15/16/18/19/20/21/22/23）时。代码在本地 `_archive/`，不随仓库发布。 |
 
 ---
@@ -127,6 +128,16 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     critic `10×512`（全仓库其他 IBRL run 都是 `5×1024`+ln）。三者都不报错，已各咬一次。
 19. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
+16b. **别假定 `aip-rhinehar` 更快 —— 每次都要量。** real2sim 那条「job 提交用
+    `aip-rhinehar`（FairShare 远好于 aip-gigor）」只在写下它的那一刻成立。
+    2026-09-15 实测同一个 200G/23:59 的 stage-1 chunk：**gigor 19:46 vs rhinehar 次日
+    09:07，gigor 早 ~13 小时**。fairshare 只是 priority 的一项，两个账号还落在不同的
+    backfill 队列里。⇒ **两个账号各排一份，比较 `squeue -o %S` 的真实估计，留快的、砍慢的**
+    （同一 save_dir 的两份必须只留一个 writer，见 infra §7z ④）。
+    ⚠️ `sbatch --test-only` 的估计**不可信**：它给过 09-16 00:34，真排进去后是 09-17 05:49。
+    只有真正排队后的 `%S` 才有参考价值，而且它还会随 backfill 反复漂。
+    ⇒ 扇出多个 job 时**跨账号交替提交**，别把整批押在一个队列上。
+
 16. **SLURM 时限要卡在分层线以下**（Killarney：b1 ≤3:00:00 / b2 ≤12:00:00 / b3 ≤1-00:00:00
     / b4 ≤3-00:00:00）。刚好超线极贵：一个 9 分钟的活要了 4:00:00 → 落 b2 → 等了 15h23；
     3 天的活落 b4（42 节点）等 8-15h，而组里中位数是 **1 分钟**。CPU/内存也要小（8-12 核

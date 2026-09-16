@@ -1,0 +1,54 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=bc_launch
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time=0:10:00
+#SBATCH --output=/scratch/yifanr/simdist/logs_project/bc_launch_%j.out
+#SBATCH --error=/scratch/yifanr/simdist/logs_project/bc_launch_%j.out
+#
+# Launch §48 rungs B and C once the dynens stage-1 chain is genuinely at 150k.
+# WHY A JOB AND NOT THE THEN_SBATCH HOOK: the hook would run from whichever
+# SLURM_SUBMIT_DIR its chunk was submitted with, and the original chain was
+# submitted from /project -- which is now read-only, so those 10 jobs would fail
+# at startup trying to create logs/*.out. This runs from the /scratch checkout
+# unconditionally. No GPU; sbatch calls only.
+set -uo pipefail
+cd /scratch/yifanr/simdist/repo
+S1=/scratch/yifanr/simdist/thr_pix224_aug_dynens_stage1
+GS=$(python - <<'PYP'
+import torch
+print(torch.load("/scratch/yifanr/simdist/thr_pix224_aug_dynens_stage1/resume_state.pt",
+                 map_location="cpu")["global_step"])
+PYP
+)
+echo "dynens stage-1 global_step = $GS"
+# GUARD: never fan out onto an under-trained stage-1. §46j puts 150k-vs-800k at
+# ~+0.076, so an arm short of the others' budget is not comparable at all.
+if [ "${GS:-0}" -lt 150000 ]; then
+    echo "!! stage-1 only at $GS/150000 -- NOT launching B/C yet."
+    # Self-defer behind the insurance chunk rather than dying: a guard trip must
+    # not silently end the pipeline. INS_JOB is the remaining chunk that can
+    # still advance the chain.
+    # ★ Re-arm behind whatever stage-1 job is STILL in the queue. Relying on an
+    # INS_JOB handed in at submit time is fragile: a self-chunking chain has no
+    # final job id (§7z ①), so the chunk this was chained to is often NOT the
+    # last one. Discover the live successor instead, so a guard trip defers the
+    # launch rather than silently ending the pipeline.
+    NEXT=$(squeue -u "$USER" -h -o '%i|%j' 2>/dev/null \
+           | grep -E 's1BC|pix_stage1' | awk -F'|' '{print $1}' | sort -n | tail -1)
+    if [ -n "$NEXT" ]; then
+        sbatch --dependency=afterany:"$NEXT" --account=aip-rhinehar \
+               scripts/slurm/launch_bc_when_ready.slrm \
+          && echo "re-armed behind live stage-1 job $NEXT"
+    else
+        echo "   !! NO stage-1 job left in the queue and only $GS/150000 done."
+        echo "      The chain is BROKEN -- submit another chunk, then resubmit this."
+    fi
+    exit 0
+fi
+[ -s "$S1/latest.pt" ] || { echo "FATAL: no $S1/latest.pt"; exit 1; }
+SLURM_SUBMIT_DIR=/scratch/yifanr/simdist/repo SLURM_JOB_ACCOUNT=aip-rhinehar \
+  ARCH=dynens bash scripts/slurm/launch_aug_ladder_followon.sh
+echo "=== B/C launch script finished ==="

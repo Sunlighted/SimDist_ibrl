@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=sfm_scan3
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
+#SBATCH --time=2:59:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/sfm_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/sfm_%j.out
+# COLMAP SfM on the AE-locked rescan. The QUESTION is not "does it run" but
+# "what FRACTION of frames register and with what reprojection error" -- a
+# reconstruction that registers 30% of frames is a failed scan, not a result.
+set -uo pipefail
+VID="${VID:-/home/yifanr/scan4.MOV}"
+WORK="${WORK:-/scratch/yifanr/gsbench/sfm_scan4}"
+NFRAMES="${NFRAMES:-400}"
+IMG="$WORK/images"
+mkdir -p "$WORK" /scratch/yifanr/gsbench/logs
+
+echo "=== node $(hostname) | $VID -> $WORK ($NFRAMES frames) ==="
+if [ ! -d "$IMG" ] || [ -z "$(ls -A "$IMG" 2>/dev/null)" ]; then
+    source /project/6101830/yifanr/SimDist_ibrl/set_env_drac.sh >/dev/null 2>&1
+    python /scratch/yifanr/gsbench/extract_frames.py "$VID" "$IMG" "$NFRAMES" || exit 1
+fi
+echo "frames: $(ls "$IMG" | wc -l)"
+
+module load StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.6 colmap/3.12.6 >/dev/null 2>&1
+command -v colmap || { echo "FATAL: colmap not on PATH"; exit 1; }
+
+DB="$WORK/database.db"; rm -f "$DB"; mkdir -p "$WORK/sparse"
+# ONE shared camera: every frame is the same phone at fixed focal (AF locked), so
+# a per-image camera would throw away the strongest constraint we have.
+colmap feature_extractor --database_path "$DB" --image_path "$IMG" \
+    --ImageReader.single_camera 1 --ImageReader.camera_model OPENCV \
+    --SiftExtraction.use_gpu 1 --SiftExtraction.max_image_size 1600 || exit 1
+# sequential + loop closure is the right matcher for a continuous sweep, but the
+# vocab tree needs a download; at 400 images exhaustive is ~80k pairs, fine on GPU.
+colmap exhaustive_matcher --database_path "$DB" --SiftMatching.use_gpu 1 || exit 1
+colmap mapper --database_path "$DB" --image_path "$IMG" --output_path "$WORK/sparse" || exit 1
+
+echo; echo "=== RESULT ==="
+for m in "$WORK"/sparse/*/; do
+    [ -d "$m" ] || continue
+    echo "--- model $(basename $m) ---"
+    colmap model_analyzer --path "$m" 2>&1 | grep -vE "^$"
+done
+echo "input frames: $(ls "$IMG" | wc -l)"
+echo "=== done ==="

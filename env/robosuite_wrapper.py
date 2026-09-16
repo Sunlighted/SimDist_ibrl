@@ -20,6 +20,10 @@ except Exception:  # pragma: no cover - mimicgen optional
 # same robosuite registry. Local module, no optional dependency.
 import env.tool_hang_variants  # noqa: F401,E402
 
+# Registers PegInsertion / PegInsertion_D0 (real2sim square peg-in-hole,
+# docs/real2sim.md Phase B). Depends on mimicgen (SingleArmEnv_MG base).
+import env.peg_insertion  # noqa: F401,E402
+
 from env.sim2real import (
     Sim2RealConfig,
     apply_sim2real,
@@ -127,6 +131,11 @@ for _t in MIMICGEN_D0_TASKS:
 # Threading-family variants (D1, Enlarged, RealCell) share Threading_D0's spec.
 for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged", "Threading_RealCell"]:
     STATE_KEYS[_t] = DEFAULT_STATE_KEYS
+# real2sim peg insertion (env/peg_insertion.py): 9 prop + 28 object (peg/board
+# pos+quat, absolute and eef-relative) = 37, same layout as Threading_D0.
+STATE_KEYS["PegInsertion_D0"] = DEFAULT_STATE_KEYS
+STATE_SHAPE["PegInsertion_D0"] = (37,)
+GOOD_CAMERAS["PegInsertion_D0"] = ["agentview", "robot0_eye_in_hand"]
 STATE_SHAPE["Threading_D0"] = (37,)
 STATE_SHAPE["Threading_D1"] = (37,)
 STATE_SHAPE["Threading_D2"] = (37,)

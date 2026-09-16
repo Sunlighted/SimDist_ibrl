@@ -1,0 +1,21 @@
+=== kn106 ===
+NVIDIA L40S
+[3dgs] 400 frames, 91443 initial points
+[3dgs] loaded 400 images at torch.Size([540, 960, 3])
+[3dgs] step     1/7000  loss=0.2826  psnr=12.6  n_gauss=91,443  3s
+[3dgs] step   500/7000  loss=0.3035  psnr=11.2  n_gauss=96,233  10s
+[3dgs] step  1000/7000  loss=0.0866  psnr=19.8  n_gauss=106,825  16s
+[3dgs] step  1500/7000  loss=0.0727  psnr=21.1  n_gauss=123,210  22s
+[3dgs] step  2000/7000  loss=0.0491  psnr=24.9  n_gauss=140,228  29s
+[3dgs] step  2500/7000  loss=0.0635  psnr=22.7  n_gauss=156,825  35s
+[3dgs] step  3000/7000  loss=0.0470  psnr=24.6  n_gauss=172,498  42s
+[3dgs] step  3500/7000  loss=0.0450  psnr=22.1  n_gauss=189,764  48s
+[3dgs] step  4000/7000  loss=0.0574  psnr=23.0  n_gauss=205,134  54s
+[3dgs] step  4500/7000  loss=0.0320  psnr=27.1  n_gauss=221,947  61s
+[3dgs] step  5000/7000  loss=0.0579  psnr=23.8  n_gauss=234,975  67s
+[3dgs] step  5500/7000  loss=0.0468  psnr=25.0  n_gauss=234,975  74s
+[3dgs] step  6000/7000  loss=0.0667  psnr=21.8  n_gauss=234,975  80s
+[3dgs] step  6500/7000  loss=0.0567  psnr=23.1  n_gauss=234,975  87s
+[3dgs] step  7000/7000  loss=0.0600  psnr=22.2  n_gauss=234,975  93s
+[3dgs] saved sfm_scan4/scene.ply (234,975 gaussians)
+rc=0

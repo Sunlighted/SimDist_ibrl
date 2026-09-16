@@ -1,0 +1,109 @@
+{
+  "all_icp": {
+    "iou": 0.5643,
+    "splat_px": 19031,
+    "ref_px": 11408,
+    "n_gauss": 209064,
+    "n_parts": 17
+  },
+  "link1_identity": {
+    "iou": 0.5695,
+    "splat_px": 19174,
+    "ref_px": 11408,
+    "n_gauss": 209064,
+    "n_parts": 17
+  },
+  "no_link0": {
+    "iou": 0.7215,
+    "splat_px": 13918,
+    "ref_px": 11408,
+    "n_gauss": 113189,
+    "n_parts": 16
+  },
+  "link1id_nolink0": {
+    "iou": 0.7334,
+    "splat_px": 14117,
+    "ref_px": 11408,
+    "n_gauss": 113189,
+    "n_parts": 16
+  },
+  "all_identity": {
+    "iou": 0.5268,
+    "splat_px": 19519,
+    "ref_px": 11408,
+    "n_gauss": 209064,
+    "n_parts": 17
+  },
+  "_per_link": {
+    "panda_link1": {
+      "splat_px": 3237,
+      "ref_px": 1323,
+      "iou": 0.3459
+    },
+    "panda_link2": {
+      "splat_px": 3044,
+      "ref_px": 611,
+      "iou": 0.173
+    },
+    "panda_link3": {
+      "splat_px": 2593,
+      "ref_px": 787,
+      "iou": 0.303
+    },
+    "panda_link4": {
+      "splat_px": 3836,
+      "ref_px": 1929,
+      "iou": 0.5001
+    },
+    "panda_link5": {
+      "splat_px": 4450,
+      "ref_px": 2738,
+      "iou": 0.6153
+    },
+    "panda_link6": {
+      "splat_px": 2422,
+      "ref_px": 1548,
+      "iou": 0.6331
+    },
+    "panda_link7": {
+      "splat_px": 1734,
+      "ref_px": 778,
+      "iou": 0.4379
+    },
+    "Gripper-Robotiq_2F_85-base_link": {
+      "splat_px": 1099,
+      "ref_px": 749,
+      "iou": 0.3874
+    },
+    "Gripper-Robotiq_2F_85-left_inner_finger": {
+      "splat_px": 234,
+      "ref_px": 82,
+      "iou": 0.2794
+    },
+    "Gripper-Robotiq_2F_85-left_inner_knuckle": {
+      "splat_px": 93,
+      "ref_px": 92,
+      "iou": 0.3121
+    },
+    "Gripper-Robotiq_2F_85-left_outer_knuckle": {
+      "splat_px": 86,
+      "ref_px": 129,
+      "iou": 0.4145
+    },
+    "Gripper-Robotiq_2F_85-right_inner_finger": {
+      "splat_px": 215,
+      "ref_px": 76,
+      "iou": 0.2819
+    },
+    "Gripper-Robotiq_2F_85-right_inner_knuckle": {
+      "splat_px": 67,
+      "ref_px": 89,
+      "iou": 0.1064
+    },
+    "Gripper-Robotiq_2F_85-right_outer_knuckle": {
+      "splat_px": 112,
+      "ref_px": 119,
+      "iou": 0.375
+    }
+  }
+}

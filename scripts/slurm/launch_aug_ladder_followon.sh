@@ -30,7 +30,7 @@
 #   if you ever must economise, NEVER EVAL_N (it drives TopkSaver selection, so
 #   changing it is a protocol change; iron law #15 / §46i).
 set -uo pipefail
-cd "${SLURM_SUBMIT_DIR:-/project/6101830/yifanr/SimDist_ibrl}"
+cd "${SLURM_SUBMIT_DIR:-/scratch/yifanr/simdist/repo}"
 
 ARCH="${ARCH:?set ARCH=plain_h3|dynens}"
 # DRYRUN=1 prints the exact sbatch lines instead of submitting, so the hook path
@@ -60,7 +60,14 @@ esac
 # that called it ran on aip-rhinehar (0.657, ~6x the priority factor). Same class
 # of bug as the --mem fallback that OOM'd job 5212432: --export carries env vars,
 # never sbatch resource flags.
+# ★ MEASURED 2026-09-15: gigor beat rhinehar by ~13 h on an identical 200G
+# stage-1 (19:46 vs 09:07 next day), despite CLAUDE.md recording rhinehar's
+# fairshare as ~6x better. Fairshare is only one term in the priority, so do NOT
+# assume -- alternate across both accounts and let whichever queue is moving
+# take the job. Results are account-independent, so this costs nothing.
+ACCTS=(aip-rhinehar aip-gigor)
 ACCT="${SLURM_JOB_ACCOUNT:-aip-rhinehar}"
+acct_i=0
 echo "=== §48 follow-on | ARCH=$ARCH | account=$ACCT ==="
 echo "stage1 = $STAGE1_DIR"
 [ -s "$STAGE1_DIR/latest.pt" ] || { echo "FATAL: no $STAGE1_DIR/latest.pt"; exit 1; }
@@ -81,14 +88,16 @@ for rung_spec in $RUNGS; do
           DYN_ANCHOR_COEF=0.0 ANCHOR_COEF="$COEF" DEMO_OFFSET="$OFF" \
           sb --parsable --job-name="a48${RUNG}s${SEED}" \
                  --time=23:59:00 --mem=96G --cpus-per-task=12 \
-                 --account="$ACCT" scripts/slurm/adapt.slrm)
+                 --account="${ACCTS[$((acct_i % 2))]}" scripts/slurm/adapt.slrm)
         if [ -z "$ADAPT_ID" ]; then
             echo "!! FAILED to submit rung $RUNG seed $SEED (offset $OFF)"
             n_bad=$((n_bad + 1)); continue
         fi
+        A_EVAL="${ACCTS[$((acct_i % 2))]}"
+        acct_i=$((acct_i + 1))
         EVAL_ID=$(ADAPT="$ADAPT_DIR" N=500 MP=10 TAG="aug48_${RUNG}_s${SEED}" \
           sb --parsable --job-name="e48${RUNG}s${SEED}" \
-                 --time=2:59:00 --account="$ACCT" \
+                 --time=2:59:00 --account="$A_EVAL" \
                  --dependency=afterany:"$ADAPT_ID" scripts/slurm/eval_simdist.slrm)
         echo "rung $RUNG seed $SEED  offset=$OFF anchor=$COEF  adapt=$ADAPT_ID eval=${EVAL_ID:-FAILED}"
         [ -z "$EVAL_ID" ] && echo "   !! eval submit failed -- run eval_simdist.slrm on $ADAPT_DIR by hand"

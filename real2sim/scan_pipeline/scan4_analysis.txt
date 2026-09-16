@@ -1,0 +1,7 @@
+
+=== scan4.MOV  (2563 frames) ===
+  blur  (lapvar)   median=   488.9   frac<100 (blurry) = 1%
+  texture (ORB kp) median=    3924   frac<300 (weak)   = 0%
+  flat-pixel frac  median=    0.44   frac>0.5 (mostly featureless) = 28%
+  exposure  mean= 166.9  std=13.29  range= 56.9   DRIFTING (auto-exposure?)
+  motion (px/sample) median=  2.81

@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=render_scene
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=0:29:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/render_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/render_%j.out
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9"
+source .venv/bin/activate
+python render_scene_splat.py --n_views 6 --res 512
+echo "rc=$?"

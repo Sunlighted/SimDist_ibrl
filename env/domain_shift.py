@@ -724,6 +724,72 @@ def apply_three_piece_shift(
 THREADING_BINDING_CLASSES = ("Threading_D0", "Threading_RealCell")
 
 
+def resolve_peg_insertion_bindings(env) -> dict:
+    """MuJoCo ids for PegInsertion_D0 (env/peg_insertion.py, real2sim task).
+
+    `object_body_ids` / `object_geom_ids` / `gripper_act_ids` are consumed by
+    apply_contact_shift() AS-IS (peg mass/friction, gripper kp).
+    `hole_wall_geom_ids` [(geom_id, in-plane axis)] mirrors Threading's
+    base_wall_geom_ids: growing geom_size along that axis shrinks the hole
+    opening symmetrically -- the future clearance knob (the ceiling-law
+    denominator, findings §27/§39). No ring/tripod/nut keys, so every
+    task-specific shift path in the wrapper is skipped.
+    """
+    cls = env.__class__.__name__
+    if not cls.startswith("PegInsertion"):
+        raise NotImplementedError(
+            f"resolve_peg_insertion_bindings supports PegInsertion*, got {cls}."
+        )
+    m = env.sim.model
+
+    peg_bid = m.body_name2id(env.peg.root_body)
+    object_body_ids = [peg_bid]
+    object_geom_ids = [
+        g for g in range(m.ngeom)
+        if (m.geom_id2name(g) or "").startswith("peg_obj")
+    ]
+
+    # board walls: left/right bound the hole along x (axis 0), front/back
+    # along y (axis 1). Collision geoms only.
+    axis_by_name = {
+        "wall_left": 0,
+        "wall_right": 0,
+        "wall_front": 1,
+        "wall_back": 1,
+    }
+    hole_wall_geom_ids = []
+    for g in range(m.ngeom):
+        gname = m.geom_id2name(g) or ""
+        if not gname.startswith("board_obj"):
+            continue
+        if m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0:
+            continue
+        for wname, ax in axis_by_name.items():
+            if wname in gname:
+                hole_wall_geom_ids.append((g, ax))
+
+    gripper_act_ids = [
+        m.actuator_name2id(a) for a in env.robots[0].gripper.actuators
+    ]
+
+    arm_prefix = env.robots[0].robot_model.naming_prefix
+    grip_prefix = env.robots[0].gripper.naming_prefix
+    arm_body_ids = [
+        bid for bid in range(m.nbody)
+        if (m.body_id2name(bid) or "").startswith(arm_prefix)
+        and not (m.body_id2name(bid) or "").startswith(grip_prefix)
+    ]
+
+    return {
+        "object_body_ids": object_body_ids,
+        "object_geom_ids": object_geom_ids,
+        "hole_wall_geom_ids": hole_wall_geom_ids,
+        "gripper_act_ids": gripper_act_ids,
+        "arm_body_ids": arm_body_ids,
+        "peg_joint": env.peg.joints[0],
+    }
+
+
 def resolve_bindings(env) -> dict:
     """Task-dispatched binding resolver. Threading_D0 -> threading bindings;
     Square_D0* -> square bindings; Coffee_D0* -> coffee bindings;
@@ -738,6 +804,8 @@ def resolve_bindings(env) -> dict:
         return resolve_coffee_bindings(env)
     if cls.startswith("ThreePieceAssembly"):
         return resolve_three_piece_bindings(env)
+    if cls.startswith("PegInsertion"):
+        return resolve_peg_insertion_bindings(env)
     raise NotImplementedError(
         f"domain_shift bindings not implemented for {cls}. "
         f"Add a resolver (see resolve_threading_bindings / resolve_square_bindings "

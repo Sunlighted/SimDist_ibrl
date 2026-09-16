@@ -1,0 +1,37 @@
+<mujoco model="peg_in_hole">
+  <compiler angle="radian" meshdir="meshes"/>
+  <default>
+    <default class="board_collision">
+      <geom material="board_mat" mass="0.0" friction="0.8 0.005 0.001"
+            solimp="0.99 0.99 0.001" solref="0.004 1"
+            contype="1" conaffinity="1" group="1"/>
+    </default>
+    <default class="board_visual">
+      <geom contype="0" conaffinity="0" group="0" mass="0.0"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="peg_collision" file="peg.stl"/>
+    <mesh name="board_visual" file="board.stl"/>
+    <material name="peg_mat" rgba="0.95 0.95 0.90 1"/>
+    <material name="board_mat" rgba="0.15 0.25 0.85 1"/>
+  </asset>
+  <worldbody>
+    <body name="board" pos="0.0 0.0 0.8205">
+      <geom name="board_visual" type="mesh" mesh="board_visual"
+            material="board_mat" class="board_visual"/>
+      <geom name="wall_left" type="box" pos="-0.05353 0.00446 0.00000" size="0.03566 0.09426 0.02049" class="board_collision"/>
+      <geom name="wall_right" type="box" pos="0.05966 0.00446 0.00000" size="0.03967 0.09426 0.02049" class="board_collision"/>
+      <geom name="wall_front" type="box" pos="0.00106 -0.02034 0.00000" size="0.01893 0.06946 0.02049" class="board_collision"/>
+      <geom name="wall_back" type="box" pos="0.00106 0.08695 0.00000" size="0.01893 0.01176 0.02049" class="board_collision"/>
+      <inertial pos="0 0 0" mass="0.5" diaginertia="0.001 0.001 0.001"/>
+    </body>
+    <body name="peg" pos="0.0 0.0 1.05">
+      <geom name="peg_collision" type="mesh" mesh="peg_collision"
+            material="peg_mat" mass="0.05"
+            friction="0.6 0.005 0.001"
+            solimp="0.99 0.99 0.001" solref="0.004 1"/>
+      <joint name="peg_joint" type="free"/>
+    </body>
+  </worldbody>
+</mujoco>

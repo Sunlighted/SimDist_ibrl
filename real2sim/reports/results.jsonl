@@ -1,0 +1,9 @@
+{"gaussians": 76046, "n_envs": 1, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 1.98, "env_steps_per_s": 504.82, "transitions_per_s": 504.8, "images_per_s": 1514.5, "peak_vram_gb": 0.09}
+{"gaussians": 76046, "n_envs": 16, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 4.0, "env_steps_per_s": 249.77, "transitions_per_s": 3996.3, "images_per_s": 11989.0, "peak_vram_gb": 0.97}
+{"gaussians": 76046, "n_envs": 64, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 13.56, "env_steps_per_s": 73.77, "transitions_per_s": 4721.2, "images_per_s": 14163.7, "peak_vram_gb": 3.8}
+{"gaussians": 76046, "n_envs": 256, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 53.9, "env_steps_per_s": 18.55, "transitions_per_s": 4749.8, "images_per_s": 14249.3, "peak_vram_gb": 15.12}
+{"gaussians": 763293, "n_envs": 1, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 3.63, "env_steps_per_s": 275.72, "transitions_per_s": 275.7, "images_per_s": 827.2, "peak_vram_gb": 0.79}
+{"gaussians": 763293, "n_envs": 16, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 43.51, "env_steps_per_s": 22.98, "transitions_per_s": 367.8, "images_per_s": 1103.3, "peak_vram_gb": 9.66}
+{"gaussians": 763293, "n_envs": 64, "n_cams": 3, "res": "224x224", "steps": 50, "ms_per_step": 171.98, "env_steps_per_s": 5.81, "transitions_per_s": 372.1, "images_per_s": 1116.4, "peak_vram_gb": 38.06}
+{"gaussians": 763293, "n_envs": 64, "n_cams": 1, "res": "224x224", "steps": 50, "ms_per_step": 62.14, "env_steps_per_s": 16.09, "transitions_per_s": 1029.9, "images_per_s": 1029.9, "peak_vram_gb": 13.73}
+{"gaussians": 763293, "n_envs": 64, "n_cams": 2, "res": "224x224", "steps": 50, "ms_per_step": 114.79, "env_steps_per_s": 8.71, "transitions_per_s": 557.5, "images_per_s": 1115.1, "peak_vram_gb": 25.89}
