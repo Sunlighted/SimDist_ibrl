@@ -18,6 +18,7 @@
 #   tpa_dynaibrl      Dyna-IBRL on the SINGLE-head stage-1, no margin
 #   tpa_dynaibrl_m001 + constant margin 0.01
 #   tpa_dynaibrl_dynens_m001  the same on the 5-head stage-1      ("+dynens")
+#   tpa_dynaibrl_sgft         tpa_dynaibrl_m001 + SGFT shaping (only sgft_coef differs)
 #   tpa_iql           offline IQL warm start, act_method=rl, no prior
 #   tpa_rlpd          50/50 sampling from a 2000-source + 20-demo prior buffer
 #
@@ -205,6 +206,30 @@ case $ARM in
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   tpa_dynaibrl_dynens_m001)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $DY_COMMON \
+      --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
+      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+  tpa_dynaibrl_sgft)
+    # tpa_dynaibrl_m001 + SGFT potential shaping, ONE field changed
+    # (--dyna.sgft_coef 1.0): same single-head stage-1, same constant margin 0.01,
+    # same 300k. A single-variable pair, unlike Threading's dynaibrl_plain_sgft,
+    # which also swapped the annealed schedule for a constant and so stopped
+    # isolating SGFT.
+    #
+    # Shaping rewrites Q'(z,a) = Q(z,a) - coef*V_hat(z), and the code moves BOTH
+    # the clamp bounds and the Q warm start with it (rl/simdist_dyna_ibrl.py:286,
+    # 393) so step 0 stays a fixed point of the SHAPED backup. Getting either
+    # wrong silently truncates the shaped Q.
+    #
+    # ⚠️ Prior evidence is a null, and a weak one: on plain Dyna sgft_coef=1.0
+    # scored 0.139 vs 0.124 (n=10, +0.015, ns) -- under the MPPI-proposal metric
+    # on the pre-fix implementation, so it transfers nothing to this arm. On
+    # Threading the shaping "could not produce contact skills" and what was
+    # missing was reaching, not credit assignment (memory
+    # project_sgft_shaping_threading). TPA is the task where stage-3 is dominated
+    # by rollout compounding, so a potential that reshapes credit over long
+    # horizons is at least mechanistically plausible here.
+    $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $DY_COMMON \
+      --dyna.sgft_coef ${SGFT_COEF:-1.0} \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
   *) echo "unknown arm '$ARM'"; exit 1 ;;

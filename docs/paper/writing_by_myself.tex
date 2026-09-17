@@ -187,38 +187,55 @@ Nonetheless, after equalizing value transfer, the best variant of model-based Dy
 \begin{table*}[t]
 \centering
 \caption{%
-  \textbf{Compare model-free and model-based variants on sim-to-sim benchmark.} SR is the success rate at the matched adaptation budget of $50$k target transitions. $N_{50}/N_{80}$ are the target transitions needed to first reach $50\%$ and $80\%$ success, measured on runs deliberately continued to $300$k. ``---" means the threshold was never reached even there. TPA is reported at $N_{20}$ because no arm reaches $50\%$ on it. AUC is the budget-normalized area under the adaptation curve, $\overline{\text{AUC}}_{B} = \tfrac{1}{B}\int_0^{B}\!\text{SR}(t)\,dt$, reported in the same units as SR. Every run starts from the same zero-shot policy and receives the same $20$ target demonstrations.}
+  \textbf{Compare model-free and model-based variants on sim-to-sim benchmark.}
+  Each row is identified by which of the three components it carries:
+  \emph{critic} = the source critic is transferred rather than learned from
+  scratch (the model-based arms get it for free, through the world model's
+  distilled value head), \emph{margin} = the prior-preference floor on the IBRL
+  argmax, \emph{ens.} = the plan-time dynamics ensemble. ``---'' marks a
+  component that does not apply to that family: the model-free arms have no
+  world model to ensemble, and MPPI has no argmax for a margin to act on.
+  SR is the success rate at the matched adaptation budget of $50$k target
+  transitions. $N_{20}$, $N_{50}/N_{80}$ are the target transitions needed to
+  first reach $20\%$, $50\%$ and $80\%$ success, measured on runs deliberately
+  continued to $300$k. ``---'' in those columns means the threshold was never
+  reached even there. TPA is reported at $N_{20}$ because no arm reaches $50\%$
+  on it. AUC is the budget-normalized area under the adaptation curve,
+  $\overline{\text{AUC}}_{B} = \tfrac{1}{B}\int_0^{B}\!\text{SR}(t)\,dt$,
+  reported in the same units as SR. Every run starts from the same zero-shot
+  policy and receives the same $20$ target demonstrations.}
 \label{tab:mf-vs-mb-budget}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{l cc cc cc cc c}
+\begin{tabular}{ccc cc cc cc cc c}
 \toprule
- & \multicolumn{2}{c}{Threading} & \multicolumn{2}{c}{Coffee}
- & \multicolumn{2}{c}{Square} & \multicolumn{2}{c}{TPA~[TPA]}
+\multicolumn{3}{c}{component} & \multicolumn{2}{c}{Threading} & \multicolumn{2}{c}{Coffee}
+ & \multicolumn{2}{c}{Square} & \multicolumn{2}{c}{TPA}
  & $\overline{\text{AUC}}_{50k}\uparrow$ \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-10}
-Method & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
+\cmidrule(lr){1-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-11}\cmidrule(lr){12-12}
+critic & margin & ens.
+       & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
        & $N_{50}/N_{80}\downarrow$ & SR$\uparrow$ & $N_{20}\downarrow$ & SR$\uparrow$
        & (mean over tasks) \\
 \midrule
-\multicolumn{10}{l}{\emph{Model-free}}\\
-\quad IBRL
-  & 175k/260k & 0.00 & 205k/--- & 0.00 & 260k/--- & 0.01 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
-\quad + source critic
-  & 55k/90k & 0.48 & 90k/200k & 0.30 & 85k/190k & 0.39 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
-\quad + margin
-  & 35k/80k & 0.67 & 65k/140k & 0.44 & 45k/155k & 0.51 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\multicolumn{12}{l}{\emph{Model-free} (IBRL)}\\
+$\times$ & $\times$ & ---
+  & 175k/260k & 0.00 & 205k/--- & 0.00 & 260k/--- & 0.01 & --- & 0.00 & 0.00 \\
+$\checkmark$ & $\times$ & ---
+  & 55k/90k & 0.48 & 90k/200k & 0.30 & 85k/190k & 0.29 & --- & 0.02 & 0.14 \\
+$\checkmark$ & $\checkmark$ & ---
+  & 35k/80k & 0.67 & 65k/140k & 0.44 & 45k/155k & 0.51 & \textbf{250k} & 0.08 & 0.26 \\
 \midrule
-\multicolumn{10}{l}{\emph{Model-based: Dyna}}\\
-\quad Dyna-IBRL
-  & 165k/--- & 0.11 & ---/--- & 0.04 & 275k/--- & 0.05 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
-\quad + margin
-  & 40k/120k & 0.58 & 70k/190k & 0.30 & 50k/160k & 0.52 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
-\quad + dynamics ensemble
-  & 30k/\textbf{70k} & 0.70 & 50k/\textbf{135k} & 0.51 & 40k/\textbf{85k} & 0.60 & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\multicolumn{12}{l}{\emph{Model-based: Dyna} (Dyna-IBRL)}\\
+$\checkmark$ & $\times$ & $\times$
+  & 165k/--- & 0.11 & ---/--- & 0.04 & 275k/--- & 0.05 & --- & 0.00 & 0.02 \\
+$\checkmark$ & $\checkmark$ & $\times$
+  & 40k/120k & 0.58 & 70k/190k & 0.30 & 50k/160k & 0.52 & --- & 0.01 & 0.21 \\
+$\checkmark$ & $\checkmark$ & $\checkmark$
+  & 30k/\textbf{70k} & 0.70 & 50k/\textbf{135k} & 0.51 & 40k/\textbf{85k} & 0.60 & --- & 0.01 & 0.27 \\
 \midrule
-\multicolumn{10}{l}{\emph{Model-based: planning}}\\
-\quad SimDist (MPPI)
-  & \textbf{5k}/90k & \textbf{0.76} & \textbf{15k}/--- & \textbf{0.56} & \textbf{10k}/--- & \textbf{0.67} & \ph{--k} & \ph{0.--} & \ph{0.--} \\
+\multicolumn{12}{l}{\emph{Model-based: planning} (SimDist, MPPI)}\\
+$\checkmark$ & --- & $\times$
+  & \textbf{5k}/90k & \textbf{0.76} & \textbf{15k}/--- & \textbf{0.56} & \textbf{10k}/--- & \textbf{0.67} & --- & \textbf{0.15} & \textbf{0.47} \\
 \bottomrule
 \end{tabular}}
 \end{table*}

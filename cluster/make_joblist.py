@@ -74,7 +74,8 @@ THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
              "dynaibrl_dynens_sgft"]
 TPA = ["tpa_ibrl", "tpa_ibrl_qsrc", "tpa_ibrl_qsrc_m001",
        "tpa_dynaibrl", "tpa_dynaibrl_m001", "tpa_dynaibrl_dynens_m001",
-       "tpa_iql", "tpa_rlpd"]
+       "tpa_iql", "tpa_rlpd",
+       "tpa_dynaibrl_sgft"]
 KNOWN = set(SQCOF) | set(THREADING) | set(TPA)
 
 def done(arm: str, seed: int, override: str | None) -> bool:
