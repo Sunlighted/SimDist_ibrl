@@ -863,6 +863,192 @@ probe worker 是 EGL-only，**从来不在这个列表里**；② §41b 的补�
 `exps/tmp/sq_oracle_ladder/gpu_trace*.log` 当基线。
 ---
 
+### 41d. ★★★ 四任务复现 41c 的 3×2×2（48 格）—— **dynamics 12/12 为正；target value 只在 Threading 崩；"oracle 让 proposal 无关"有一个反例（TPA）**（2026-09-17）
+
+#### 协议（四个任务同一把尺子）
+每任务 3 proposal × 2 value × 2 dynamics + 2 个 decode 控制 = 14 格，n=100/格，**串行**。
+planner 统一用 Square 调出来的小预算 `N=32 (base 10) H=3 iters=2 elites=8 temp=2.0
+init_std=0.15 min_std=0.02 momentum=0.1 base_policy_std=0.1`，base 一律
+**held-action、且在 RAW state 上查 proposal**（不经 decode）。
+⚠️ **这个预算没有按任务重扫，违反铁律 #9**（§40c 实测 `init_std` 在 Coffee 上值 40 点）
+⇒ **绝对值系统性低于各任务的真实水平**，可比的是 within-task 的 Δ。用户明确选了统一口径 (a)。
+
+| 任务 | stage-1（= src only proposal） | plain adapt（= src+tgt proposal + world model + V̂） | target 专家 critic | ep_len | strict |
+|---|---|---|---|---:|---|
+| Square | `square_simdist_rotw1_h5_seed1` | `sq_plain_d400000_seed101` | `square_ibrl_target_B_rotw1_sig01_seed1` | 400 | false |
+| Coffee G5x | `coffee_s1g5x_plain` | `coffee_g5x_3arm/cof_plain_seed1` | `coffee_ibrl_target_G5x_seed1` | 400 | **false** |
+| Threading plain_h5 | `threading_simdist_diversev2_h5_seed1` | `threading_simdist_adapt_long_h5_seed1` | `threading_ibrl_rlprior_prior_sig01_seed1` | 400 | **true** |
+| TPA (`ThreePieceAssembly_D0`) | `tpa_simdist_diversev1_h5_seed1` | `tpa_adapt100k_anch0_seed1` | `tpa_ibrl_target_qsrc_seed1` | **1000** | false |
+
+⚠️ **Coffee G5x 的 `strict` 是 false**，与速查表写的「strict 仅 Threading·Coffee」不符（真源是
+`coffee_s1g5x_plain/cfg.yaml`）。Threading 保持 strict=true，与它已发表的数字同口径。
+⚠️ **Threading 的 "tgt only" BC 训在 `threading_d0_sat_160000_s1` 上**，不是该臂 stage-2 真正用的
+`threading_d0_target_dynamics`（后者随 `release/data` 被 untrack 而本地丢失，commit 1cf5569）
+⇒ Threading 这一行与它自己的 "src+tgt" 行**不是同一批 demo**。其余三任务的 from-scratch BC
+都用各自 stage-2 的同一套 demo。
+
+#### ★★★ 48 格全表
+
+| 任务 | proposal | 裸跑 | learned+V̂ | learned+V̂ 经 decode | learned+V_tgt | **oracle+V̂** | **oracle+V_tgt** |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Square | src+tgt | 0.480 | 0.650 | 0.390 | 0.450 | 0.980 | 0.980 |
+| Square | tgt only | 0.200 | 0.130 | 0.210 | 0.230 | 0.910 | 0.990 |
+| Square | src only | 0.000 | 0.010 | — | 0.010 | 0.920 | 0.910 |
+| Coffee | src+tgt | 0.160 | 0.430 | 0.000 | 0.000 | 1.000 | 0.980 |
+| Coffee | tgt only | 0.030 | 0.110 | 0.000 | 0.000 | 0.990 | 0.950 |
+| Coffee | src only | 0.090 | 0.470 | — | 0.000 | 0.980 | 0.960 |
+| Threading | src+tgt | 0.380 | 0.830 | 0.250 | 0.080 | 0.970 | **0.420** |
+| Threading | tgt only | 0.000 | 0.420 | 0.270 | 0.020 | 0.980 | **0.410** |
+| Threading | src only | 0.140 | 0.700 | — | 0.130 | 0.980 | **0.220** |
+| TPA | src+tgt | 0.090 | 0.250 | 0.120 | 0.090 | 0.920 | 0.880 |
+| TPA | tgt only | 0.000 | 0.000 | 0.000 | 0.000 | **0.440** | 0.160 |
+| TPA | src only | 0.040 | 0.160 | — | 0.090 | 0.920 | 0.920 |
+
+**四任务平均**（src+tgt / tgt only / src only）：
+裸跑 `0.278 / 0.058 / 0.068` · learned+V̂ `0.540 / 0.165 / 0.335` ·
+**oracle+V̂ `0.968 / 0.830 / 0.950`** · oracle+V_tgt `0.815 / 0.628 / 0.753`。
+
+**四任务中位数**（`plots/value_dynamics_dumbbell.py` 的正图用的是这个，`--stat mean` 出均值版）：
+裸跑 `0.270 / 0.015 / 0.065` · learned+V̂ `0.540 / 0.120 / 0.315` ·
+**oracle+V̂ `0.975 / 0.945 / 0.950`** · oracle+V_tgt `0.930 / 0.680 / 0.915`。
+
+⚠️⚠️ **均值与中位数在这里不是口味问题，它们支持相反的结论。** n=4 的中位数 = 砍掉两端，
+而被砍掉的恰好是本节的两个发现：
+
+| 量 | 均值 | 中位数 | 中位数丢掉了谁 |
+|---|---:|---:|---|
+| oracle+V̂ `tgt only` | 0.830 | **0.945** | **TPA 的 0.440** = 结论 3 的唯一反例 |
+| oracle+V_tgt `src+tgt` | 0.815 | **0.930** | **Threading 的 0.420** = 结论 2 的主要证据 |
+| oracle+V_tgt `src only` | 0.753 | **0.915** | Threading 的 0.220 |
+| **oracle+V̂ 跨行极差** | **0.138** | **0.030** | ⇒ 中位数会说「oracle 下三行都 ~0.95」 |
+| **换 value（`src+tgt` 行）** | **−0.152** | **−0.045** | ⇒ 中位数会说「换 value 只花 4.5 点」 |
+
+这些不是测量误差型离群点：每格都是 n=100 的独立测量，且各有机制（Threading 的 V̂ 本就近乎最优，
+findings §31 ③ 的 99.3%；TPA 是 1000 步多阶段任务）。⇒ **引用中位数时必须同时给出跨任务的
+min–max**，正图就是这么画的（中位数标记 + 全距线 + 每任务散点，被中位数排除的点仍留在页面上）。
+
+#### ★★★ 结论 1：dynamics 项 **12/12 格全为正**，均值 +0.43 ~ +0.67
+| proposal | Square | Coffee | Threading | TPA | 均值 |
+|---|---:|---:|---:|---:|---:|
+| src+tgt | +0.330 | +0.570 | +0.140 | +0.670 | **+0.427** |
+| tgt only | +0.780 | +0.880 | +0.560 | +0.440 | **+0.665** |
+| src only | +0.910 | +0.510 | +0.280 | +0.760 | **+0.615** |
+
+这是 48 格里唯一**跨任务、跨 proposal 一致同号**的效应，也是唯一有量级的。与 findings §27/§31、
+`project_tpa_oracle_dynamics` 同向。⚠️ 加法 Δ 跨任务差 4.8×（0.14–0.91）；要跨任务汇总请用
+"剩余差距缩小比例"（三个配对预算任务在 §41c 前身那轮是 0.86–1.00），不要平均加法 Δ。
+
+#### ★★ 结论 2：**target critic 不是普遍更好** —— oracle 下均值 −0.15~−0.20，但几乎全由 Threading 贡献
+| proposal | Square | Coffee | **Threading** | TPA |
+|---|---:|---:|---:|---:|
+| src+tgt | 0.000 | −0.020 | **−0.550** | −0.040 |
+| tgt only | +0.080 | −0.040 | **−0.570** | **−0.280** |
+| src only | −0.010 | −0.020 | **−0.760** | 0.000 |
+
+⇒ Square/Coffee 上**测不出来**（|Δ|≤0.08），Threading 上**把 oracle planner 打崩**
+（0.97→0.42、0.98→0.41、0.98→0.22），TPA 的弱 proposal 行 **−0.280 (z=−4.5)**。
+机制与 §40c 同型（target 专家的 value 在 CEM 搜出的状态上 OOD：「不是分不出，是分得很确信
+但方向错」），而这里 **dynamics 是完美的**，所以不能用"与模型误差共适应"解释。
+与 findings §31 ③ 一致：Threading 上 oracle + **冻结的 source V̂** 本就 99.3%，换掉只能是净损失。
+★ **效应量出现在有余量处**（TPA 的 0.44 那格），贴天花板的格子测不出来 —— 铁律 #18 的又一实例。
+
+★★ **判别格：Threading 的崩塌是 critic 本身，不是 prior**（2026-09-17）。
+被质疑点：`eval_oracle_dyn_mppi.py:659-672` 会给 value 专家**重新挂上它训练时的 prior**，
+`--value_ibrl 1`（默认）时 V = `max(Q(s,π_actor), Q(s,π_prior))`。核查后**四个任务的 target 专家
+都经 `sgft_source_agent` 挂了冻结 RL agent** ⇒ 函数形式一致；**差的是 prior 的来源**：
+Square/Coffee/TPA 是各自的 **source** 专家，**Threading 是 target snapshots**
+（`threading_ibrl_target_snapshots_rlprior_seed1`）。于是加测 `--value_ibrl 0`（裸 actor、prior 不进 max）：
+
+| Threading `src+tgt`，oracle | 分数 |
+|---|---:|
+| 蒸馏 V̂ | 0.970 |
+| target critic，带 prior（`value_ibrl=1`） | 0.420 |
+| **target critic，裸 actor（`value_ibrl=0`）** | **0.290** |
+
+⇒ 去掉 prior **更差**（−0.13），prior 不是元凶；**崩塌来自 target 专家的 Q 本身在 CEM 状态上排序错**。
+预注册判据是 `<0.70 ⇒ critic 本身`，自动链据此退出，未重测其余 9 格。
+⚠️ 我中途一度断言"Threading 的 value 函数形式和另三个任务不同"，**错了**（四个都挂 prior），已更正。
+⚠️ 为这个检查给 `eval_square_oracle_mppi.py` / `eval_coffee_oracle_mppi.py` 加了 `--value_ibrl`
+（原先硬编码 `use_ibrl=True`；默认 1 = 此前所有格的行为，逐位兼容）。
+⚠️ 该格用时 4 小时 39 分（低成功率 ⇒ episode 跑满）。
+
+#### ★★ 结论 3：「完美 dynamics 让 planner 与 proposal 无关」**有一个反例**
+列内跨行极差（proposal 敏感度）：
+
+| 任务 | 裸跑 | learned+V̂ | **oracle+V̂** |
+|---|---:|---:|---:|
+| Square | 0.480 | 0.640 | **0.070** |
+| Coffee | 0.130 | 0.360 | **0.020** |
+| Threading | 0.380 | 0.410 | **0.010** |
+| **TPA** | 0.090 | 0.250 | **0.480** ⚠️ |
+
+三个 400 步任务上极差 **0.01–0.07**（oracle 把裸跑 0.000 的 proposal 分别救到 0.92 / 0.99 / 0.98）；
+**TPA（`ep_len=1000`、多阶段装配）是唯一例外**：同样 oracle，stage-1 头（裸跑 0.040）到 0.920，
+而 from-scratch BC（裸跑 0.000）只到 **0.440**。
+⚠️ 且 TPA 上**不是裸跑分决定 oracle 分**（0.040→0.920 vs 0.000→0.440）；区别像是 proposal 的
+**来源**：前两行是 world model 自己的 policy 头（共享 encoder、动作与蒸馏数据同族），
+BC 是独立 MLP。**未做判别臂，勿当结论。**
+⇒ **四任务平均的 0.145 把这个定性差异抹平了**，任何引用平均值的图注必须点出 TPA。
+
+#### ★★ 结论 4：`learned + V_target` 这一列**不可用** —— 被 decode 误差主导
+外部 critic 只吃原始状态 ⇒ learned 臂必须把终端 latent 解码；而 `shared_encoder=1` 下
+planner **正常从不调用 decode**（`rl/world_model.py` decode 注释）⇒ 误差只落在这些格上。
+专门的控制格（同一 proposal、同一 V̂，只多一次 `decode→encode`）量出：
+
+| decode 往返的代价 | Square | Coffee | Threading | TPA |
+|---|---:|---:|---:|---:|
+| src+tgt 行 | −0.260 | −0.430 | −0.580 | −0.130 |
+| tgt only 行 | **+0.080** | −0.110 | −0.150 | 0.000 |
+
+**解码代价 ≫ 换 value 的效应，而且 policy 相关到能翻符号**（Square 的两行 −0.26 / +0.08）。
+口径对齐后（`L+V_tgt − L+decode`）：
+
+| | Square | Coffee | Threading | TPA |
+|---|---|---|---|---|
+| src+tgt | +0.060 (z=0.9) | 0.000 | **−0.170 (z=−3.3)** | −0.030 (z=−0.7) |
+| tgt only | +0.020 (z=0.3) | 0.000 | **−0.250 (z=−5.4)** | 0.000 |
+
+⇒ 只有 Threading 在扣除解码后仍显著为负（与结论 2 同向）。
+★★ **教训**：我一度把 Square 的 `learned` 列读成「换 value −0.200 / +0.100、交互 z=3.43」，
+并配了 findings §33 的共适应解释 —— **全部是解码伪迹，已撤回**。预注册的控制格救了这个结论。
+⇒ **画图/写论文时这一列要么不画，要么必须与 decode 控制并列。**
+
+#### 工具与移植（本轮新增，全部默认关、逐位兼容）
+- `scripts/eval_coffee_oracle_mppi.py`：`--arms learned` · `--proposal_simdist_ckpt` ·
+  `--proposal_bc_ckpt` · `--decode_roundtrip` · **`--shift_from_cfg`**（从 stage-1 cfg 读 target）
+  · 补了 `[setup] planner` 行 · 修了过时的 "(proposal still the expert)" 日志。
+  ⚠️⚠️ **该脚本的 `TARGET_B` 常量是 C75kp25（kp 0.25 / lid 75 / mass 3），不是定稿的 G5x
+  （kp 0.30 / lid 5 / mass 8 / friction 0.2 / pod_holder 5）** ⇒ **不传 `--shift_from_cfg` 就会静默
+  评在另一个 target 上**。这就是「Coffee 的旧 oracle 数不太对」的根因。
+- `scripts/eval_oracle_dyn_mppi.py`（Threading + TPA）：`--proposal_bc_ckpt`（走
+  `rl/simdist_planner.py:128` 的 `proposal_policy` 钩子，并接到 `policy` 臂）·
+  **`--temperature/--init_std/--min_std/--base_policy_std/--momentum`**（原先**未暴露**，
+  两臂静默沿用各 run 自己的 cfg ⇒ 统一预算根本不成立）· **`--base_held`**（两臂都用 raw-state
+  held-action；原有的 `--base_open_loop` 只管 oracle 臂，且第一步仍过 `_policy_rollout(z0)` ⇒
+  BC 行独有解码误差）· `--decode_roundtrip` · **`--demo_path_override`**。
+  ★ **回归门**：不带任何新参数跑默认路径，复现 findings §27 的 `policy 0.400 / learned 0.875`
+  ⇒ 实测 **0.380 / 0.840**，通过。
+- `--demo_path_override` 的用途：`AdaptWorkspace` **构造时**就加载 target demo buffer，
+  而 Threading plain_h5 的那套 demo 已丢失 ⇒ 无法构造。该 buffer 只在训练侧被用
+  （stage-2 BC / stage-3 batch / `_anchor_far_weights`），**评测从不采样**，所以覆盖它
+  不会改变任何评测数字，只是让 workspace 能建起来。
+- 资产：`{threading_bc_tgtonly_s160,coffee_bc_tgtonly_g5x,tpa_bc_tgtonly}_seed1`
+  （from-scratch target-demo BC，配方 = `train_target_bc_priors.sh` 但 `--load_model none`）。
+- 日志 + GPU trace 全部存档：`exps/tmp/x4_grid/`（77 个文件），另有
+  `exps/tmp/cof_grid_crashed/`、`exps/tmp/thr_grid_aborted/` 存失败那轮。
+
+#### 未决 / 边界
+- [ ] **全部单 seed**（每任务一个 stage-1 + 一个 adapt + 一个 BC）。方法级结论按项目惯例需 ≥2 seed。
+- [ ] **预算未按任务重扫**（见协议一节）⇒ 绝对值偏低，尤其 Coffee。
+- [ ] **TPA 的 tgt only 行在 learned 列全为 0**（地板），该行的 learned 侧不含信息。
+- [ ] 结论 3 的机制（"proposal 来源"而非"裸跑分"）**缺判别臂**。Square 上那个判别臂
+      （`LI`，il_ft BC 裸跑 0.500 未被适配 → 0.590 ≈ 被适配的 0.650）判的是 **learned** 列，
+      不能外推到 oracle 列或别的任务。
+- [ ] Coffee 的 `LRNGATE`（原配方 learned）实测 0.410 vs 该 run 日志里的 0.550 ——
+      在铁律 #14 的训练中 eval 乐观偏差（0.06–0.19）范围内，但没有独立复核。
+
+---
+
 ### 40e. ★ Coffee 三个 target 横评 —— **G5x + `bc_anchor_coef 1.0` 追平 oracle**（2026-08-22）
 
 #### 定稿：Coffee 的 target 用 **G5x**

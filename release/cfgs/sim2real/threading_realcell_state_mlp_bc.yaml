@@ -1,0 +1,60 @@
+# ============================================================================
+# REAL-CELL MLP-BC prior for Threading (replaces the flow prior: flow was too
+# slow -- ~50 grad steps/s here vs ~650 for this MLP, and IBRL queries the prior
+# on EVERY action, so the prior's inference cost multiplies into all of RL;
+# iron law #17).
+#
+# Recipe = release/cfgs/mimicgen/coffee_d0_state_source_mlp_bc.yaml, the MLP run
+# on a MimicGen core 1000-demo set (0.94 on source), which is the closest data
+# regime to ours. Changes, marked ### REAL-CELL:
+#   1. dataset.path -> 1000 MimicGen demos generated on Threading_RealCell
+#   2. strict_success ON + eval sigma 0.1 -> the in-training eval (and so the
+#      TopkSaver's pick of model0.pt) scores the prior under the SAME success
+#      rule and init noise the IBRL run will use it under. Coffee's run had
+#      neither; selecting a Threading prior on lenient success would reward
+#      reward-hacking insertions (the reason strict success exists).
+#
+# The geometry reaches the eval env through the dataset: its env_name is
+# Threading_RealCell, which train_bc rebuilds the eval env from.
+# ============================================================================
+seed: 1
+
+dataset:
+  path: release/data/mimicgen/generated/threading_realcell/processed_data96.hdf5   ### REAL-CELL
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  eval_episode_len: 400
+  val_ratio: 0.0
+
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_hand_init_perturb_joint_sigma: 0.1   ### REAL-CELL: = IBRL's train/eval sigma
+eval_domain_shift:
+  mode: none
+
+strict_success:                            ### REAL-CELL: = IBRL's success rule
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0
+
+use_wb: 1
+save_dir: exps/mimicgen/threading_realcell_mlp_bc_seed1

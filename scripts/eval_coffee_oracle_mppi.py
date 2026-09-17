@@ -211,6 +211,18 @@ def main():
                          "fidelity test: V_hat regresses onto the very V_src this arm "
                          "otherwise uses, so a drop means distillation lost the LOCAL "
                          "candidate-ranking structure (which no offline MSE reports).")
+    ap.add_argument("--value_ibrl", type=int, default=1,
+                    help="How an external --value_weight critic turns into V(s). "
+                         "1 (default, and what every cell so far used) = the IBRL "
+                         "HYBRID max-Q over {RL actor, attached prior} -- the policy "
+                         "that agent actually executes. 0 = the bare RL actor's "
+                         "min-ensemble Q, dropping the prior from the max. All four "
+                         "tasks' target experts attach a frozen RL agent via "
+                         "sgft_source_agent, so the two settings are not a monotone "
+                         "rescaling of each other and induce DIFFERENT rankings "
+                         "(rl/q_agent.py value() docstring) -- which is why the "
+                         "Threading value collapse has to be re-measured at 0 before "
+                         "it can be attributed to the critic rather than the prior.")
     ap.add_argument("--value_weight", default="",
                     help="Take the terminal value from THIS agent instead of the "
                          "source expert (proposal still comes from --weight). "
@@ -375,17 +387,17 @@ def main():
         """Terminal value on RAW states. --value_weight wins over --simdist_ckpt:
         with both given the world model supplies dynamics only."""
         if args.value_weight:
-            return value_agent.value({"state": states}, use_ibrl=True).view(-1)
+            return value_agent.value({"state": states}, use_ibrl=bool(args.value_ibrl)).view(-1)
         if wm is not None:
             return wm.predict_value(wm.encode(states), target=False).view(-1)
-        return value_agent.value({"state": states}, use_ibrl=True).view(-1)
+        return value_agent.value({"state": states}, use_ibrl=bool(args.value_ibrl)).view(-1)
 
     def value_fn_latent(z):                     # [N, z] -> [N]
         """Terminal value on IMAGINED latents (the learned arm). With
         --value_weight the latent must be decoded, a path the planner never uses
         under shared_encoder=1, so --decode_roundtrip exists to price it."""
         if args.value_weight:
-            return value_agent.value({"state": wm.decode(z)}, use_ibrl=True).view(-1)
+            return value_agent.value({"state": wm.decode(z)}, use_ibrl=bool(args.value_ibrl)).view(-1)
         if args.decode_roundtrip:
             return wm.predict_value(wm.encode(wm.decode(z)), target=False).view(-1)
         return wm.predict_value(z, target=False).view(-1)

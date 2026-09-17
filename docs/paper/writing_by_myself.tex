@@ -12,11 +12,26 @@
 \usepackage{booktabs}
 \usepackage{caption}      % for \captionof inside minipage
 \usepackage{subcaption}   % for \subcaptionbox / subfigure
+\usepackage{pifont}       % \ding{51}/\ding{55}: tick and cross from ONE font
 \usepackage{multirow}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder numbers
 \newcommand{\pmsd}[1]{{\scriptsize$\pm$#1}}      % seed s.d. suffix in tables
+% --- component table marks ---------------------------------------------------
+% Both glyphs come from the SAME font (Zapf Dingbats via pifont). Mixing
+% amssymb's \checkmark with bbding's \XSolid is what makes the cross look about
+% twice the weight of the tick -- they are different typefaces at the same
+% nominal size. \ding{51}/\ding{55} are a matched pair.
+% The cross is set in grey and slightly smaller on purpose: in a component
+% table the reader is tracing which components are ON, so the ticks should be
+% the figure and the crosses the ground. Knobs, in the order you are likely to
+% want them: \CMSCALE (both marks), the grey level, \NOSCALE (cross only).
+\newcommand{\CMSCALE}{0.85}
+\newcommand{\NOSCALE}{0.78}
+\newcommand{\yes}{\scalebox{\CMSCALE}{\ding{51}}}
+\newcommand{\no}{\textcolor{black!35}{\scalebox{\NOSCALE}{\ding{55}}}}
+\newcommand{\na}{\textcolor{black!35}{---}}
 \newcommand{\twoknob}[2]{\begin{tabular}[c]{@{}l@{}}#1\\#2\end{tabular}}  % two-line cell, centred on the row baseline
 % --- uniform task panels -----------------------------------------------------
 % The five renders have different pixel sizes AND different aspect ratios, so
@@ -218,23 +233,23 @@ critic & margin & ens.
        & (mean over tasks) \\
 \midrule
 \multicolumn{12}{l}{\emph{Model-free} (IBRL)}\\
-$\times$ & $\times$ & ---
+\no & \no & \na
   & 175k/260k & 0.00 & 205k/--- & 0.00 & 260k/--- & 0.01 & --- & 0.00 & 0.00 \\
-$\checkmark$ & $\times$ & ---
+\yes & \no & \na
   & 55k/90k & 0.48 & 90k/200k & 0.30 & 85k/190k & 0.29 & --- & 0.02 & 0.14 \\
-$\checkmark$ & $\checkmark$ & ---
+\yes & \yes & \na
   & 35k/80k & 0.67 & 65k/140k & 0.44 & 45k/155k & 0.51 & \textbf{250k} & 0.08 & 0.26 \\
 \midrule
 \multicolumn{12}{l}{\emph{Model-based: Dyna} (Dyna-IBRL)}\\
-$\checkmark$ & $\times$ & $\times$
+\yes & \no & \no
   & 165k/--- & 0.11 & ---/--- & 0.04 & 275k/--- & 0.05 & --- & 0.00 & 0.02 \\
-$\checkmark$ & $\checkmark$ & $\times$
+\yes & \yes & \no
   & 40k/120k & 0.58 & 70k/190k & 0.30 & 50k/160k & 0.52 & --- & 0.01 & 0.21 \\
-$\checkmark$ & $\checkmark$ & $\checkmark$
+\yes & \yes & \yes
   & 30k/\textbf{70k} & 0.70 & 50k/\textbf{135k} & 0.51 & 40k/\textbf{85k} & 0.60 & --- & 0.01 & 0.27 \\
 \midrule
 \multicolumn{12}{l}{\emph{Model-based: planning} (SimDist, MPPI)}\\
-$\checkmark$ & --- & $\times$
+\yes & \na & \no
   & \textbf{5k}/90k & \textbf{0.76} & \textbf{15k}/--- & \textbf{0.56} & \textbf{10k}/--- & \textbf{0.67} & --- & \textbf{0.15} & \textbf{0.47} \\
 \bottomrule
 \end{tabular}}

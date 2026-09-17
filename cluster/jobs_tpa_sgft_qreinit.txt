@@ -1,0 +1,10 @@
+tpa_dynaibrl_sgft_qreinit 1
+tpa_dynaibrl_sgft_qreinit 101
+tpa_dynaibrl_sgft_qreinit 201
+tpa_dynaibrl_sgft_qreinit 301
+tpa_dynaibrl_sgft_qreinit 401
+tpa_dynaibrl_sgft_qreinit 501
+tpa_dynaibrl_sgft_qreinit 601
+tpa_dynaibrl_sgft_qreinit 701
+tpa_dynaibrl_sgft_qreinit 801
+tpa_dynaibrl_sgft_qreinit 901

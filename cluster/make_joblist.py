@@ -38,7 +38,7 @@ LAM_B_SQCOF = [f"{t}_dsrcB_{d}" for t in ("sq", "cof")
                for d in ("0.02", "0.035", "0.05", "0.08")]
 SQCOF = [f"{t}_dynaibrl{s}" for t in ("sq", "cof")
          for s in ("", "_m0", "_m001", "_sgft", "_plain", "_plain_m0",
-                   "_plain_m001", "_plain_sgft")]
+                   "_plain_m001", "_plain_sgft", "_sgft_qreinit")]
 SQCOF += [f"{t}_valabl_{a}" for t in ("sq", "cof")
           for a in ("dyn", "joint", "v2d", "d2v", "marg")]
 SQCOF += [f"{t}_optim_{v}" for t in ("sq", "cof")
@@ -71,11 +71,11 @@ THREADING = ["plain_h5", "plain_nobc", "plain_anch", "dynens_nobc",
              "dynaibrl_m001bootonly", "dynaibrl_m0demo",
              "dynaibrl_plain_sgft",
              "dynaibrl_dynens", "dynaibrl_dynens_m0", "dynaibrl_dynens_m001",
-             "dynaibrl_dynens_sgft"]
+             "dynaibrl_dynens_sgft", "dynaibrl_dynens_sgft_qreinit"]
 TPA = ["tpa_ibrl", "tpa_ibrl_qsrc", "tpa_ibrl_qsrc_m001",
        "tpa_dynaibrl", "tpa_dynaibrl_m001", "tpa_dynaibrl_dynens_m001",
        "tpa_iql", "tpa_rlpd",
-       "tpa_dynaibrl_sgft"]
+       "tpa_dynaibrl_sgft", "tpa_dynaibrl_sgft_qreinit"]
 KNOWN = set(SQCOF) | set(THREADING) | set(TPA)
 
 def done(arm: str, seed: int, override: str | None) -> bool:

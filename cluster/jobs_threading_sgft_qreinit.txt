@@ -1,0 +1,10 @@
+dynaibrl_dynens_sgft_qreinit 1
+dynaibrl_dynens_sgft_qreinit 101
+dynaibrl_dynens_sgft_qreinit 201
+dynaibrl_dynens_sgft_qreinit 301
+dynaibrl_dynens_sgft_qreinit 401
+dynaibrl_dynens_sgft_qreinit 501
+dynaibrl_dynens_sgft_qreinit 601
+dynaibrl_dynens_sgft_qreinit 701
+dynaibrl_dynens_sgft_qreinit 801
+dynaibrl_dynens_sgft_qreinit 901

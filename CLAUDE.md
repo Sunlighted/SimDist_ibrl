@@ -18,7 +18,7 @@ Last updated: 2026-09-11
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
 | **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **§48 5-seed 重做（跑中）：§44 的三项增广已实现 + `DEMO_OFFSET` 解除同一 draw 的封锁；读法与 Phase 2 已预注册** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
-| **`docs/tasks.md`** | ~970 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要（oracle 列极差 0.07 vs learned 列 0.64）**。 |
+| **`docs/tasks.md`** | ~1120 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要** · **★§41d 四任务 48 格复现（dynamics 12/12 正；target value 只在 Threading 崩；TPA 是反例；★`learned+V_tgt` 列被 decode 误差废掉）**。 |
 | **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）**。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
@@ -383,6 +383,20 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
   （首次追平完美 dynamics）。**杠杆是 stage-2 的 anchor（+0.40），不是 stage-3 adapt（+0.03）**；
   选 target 看 `stage-1 MPPI 分数`不看 oracle；**难度必须与 gap 同相位且占数据主体**
   （C50 唯一崩掉：难度 86% 在只占 4% 转移的 close-lid 相）。附 6 个被证伪的假设 + 两个测量地板。
+- **§41d** ★★★ **四任务 48 格复现（Square/Coffee/Threading/TPA，统一小预算 + held base，n=100/格）。**
+  ★ **dynamics 项 12/12 格全为正**，均值 +0.43~+0.67（唯一跨任务同号且有量级的效应）。
+  ★ **target critic 不是普遍更好**：Square/Coffee 测不出（|Δ|≤0.08），**Threading 把 oracle
+  planner 打崩（0.97→0.42 / 0.98→0.41 / 0.98→0.22）**，TPA 弱 proposal 行 −0.280 (z=−4.5)；
+  机制同 §40c（target value 在 CEM 状态上 OOD），但**这里 dynamics 是完美的** ⇒ 不是共适应。
+  ★ 「oracle 让 proposal 无关」在三个 400 步任务上极差仅 0.01–0.07，**TPA（ep_len=1000）是反例
+  （0.480）**，且那里不是裸跑分决定 oracle 分 ⇒ 平均值会抹平这个定性差异。
+  ★★ **`learned+V_tgt` 整列不可用**：外部 critic 迫使解码终端 latent，decode 往返本身值
+  −0.13~−0.58 且 policy 相关到能翻符号 ⇒ 我曾把它读成「换 value −0.200、交互 z=3.43」并配了
+  §33 的机制解释，**全是解码伪迹、已撤回**（预注册的 decode 控制格救了它）。
+  ⚠️ 全部单 seed；预算未按任务重扫（违反铁律 #9 ⇒ 绝对值偏低）；Threading 的 tgt-only BC
+  用的是另一套 demo（原集随 release/data 丢失）；**Coffee G5x 的 strict 其实是 false**。
+  ⚠️ `eval_coffee_oracle_mppi.py` 的 `TARGET_B` 常量是 **C75kp25 不是 G5x** ⇒ 必须传
+  `--shift_from_cfg`，否则静默评错 target（旧 Coffee oracle 数就是这么错的）。
 - **§41c** ★★★ **learned vs oracle dynamics × 4 proposal × 2 value（`base_policy_std=0.1`）：
   模型误差改变了其他部件重不重要。** oracle 列极差 **0.07**（0.980/0.910/0.920，规划增益
   +0.50~+0.92，把裸跑 **0.000** 的 stage-1 头拉到 0.920）vs learned 列极差 **0.64**

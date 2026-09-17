@@ -868,15 +868,17 @@ case $ARM in
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS \
       --use_wb $USE_WB --state_only_no_render 1 ;;
-  dynaibrl_dynens_sgft)
+  dynaibrl_dynens_sgft|dynaibrl_dynens_sgft_qreinit)
     # ⚠️ Differs from dynaibrl_dynens in TWO fields -- see dynaibrl_plain_sgft.
+    QREINIT_ARGS=()
+    case $ARM in *_qreinit) QREINIT_ARGS=(--dyna.q_init_from_value 0) ;; esac
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS --save_dir $OUT --seed $SEED \
       --target_demo_path $DEMOS --target_num_data 20 \
       --max_transitions 100000 --adapt_interval 1000 --eval_every_rounds 5 \
       --num_eval_episode 100 --num_eval_proc 10 \
       --eval_hand_init_perturb_joint_sigma 0.1 --eval_policy_only 1 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
-      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 \
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 "${QREINIT_ARGS[@]}" \
       --use_wb $USE_WB --state_only_no_render 1 ;;
   ibrl_m005anneal0)
     # train_rl.py, NOT train_ibrl_simdist.py. ibrl_m005_seed1's cfg.yaml matches

@@ -551,10 +551,12 @@ case $ARM in
       --max_transitions 300000 \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
-  sq_dynaibrl_sgft|cof_dynaibrl_sgft)
+  sq_dynaibrl_sgft|cof_dynaibrl_sgft|sq_dynaibrl_sgft_qreinit|cof_dynaibrl_sgft_qreinit)
+    QREINIT_ARGS=()
+    case $ARM in *_qreinit) QREINIT_ARGS=(--dyna.q_init_from_value 0) ;; esac
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $COMMON \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
-      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 ;;
+      --dyna.prior_margin_steps $MARGIN_STEPS --dyna.sgft_coef 1.0 "${QREINIT_ARGS[@]}" ;;
   sq_dynaibrl_plain|cof_dynaibrl_plain)
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $COMMON \
       --dyna.prior_margin_init $MARGIN_INIT --dyna.prior_margin_final $MARGIN_FINAL \

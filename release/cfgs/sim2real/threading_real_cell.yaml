@@ -1,0 +1,173 @@
+# ============================================================================
+# THREADING_D0 -- REAL CELL, single source of truth.
+#
+# Everything here is MEASURED on the robot (calibration chain: scan_run2 ->
+# ground_scan_run2.py -> make_cell_layout.py -> cell_layout.json) or is an
+# explicitly flagged PLACEHOLDER. Nothing is hand-tuned to make a render look
+# nice. Quality of the base solve: 1.0 deg / 11.4 mm over 14 poses (PARK); the
+# table plane is tilted 0.68 deg from base z, which cross-checks the whole chain.
+#
+# Frames/conventions are documented in env/sim2real.py. Short version:
+#   * poses are in the frame named by `frame` ("base" = robot0_base,
+#     "ee" = robot0's gripper0_grip_site -- NOT Franka's O_T_EE);
+#   * `quat` is (w,x,y,z) in the OPENCV optical convention (+z along the optical
+#     axis, +y DOWN). MuJoCo's own convention is applied internally.
+#   * `fovy` is the VERTICAL fov in degrees; renders are square so fx must == fy.
+#
+# Gate:     python scripts/test_sim2real.py
+# Preview:  python scripts/preview_sim2real.py --config release/cfgs/sim2real/threading_real_cell.yaml
+# ============================================================================
+enabled: 1
+
+# ------------------------------------------------------------------ GEOMETRY
+# Real: the table plane sits 20.8 mm ABOVE the base origin.
+# Sim default is -112 mm (robosuite puts the Panda on a 0.912 m column over a
+# 0.800 m table), so this is a +132.8 mm lift AND A SIGN FLIP. Consequence to
+# keep in mind: the nominal initial eef drops from 211 mm to 78 mm above the
+# table, i.e. the whole task geometry changes and the source expert, the stage-1
+# replay and the target demos all have to be regenerated.
+table_above_base: 0.0208
+
+# Visual-only enlargement (half-sizes, metres). The real bench is wide enough
+# that no edge is visible from either camera; 2.5 x 2.5 pushes every edge out of
+# frame. Writes `table_visual` (contype=conaffinity=0) ONLY -- the collision box
+# and the robot base placement are untouched. Never widen via table_full_size:
+# threading.py:244 derives the base xpos from table_full_size[0].
+table_visual_half: [2.50, 2.50]
+
+# Sampled from table.jpg, tabletop region: median (226, 220, 206)/255, with an
+# interquartile spread of only 2-3/255 => a uniform matte warm white. Setting
+# this also drops the ceramic texture.
+table_rgb: [0.8863, 0.8627, 0.8078]
+
+# Task objects (needle + tripod), from objects.jpg. The parts are 3D-printed in
+# one burgundy PLA; sampled by colour mask (R > G+35 and R > B+35), then taking
+# the LIT faces (top 40% by luminance) because a shaded face is the albedo times
+# the lighting, and MuJoCo applies the lighting itself: median (119, 67, 69).
+# Replaces the MJCF's wood-grain texture -- grain is a cue the policy can learn
+# that does not exist on the bench. Contrast against the white table is also what
+# the ~1.8 mm alignment has to resolve, so this has to match, not merely look ok.
+object_rgb: [0.4667, 0.2627, 0.2706]
+
+# Rigid translation of the WHOLE reset distribution, in the table frame (m).
+# Moves needle and tripod together, so their relative geometry -- the task -- is
+# unchanged; it only says where on the bench the parts are laid out.
+#
+# ★ WHAT THIS BUYS, measured by ray-casting from the AS-MEASURED zed2i:
+# it is an OCCLUSION fix, not a resolution fix.
+#     dy +0.00   ring 5/20 geoms visible -- blocked by robot0_g40/g41 (arm links)
+#     dy +0.10   ring 20/20 visible
+#     dy +0.30   ring 20/20 visible
+# At the D0 default the arm sits squarely in front of the hole from this camera.
+#
+# It does NOT improve angular resolution, because closing the range degrades the
+# viewing incidence by just as much (the camera is off to the robot's LEFT at
+# base y=+0.48, so pulling the parts left flattens the angle onto the hole face):
+#     dy +0.00  d=0.943  hole 3.4 x 4.6 px  incidence 48.0
+#     dy +0.10  d=0.880       3.2 x 4.8     incidence 52.9
+#     dy +0.30  d=0.776       2.6 x 5.2     incidence 64.7
+# Projected AREA is flat across all of them. So take the smallest offset that
+# clears the arm -- +0.10 -- and get resolution from the FOV instead.
+#
+# ⚠️ The optimum is CAMERA-DEPENDENT. For a camera moved forward to base
+# (0.60,0.48,0.78) the best offset is +0.30, for a different reason (there it
+# really does close the range). Re-run scripts/preview_sim2real.py after any
+# camera move; do not carry this number across.
+# ⚠️ Do NOT shift objects individually -- moving only the tripod runs it into the
+# needle's sampling box (RandomizationError) and gains nothing.
+# Reach re-verified on the LIFTED table by driving the OSC to each object:
+# residual <1 mm at every dy tested.
+workspace_offset: [0.0, 0.10]
+
+# ------------------------------------------------------------------- CAMERAS
+cameras:
+  # --- zed2i, external -----------------------------------------------------
+  # ⚠️ TWO THINGS ARE STILL PLACEHOLDERS HERE:
+  #   1. ROLL. The layout reports only the optical axis (+0.57, -0.43, -0.70),
+  #      which is 2 DOF; `look_dir` synthesises the third from up=+z. A camera
+  #      rolled 10 deg renders an image rolled 10 deg and no training fixes it.
+  #      REPLACE with the measured `quat` from cell_layout.json before generating
+  #      any dataset.
+  #   2. fovy 70.0 is the ZED 2i spec, not your calibration. Replace with
+  #      fy + res from the intrinsics (fovy is then derived).
+  #
+  # ⚠️ OCCLUSION: at the AS-MEASURED position the robot arm sits between the
+  # camera and the workspace -- base depth 0.796 m vs tripod depth 0.99 m, and
+  # the render shows the tripod almost entirely hidden behind the gripper.
+  # Moving the camera forward along base +x by 46 cm clears it
+  # (base depth 0.977 > tripod 0.90):
+  #     pos: [0.60, 0.48, 0.78]     # RECOMMENDED
+  # Decide this BEFORE regenerating data; it is baked into every frame.
+  - name: agentview
+    frame: base
+    pos: [0.141, 0.479, 0.778]
+    look_dir: [0.57, -0.43, -0.70]      # PLACEHOLDER for `quat`
+    up: [0.0, 0.0, 1.0]
+    # ⚠️ THE RING OPENING IS 20 mm. Measured with scripts/preview_sim2real.py:
+    #     fovy 70 -> 4.1 x 3.4 px   UNRESOLVABLE
+    #     fovy 45 -> 6.9 x 5.8 px   marginal
+    #     fovy 30 -> 10.6 x 9.0 px  marginal
+    # Shifting the objects does NOT fix this: moving the tripod 15 cm toward the
+    # camera (as far as it can go before RandomizationError -- the tripod box
+    # collides with the needle box) takes the hole from 4.2x3.6 to 4.5x3.5 px,
+    # i.e. nothing, because the incidence angle degrades as the distance drops.
+    # Rotating tripod_z_rot only TRADES the two axes (4.2x3.6 -> 2.7x5.3 at +45
+    # deg); the projected area is flat. Angular resolution is the only lever.
+    # For scale, sim's own agentview resolves it even worse (2.8 x 12.9 px at
+    # 74.7 deg incidence) -- the third-person view never aligned the insertion in
+    # the first place, the wrist camera does.
+    # ⚠️ A ZED's FOV is FIXED, so "fovy 45" on the bench means CROPPING the native
+    # image and rescaling. The crop window must be CENTRED ON THE OPTICAL AXIS:
+    # MuJoCo's camera is a symmetric pinhole with no principal-point offset, so an
+    # off-centre crop cannot be represented here and would desync sim from real.
+    fovy: 70.0                          # PLACEHOLDER for fy/res
+
+  # --- zedm, wrist --- DELIBERATELY NOT APPLIED YET ------------------------
+  # The hand-eye result is  pos: [0.036, -0.076, 0.014]  in "the EE frame".
+  # It is commented out rather than applied because APPLYING IT NOW IS WORSE THAN
+  # LEAVING IT OUT:
+  #   * the rotation is missing, so the camera would keep sim's orientation while
+  #     moving ~150 mm to a new mount point -- it then stares at bare tabletop and
+  #     renders a BLANK image (this actually happened: figs/sim2real/
+  #     robot0_eye_in_hand.png, with the preview reporting OUT-OF-FRAME / BEHIND);
+  #   * "EE frame" is not yet reconciled. This field means robosuite's
+  #     gripper0_grip_site; a Franka hand-eye is normally expressed in O_T_EE,
+  #     which depends on F_T_EE / NE_T_EE. For reference the sim's own wrist mount
+  #     is (0, +0.050, -0.097) in grip_site. Until the frames are matched the
+  #     difference between those two numbers is uninterpretable, so do NOT
+  #     "correct" either one.
+  # Uncomment once BOTH the rotation and the frame definition are in hand.
+  # The wrist camera matters more than agentview here: the ~1.8 mm insertion
+  # alignment is driven by it, agentview only does coarse localisation.
+  # - name: robot0_eye_in_hand
+  #   frame: ee
+  #   pos: [0.036, -0.076, 0.014]
+  #   quat: [w, x, y, z]                # REQUIRED -- OpenCV optical convention
+  #   fy: 0.0
+  #   res: 224
+
+# ------------------------------------------------- RANDOMISATION (around the above)
+# Rule: MEASURED quantities are matched, not randomised. These cover what is
+# genuinely uncontrolled or drifts. Ranges chosen from the preview renders --
+# the previous, wider set produced visible green tints and blown-out tabletops.
+dr_table_rgb_tint: 0.02        # +- per channel; the table is a KNOWN white, so narrow
+dr_table_rgb_gain: [0.85, 1.10]
+# Printed parts vary batch to batch and the filament fades; wider than the table.
+dr_object_rgb_tint: 0.025
+dr_object_rgb_gain: [0.85, 1.15]
+dr_background_gray: [0.25, 0.85]   # only the robot/base is visible once the table is wide
+dr_light_diffuse: [0.70, 1.25]
+dr_light_ambient: [0.02, 0.20]     # capped: >0.2 blows the tabletop to pure white
+dr_light_specular: [0.40, 1.50]
+dr_light_dir: 0.30
+dr_light_pos: 0.40
+
+# Mounting/calibration residual. Sized on the quoted PARK solve (1.0 deg / 11.4 mm).
+dr_cam_pos: 0.011
+dr_cam_rot_deg: 1.0
+dr_cam_fovy_deg: 1.0
+
+# Base mounting tolerance ONLY. This moves the kinematic chain, so it is NOT a
+# way to absorb a mis-measured table height -- that must be matched exactly
+# (the task's tolerance window is ~1.8 mm).
+dr_base_height: 0.005

@@ -208,7 +208,7 @@ case $ARM in
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_DYNENS $DY_COMMON \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
       --dyna.prior_margin_steps $MARGIN_STEPS ;;
-  tpa_dynaibrl_sgft)
+  tpa_dynaibrl_sgft|tpa_dynaibrl_sgft_qreinit)
     # tpa_dynaibrl_m001 + SGFT potential shaping, ONE field changed
     # (--dyna.sgft_coef 1.0): same single-head stage-1, same constant margin 0.01,
     # same 300k. A single-variable pair, unlike Threading's dynaibrl_plain_sgft,
@@ -228,10 +228,12 @@ case $ARM in
     # project_sgft_shaping_threading). TPA is the task where stage-3 is dominated
     # by rollout compounding, so a potential that reshapes credit over long
     # horizons is at least mechanistically plausible here.
+    QREINIT_ARGS=()
+    case $ARM in *_qreinit) QREINIT_ARGS=(--dyna.q_init_from_value 0) ;; esac
     $PY train_simdist_dyna_ibrl.py --stage1_ckpt $STAGE1_PLAIN $DY_COMMON \
       --dyna.sgft_coef ${SGFT_COEF:-1.0} \
       --dyna.prior_margin_init $CONST_MARGIN --dyna.prior_margin_final $CONST_MARGIN \
-      --dyna.prior_margin_steps $MARGIN_STEPS ;;
+      --dyna.prior_margin_steps $MARGIN_STEPS "${QREINIT_ARGS[@]}" ;;
   *) echo "unknown arm '$ARM'"; exit 1 ;;
 esac
 RC=$?

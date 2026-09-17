@@ -358,9 +358,9 @@ def resolve_threading_bindings(env) -> dict:
     `env` is the raw robosuite env (e.g. an instance of Threading_D0), NOT the
     PixelRobosuite wrapper.
     """
-    if env.__class__.__name__ != "Threading_D0":
+    if env.__class__.__name__ not in THREADING_BINDING_CLASSES:
         raise NotImplementedError(
-            f"resolve_threading_bindings only supports Threading_D0, got "
+            f"resolve_threading_bindings only supports {THREADING_BINDING_CLASSES}, got "
             f"{env.__class__.__name__}. Add a registry for other tasks if needed."
         )
 
@@ -715,13 +715,22 @@ def apply_three_piece_shift(
             m.geom_size[g, ax] += delta
 
 
+# Env classes that share Threading_D0's objects, geom names and 37-dim state
+# layout, so the Threading bindings (needle / tripod / ring geoms, strict-success
+# validator) apply unchanged. Matched by EXACT name on purpose -- a looser
+# startswith("Threading") would silently admit a future variant with different
+# objects. Threading_RealCell differs from D0 only in table height and where the
+# parts are placed (env/threading_variants.py).
+THREADING_BINDING_CLASSES = ("Threading_D0", "Threading_RealCell")
+
+
 def resolve_bindings(env) -> dict:
     """Task-dispatched binding resolver. Threading_D0 -> threading bindings;
     Square_D0* -> square bindings; Coffee_D0* -> coffee bindings;
     ThreePieceAssembly* -> three-piece bindings. Raises for
     anything else."""
     cls = env.__class__.__name__
-    if cls == "Threading_D0":
+    if cls in THREADING_BINDING_CLASSES:
         return resolve_threading_bindings(env)
     if cls.startswith("Square"):
         return resolve_square_bindings(env)

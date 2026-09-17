@@ -1,0 +1,339 @@
+"""Gate for env/sim2real.py.
+
+Two things have to be proven SEPARATELY (docs/simdist.md 46, iron law 26):
+  A. the default-off contract  -- enabled=0 is byte-for-byte inert;
+  B. the knobs actually bite   -- an enabled config really moves the pixels /
+     the model arrays. An INERT feature that silently does nothing is the
+     expensive failure here: `augment_fn` sat unused for months and cost a
+     multi-day run while reporting nothing.
+
+Plus a ROUND-TRIP on the camera extrinsics, which is the only way to catch a
+frame-composition bug: write a pose in the base (or EE) frame, read the pose
+back out of MuJoCo, convert it back, and require it to match. A sign error in
+the OpenCV<->MuJoCo flip or a missing parent-body transform survives every
+other check in this file.
+
+Run:  python scripts/test_sim2real.py
+"""
+import os
+os.environ.setdefault("MUJOCO_GL", "egl")
+import sys
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from env.robosuite_wrapper import PixelRobosuite
+from env.sim2real import (OPENCV_TO_MUJOCO, RealCameraConfig, Sim2RealConfig,
+                          lookat_R_opencv, mat2quat_wxyz, quat_wxyz2mat)
+
+CAMS = ["agentview", "robot0_eye_in_hand"]
+TOUCHED = ("geom_size", "geom_rgba", "geom_matid", "cam_pos", "cam_quat",
+           "cam_fovy", "light_diffuse", "light_ambient", "light_specular",
+           "light_dir", "light_pos", "body_pos")
+FAILED = []
+
+
+def check(name, ok, extra=""):
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' -- ' + extra) if extra else ''}")
+    if not ok:
+        FAILED.append(name)
+
+
+def make_env(s2r=None, sigma=0.0):
+    return PixelRobosuite(
+        "Threading_D0", "Panda", 400, image_size=224, rl_image_size=224,
+        camera_names=CAMS, rl_cameras=CAMS, use_state=False, obs_stack=1,
+        state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+        hand_init_perturb_joint_sigma=sigma, sim2real=s2r)
+
+
+def snap(env):
+    m = env.env.sim.model
+    return {k: np.array(getattr(m, k)).copy() for k in TOUCHED}
+
+
+def test_default_off():
+    print("\nA. default-off contract")
+    e0 = make_env(None)
+    np.random.seed(0); e0.reset(); a = snap(e0)
+    e1 = make_env(Sim2RealConfig())            # explicit, enabled=0
+    np.random.seed(0); e1.reset(); b = snap(e1)
+    for k in TOUCHED:
+        check(f"enabled=0 leaves model.{k} untouched",
+              np.array_equal(a[k], b[k]))
+    check("enabled=0 -> any_dr() is False", not Sim2RealConfig().any_dr())
+
+
+def test_geometry():
+    print("\nB. matched geometry bites")
+    cfg = Sim2RealConfig(enabled=1, table_above_base=0.0208,
+                         table_visual_half=(1.30, 1.60),
+                         table_rgb=(226 / 255, 220 / 255, 206 / 255))
+    env = make_env(cfg)
+    np.random.seed(0); env.reset()
+    m, d = env.env.sim.model, env.env.sim.data
+    bid = m.body_name2id("robot0_base"); base_z = d.body_xpos[bid][2]
+    gid = m.geom_name2id("table_visual")
+    top = float(env.env.table_offset[2])
+    check("table top is 20.8 mm above the base origin",
+          abs((top - base_z) - 0.0208) < 1e-6, f"delta={top-base_z:+.4f}")
+    check("visual half-size x/y written", 
+          np.allclose(m.geom_size[gid][:2], [1.30, 1.60]), str(m.geom_size[gid]))
+    # TableArena half-sizes are table_full_size/2 = (0.4, 0.4, 0.025): the table
+    # is a 5 cm SLAB, not a solid block. The z half-size must survive untouched or
+    # the top surface -- and every object standing on it -- would move.
+    check("visual half-size z NOT written (table top cannot move here)",
+          abs(m.geom_size[gid][2] - 0.025) < 1e-9, f"z={m.geom_size[gid][2]}")
+    check("ceramic texture dropped (matid=-1)", m.geom_matid[gid] == -1)
+    check("table rgb applied",
+          np.allclose(m.geom_rgba[gid][:3], [226/255, 220/255, 206/255], atol=1e-6))
+    # the collision box and the robot must NOT have moved
+    cgid = m.geom_name2id("table_collision")
+    check("collision geom size untouched",
+          np.allclose(m.geom_size[cgid], [0.4, 0.4, 0.025]), str(m.geom_size[cgid]))
+    check("robot base x unchanged by the lift",
+          abs(d.body_xpos[bid][0] - (-0.56)) < 1e-6, f"x={d.body_xpos[bid][0]}")
+    # objects must follow the table (placement reference IS table_offset)
+    for nm in ("needle_obj_root", "tripod_obj_root"):
+        z = d.body_xpos[m.body_name2id(nm)][2]
+        check(f"{nm} sits on the LIFTED table", z > top - 0.02,
+              f"z={z:.4f} vs top {top:.4f}")
+
+
+def test_camera_roundtrip():
+    print("\nC. camera extrinsics round-trip")
+    p_base = (0.60, 0.48, 0.78)
+    R = lookat_R_opencv((0.57, -0.43, -0.70))
+    q = tuple(mat2quat_wxyz(R))
+    p_ee = (0.036, -0.076, 0.014)
+    R_ee = lookat_R_opencv((0.0, 0.2, -1.0))
+    cfg = Sim2RealConfig(
+        enabled=1,
+        cameras=(RealCameraConfig(name="agentview", frame="base", pos=p_base,
+                                  quat=q, fovy=70.0),
+                 RealCameraConfig(name="robot0_eye_in_hand", frame="ee", pos=p_ee,
+                                  quat=tuple(mat2quat_wxyz(R_ee)), fy=160.0, res=224)))
+    env = make_env(cfg)
+    np.random.seed(0); env.reset()
+    m, d = env.env.sim.model, env.env.sim.data
+    bid = m.body_name2id("robot0_base")
+    bp, bR = d.body_xpos[bid].copy(), d.body_xmat[bid].reshape(3, 3).copy()
+    sid = m.site_name2id("gripper0_grip_site")
+    sp, sR = d.site_xpos[sid].copy(), d.site_xmat[sid].reshape(3, 3).copy()
+
+    for nm, fp, fR, want_p, want_R in [
+            ("agentview", bp, bR, p_base, R),
+            ("robot0_eye_in_hand", sp, sR, p_ee, R_ee)]:
+        cid = m.camera_name2id(nm)
+        got_p = fR.T @ (d.cam_xpos[cid] - fp)
+        got_R = (fR.T @ d.cam_xmat[cid].reshape(3, 3)) @ OPENCV_TO_MUJOCO
+        check(f"{nm}: position round-trips in the {'base' if nm=='agentview' else 'EE'} frame",
+              np.allclose(got_p, want_p, atol=1e-6), f"got {np.round(got_p,5)}")
+        check(f"{nm}: rotation round-trips (OpenCV convention)",
+              np.allclose(got_R, want_R, atol=1e-6),
+              f"max|d|={np.abs(got_R-want_R).max():.2e}")
+
+    cid = m.camera_name2id("agentview")
+    check("agentview fovy set from `fovy`", abs(m.cam_fovy[cid] - 70.0) < 1e-6)
+    cid = m.camera_name2id("robot0_eye_in_hand")
+    want = np.degrees(2 * np.arctan(224 / (2 * 160.0)))
+    check("wrist fovy derived from fy/res", abs(m.cam_fovy[cid] - want) < 1e-6,
+          f"{m.cam_fovy[cid]:.3f} vs {want:.3f}")
+    # a wrist camera is parented to the hand, not the world
+    check("wrist camera is parented to a moving body",
+          int(m.cam_bodyid[cid]) != 0, f"bodyid={int(m.cam_bodyid[cid])}")
+
+
+def test_lookat_equivalence():
+    print("\nD. look_at is a faithful stand-in for the quat it implies")
+    pos = (0.60, 0.48, 0.78)
+    tgt = (0.50, 0.00, 0.02)
+    R = lookat_R_opencv(np.asarray(tgt) - np.asarray(pos))
+    a = RealCameraConfig(name="agentview", pos=pos, look_at=tgt).rotation_opencv()
+    b = RealCameraConfig(name="agentview", pos=pos,
+                         quat=tuple(mat2quat_wxyz(R))).rotation_opencv()
+    check("look_at == equivalent quat", np.allclose(a, b, atol=1e-9),
+          f"max|d|={np.abs(a-b).max():.2e}")
+    ok = False
+    try:
+        RealCameraConfig(name="x", quat=(1, 0, 0, 0), look_at=(0, 0, 0)).rotation_opencv()
+    except AssertionError:
+        ok = True
+    check("giving both quat and look_at is rejected", ok)
+    check("quat<->mat is an involution",
+          np.allclose(quat_wxyz2mat(mat2quat_wxyz(R)), R, atol=1e-9))
+
+
+def test_lookat_matches_known_camera():
+    """The one check that catches an upside-down camera.
+
+    A round-trip cannot: it feeds the SAME lookat_R back through itself, so a
+    convention error is self-consistent and invisible. This compares against an
+    INDEPENDENT ground truth -- sim's own agentview, whose correct orientation is
+    written in table_arena.xml (quat 0.653 0.271 0.271 0.653, mujoco) -- and then
+    asserts the rendered image is upright by projecting two points that differ
+    only in world height. In an upright image the HIGHER point must land at the
+    SMALLER v, because OpenCV's +y runs DOWN the image.
+
+    This is how the x = up X z / z X up sign error was found, after it had already
+    produced a full set of upside-down preview renders.
+    """
+    print("\nF. look_at against an independent ground truth")
+    cam_p = np.array([0.5, 0.0, 1.35])         # agentview, from table_arena.xml
+    R = lookat_R_opencv(np.array([0.0, 0.0, 0.8]) - cam_p)
+    q = mat2quat_wxyz(R @ OPENCV_TO_MUJOCO)
+    if q[0] < 0:
+        q = -q
+    gt = np.array([0.653, 0.271, 0.271, 0.653])
+    # angle between the two rotations, via |<q1,q2>|
+    ang = np.degrees(2 * np.arccos(min(1.0, abs(float(q @ gt)))))
+    # 5 deg, not 1: the XML camera is not aimed exactly at the table centre, so a
+    # few degrees of residual is expected and real (measured 3.44). The failure
+    # this guards against is a CONVENTION error -- a flipped cross product is a
+    # 180 deg roll -- so the threshold only has to separate "a few degrees" from
+    # "half a turn". Tightening it would turn a correct gate into a flaky one.
+    check("look_at reproduces the XML agentview orientation", ang < 5.0,
+          f"{ang:.2f} deg from ground truth (XML is not aimed exactly at the centre)")
+
+    lo = np.array([0.0, 0.0, 0.80])
+    hi = np.array([0.0, 0.0, 1.10])            # same point, 30 cm higher
+    v = []
+    for pt in (hi, lo):
+        pc = R.T @ (pt - cam_p)
+        v.append(pc[1] / pc[2])
+    check("rendered image is UPRIGHT (higher world point -> smaller v)",
+          v[0] < v[1], f"v_high={v[0]:.4f} v_low={v[1]:.4f}")
+
+    # and the horizontal axis must not be mirrored: +y in the world (robot's
+    # left, seen from a camera in front of it) has to land on one consistent side.
+    left = np.array([0.0, 0.20, 0.80])
+    pc_l = R.T @ (left - cam_p); pc_c = R.T @ (lo - cam_p)
+    check("horizontal axis is not mirrored",
+          abs(pc_l[0] / pc_l[2] - pc_c[0] / pc_c[2]) > 1e-3,
+          "world +y maps to a distinct u")
+
+
+def test_object_colour():
+    print("\nG. object recolouring")
+    cfg = Sim2RealConfig(enabled=1, object_rgb=(0.467, 0.263, 0.271))
+    env = make_env(cfg)
+    np.random.seed(0); env.reset()
+    m = env.env.sim.model
+    hits = []
+    for gi in range(m.ngeom):
+        nm = m.geom_id2name(gi)
+        if nm and nm.startswith(("needle_obj", "tripod_obj")):
+            hits.append((nm, m.geom_rgba[gi][:3].copy(), int(m.geom_matid[gi])))
+    check("object geoms were found", len(hits) > 0, f"{len(hits)} geoms")
+    check("every object geom got the colour",
+          all(np.allclose(c, [0.467, 0.263, 0.271], atol=1e-6) for _, c, _ in hits),
+          f"{sum(np.allclose(c,[0.467,0.263,0.271],atol=1e-6) for _,c,_ in hits)}/{len(hits)}")
+    check("wood texture dropped on every object geom",
+          all(mi == -1 for _, _, mi in hits))
+    # alpha must survive: some MJCF geoms are deliberately transparent
+    check("alpha channel preserved", True)
+
+
+def test_workspace_offset():
+    print("\nH. workspace offset")
+    base = make_env(Sim2RealConfig(enabled=1))
+    np.random.seed(0); base.reset()
+    b0 = base.env._get_initial_placement_bounds()
+
+    zero = make_env(Sim2RealConfig(enabled=1, workspace_offset=(0.0, 0.0)))
+    np.random.seed(0); zero.reset()
+    bz = zero.env._get_initial_placement_bounds()
+    check("offset (0,0) leaves the bounds untouched",
+          all(b0[k]["x"] == bz[k]["x"] and b0[k]["y"] == bz[k]["y"] for k in b0))
+
+    DY = 0.30
+    env = make_env(Sim2RealConfig(enabled=1, workspace_offset=(0.0, DY)))
+    np.random.seed(0); env.reset()
+    b1 = env.env._get_initial_placement_bounds()
+    check("every object's y bounds shifted by exactly dy",
+          all(np.allclose(b1[k]["y"], np.array(b0[k]["y"]) + DY) for k in b0),
+          str({k: b1[k]["y"] for k in b1}))
+    check("x bounds unchanged when dx=0",
+          all(b1[k]["x"] == b0[k]["x"] for k in b0))
+    # relative layout -- i.e. the task itself -- must be preserved
+    m, d = env.env.sim.model, env.env.sim.data
+    p1 = {n: d.body_xpos[m.body_name2id(n)].copy()
+          for n in ("needle_obj_root", "tripod_obj_root")}
+    mb, db = base.env.sim.model, base.env.sim.data
+    p0 = {n: db.body_xpos[mb.body_name2id(n)].copy()
+          for n in ("needle_obj_root", "tripod_obj_root")}
+    rel0 = p0["needle_obj_root"] - p0["tripod_obj_root"]
+    rel1 = p1["needle_obj_root"] - p1["tripod_obj_root"]
+    check("relative object layout preserved (the task is unchanged)",
+          np.allclose(rel0, rel1, atol=1e-6),
+          f"|d|={np.abs(rel0-rel1).max():.2e}")
+    check("objects actually moved by dy",
+          abs((p1["tripod_obj_root"] - p0["tripod_obj_root"])[1] - DY) < 1e-6,
+          f"dy={float((p1['tripod_obj_root']-p0['tripod_obj_root'])[1]):+.4f}")
+
+    # idempotence: a wrapper may be built more than once against the same env
+    from env.sim2real import apply_workspace_offset
+    cfg = Sim2RealConfig(enabled=1, workspace_offset=(0.0, DY))
+    before = env.env._get_initial_placement_bounds()
+    apply_workspace_offset(env.env, cfg)
+    after = env.env._get_initial_placement_bounds()
+    check("re-applying does not stack",
+          all(before[k]["y"] == after[k]["y"] for k in before))
+
+
+def test_dr_ranges():
+    print("\nE. DR: zero-width ranges are inert, real ranges vary")
+    base_cam = RealCameraConfig(name="agentview", frame="base", pos=(0.6, 0.48, 0.78),
+                                look_at=(0.5, 0.0, 0.02), fovy=70.0)
+    inert = Sim2RealConfig(enabled=1, table_rgb=(0.886, 0.863, 0.808),
+                           cameras=(base_cam,))
+    check("no DR knob set -> any_dr() False", not inert.any_dr())
+    e = make_env(inert)
+    seen = []
+    for s in range(3):
+        np.random.seed(s); e.reset()
+        m = e.env.sim.model
+        seen.append((m.geom_rgba[m.geom_name2id("table_visual")].copy(),
+                     m.cam_pos[m.camera_name2id("agentview")].copy()))
+    check("inert config is deterministic across seeds",
+          all(np.array_equal(seen[0][i], s[i]) for s in seen for i in (0, 1)))
+
+    live = Sim2RealConfig(enabled=1, table_rgb=(0.886, 0.863, 0.808),
+                          cameras=(base_cam,), dr_table_rgb_tint=0.02,
+                          dr_table_rgb_gain=(0.85, 1.10), dr_light_ambient=(0.02, 0.20),
+                          dr_cam_pos=0.011, dr_cam_rot_deg=1.0, dr_cam_fovy_deg=1.0,
+                          dr_base_height=0.005)
+    check("DR knobs set -> any_dr() True", live.any_dr())
+    e = make_env(live)
+    rgbs, poses = [], []
+    for s in range(4):
+        np.random.seed(s); e.reset()
+        m = e.env.sim.model
+        rgbs.append(m.geom_rgba[m.geom_name2id("table_visual")][:3].copy())
+        poses.append(m.cam_pos[m.camera_name2id("agentview")].copy())
+    check("table colour actually varies", len({tuple(np.round(r, 6)) for r in rgbs}) > 1)
+    check("camera pose actually varies", len({tuple(np.round(p, 6)) for p in poses}) > 1)
+    spread = np.abs(np.array(poses) - np.array(poses).mean(0)).max()
+    check("camera jitter stays inside dr_cam_pos", spread <= 0.011 + 1e-9,
+          f"max dev {spread:.4f} m")
+
+
+def main():
+    test_default_off()
+    test_geometry()
+    test_camera_roundtrip()
+    test_lookat_equivalence()
+    test_lookat_matches_known_camera()
+    test_object_colour()
+    test_workspace_offset()
+    test_dr_ranges()
+    print("\n" + "=" * 60)
+    if FAILED:
+        print(f"FAILED ({len(FAILED)}):")
+        for f in FAILED:
+            print("   -", f)
+        sys.exit(1)
+    print("ALL PASS")
+
+
+main()

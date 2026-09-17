@@ -317,6 +317,16 @@ class MainConfig(common_utils.RunConfig):
     # the reward signal and the eval metric agree on the honest objective.
     # Disabled by default; enable in YAML with `strict_success.enabled: true`.
     strict_success: StrictSuccessConfig = field(default_factory=StrictSuccessConfig)
+    # SIM-TO-REAL cell (env/sim2real.py): path to a cell YAML such as
+    # release/cfgs/sim2real/threading_real_cell.yaml. Applied to BOTH the train and
+    # the eval env -- it describes the physical bench (table height, where parts
+    # are laid out, cameras), not a source/target domain, so the two must agree.
+    # A path rather than an inline block because the cell has a variable-length
+    # list of nested camera dataclasses, which pyrallis cannot decode.
+    # "" = off (byte-for-byte legacy). The file's sha256 is logged at startup:
+    # the YAML is edited in place as calibration improves, so the path alone does
+    # not pin what a run actually trained on.
+    sim2real_cell: str = ""
     # SGFT (Simulation-Guided Fine-Tuning, Yin et al. ICLR 2025) on top of IBRL.
     # Path to a frozen source-domain QAgent checkpoint. When set, that agent is
     # reused for BOTH roles:
@@ -591,6 +601,17 @@ class Workspace:
         self.obs_stack = self.cfg.obs_stack
         self.prop_stack = self.cfg.prop_stack
 
+        s2r = None
+        if self.cfg.sim2real_cell:
+            import hashlib
+            from env.sim2real import load_sim2real
+            s2r = load_sim2real(self.cfg.sim2real_cell)
+            with open(self.cfg.sim2real_cell, "rb") as f:
+                sha = hashlib.sha256(f.read()).hexdigest()
+            print(f"[sim2real] cell={self.cfg.sim2real_cell} sha256={sha} "
+                  f"enabled={s2r.enabled} table_above_base={s2r.table_above_base} "
+                  f"workspace_offset={s2r.workspace_offset} any_dr={s2r.any_dr()}")
+
         self.train_env = PixelRobosuite(
             env_name=self.cfg.task_name,
             robots=self.cfg.robots,
@@ -614,6 +635,7 @@ class Workspace:
             init_distribution=self.cfg.train_init_dist,
             state_only_no_render=bool(self.cfg.state_only_no_render),
             stage_reward=self.cfg.stage_reward,
+            sim2real=s2r,
         )
         self.eval_env_params = dict(
             env_name=self.cfg.task_name,
@@ -634,6 +656,7 @@ class Workspace:
             hand_init_perturb_joint_sigma=self.cfg.eval_hand_init_perturb_joint_sigma,
             init_distribution=self.cfg.eval_init_dist,
             state_only_no_render=bool(self.cfg.state_only_no_render),
+            sim2real=s2r,
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 

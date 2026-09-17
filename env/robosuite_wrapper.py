@@ -20,6 +20,13 @@ except Exception:  # pragma: no cover - mimicgen optional
 # same robosuite registry. Local module, no optional dependency.
 import env.tool_hang_variants  # noqa: F401,E402
 
+from env.sim2real import (
+    Sim2RealConfig,
+    apply_sim2real,
+    apply_workspace_offset,
+    snapshot_visual_nominal,
+    table_offset_for,
+)
 from env.domain_shift import (
     DomainShiftConfig,
     InitDistConfig,
@@ -117,13 +124,20 @@ MIMICGEN_D0_TASKS = [
 ]
 for _t in MIMICGEN_D0_TASKS:
     STATE_KEYS[_t] = DEFAULT_STATE_KEYS
-# Threading-family variants (D1, Enlarged, ...) share Threading_D0's spec.
-for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged"]:
+# Threading-family variants (D1, Enlarged, RealCell) share Threading_D0's spec.
+for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged", "Threading_RealCell"]:
     STATE_KEYS[_t] = DEFAULT_STATE_KEYS
 STATE_SHAPE["Threading_D0"] = (37,)
 STATE_SHAPE["Threading_D1"] = (37,)
 STATE_SHAPE["Threading_D2"] = (37,)
 STATE_SHAPE["Threading_Enlarged"] = (37,)
+STATE_SHAPE["Threading_RealCell"] = (37,)
+# Register the custom Threading variants with robosuite in EVERY process that
+# builds this wrapper. A dataset converted from Threading_RealCell demos stores
+# that env_name, and train_bc's in-training eval (including the mp eval worker
+# processes) rebuilds the env from it -- without this import those processes
+# would fail to find the class.
+import env.threading_variants  # noqa: E402,F401
 
 PROP_KEYS = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 PROP_DIM = 9
@@ -154,6 +168,11 @@ class PixelRobosuite:
         record_sim_state: bool = False,
         # ---- domain-shift / strict-success / init-perturb extensions ----
         domain_shift: Optional[DomainShiftConfig] = None,
+        # SIM-TO-REAL cell config (env/sim2real.py): matched table height/colour,
+        # measured camera extrinsics+intrinsics, and the VISUAL randomisation
+        # around them. Orthogonal to `domain_shift`, which randomises PHYSICS.
+        # Default None => Sim2RealConfig(enabled=0) => this is a no-op.
+        sim2real: Optional[Sim2RealConfig] = None,
         strict_success: Optional[StrictSuccessConfig] = None,
         hand_init_perturb: Optional[tuple] = None,
         hand_init_perturb_joint_sigma: Optional[float] = None,
@@ -292,6 +311,32 @@ class PixelRobosuite:
             self.init_distribution, "enabled", False
         ):
             apply_init_distribution(self.env, self.init_distribution)
+
+        # ---- sim2real cell ----
+        self.sim2real = sim2real if sim2real is not None else Sim2RealConfig()
+        self._s2r_active = bool(self.sim2real.enabled)
+        self._s2r_nominal: Optional[dict] = None
+        if self._s2r_active:
+            # The table height must be installed BEFORE the next reset:
+            # hard_reset=True means `_load_model` rebuilds the arena AND the
+            # placement initializer from `env.table_offset` every episode, which
+            # is precisely why the objects follow the table for free. Writing the
+            # geom after reset would move the table out from under them.
+            bid = self.env.sim.model.body_name2id("robot0_base")
+            base_z = float(self.env.sim.data.body_xpos[bid][2])
+            off = table_offset_for(self.sim2real, base_z)
+            # Placement bounds are re-read on every hard reset, so this is a
+            # one-shot patch like apply_init_distribution's. It must land before
+            # the first reset AND after any InitDistConfig override, so that the
+            # offset composes on top of whatever bounds are in force.
+            apply_workspace_offset(self.env, self.sim2real)
+            if off is not None:
+                assert hasattr(self.env, "table_offset"), (
+                    f"{env_name} has no `table_offset`; sim2real.table_above_base "
+                    "only works on the MimicGen table envs")
+                print(f"[sim2real] table_offset {self.env.table_offset} -> {off} "
+                      f"(top {self.sim2real.table_above_base:+.4f} m vs base origin)")
+                self.env.table_offset = off
 
         # ---- domain shift + strict success ----
         self.domain_shift = domain_shift if domain_shift is not None else DomainShiftConfig()
@@ -567,6 +612,21 @@ class PixelRobosuite:
         mutated = False
         if self._shift_active:
             self._apply_domain_shift()  # restores nominal + applies + forward()
+            mutated = True
+        if self._s2r_active:
+            # Snapshot first: multiplicative DR ranges compose from the ORIGINAL
+            # values, never from the previous episode's already-scaled ones (the
+            # trap restore_nominal exists to avoid on the physics side).
+            self._s2r_nominal = snapshot_visual_nominal(self.env)
+            apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
+            if self.sim2real.dr_base_height:
+                # Moving the base translates the whole chain, so the OSC
+                # controller must re-latch or it drives toward the pre-move goal.
+                ctrl = self.env.robots[0].controller
+                ctrl.update_initial_joints(
+                    self.env.sim.data.qpos[
+                        self.env.robots[0]._ref_joint_pos_indexes].copy())
+                ctrl.reset_goal()
             mutated = True
         if self._ik_perturb_active:
             self._ik_to_perturbed_pos()  # forward()
