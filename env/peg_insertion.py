@@ -48,6 +48,21 @@ BOARD_HALF_Z = 0.02049  # board 41 mm thick
 PEG_HALF = (0.016524, 0.010622, 0.061471)  # peg 33.0 x 21.2 x 122.9 mm (bbox)
 # => clearance: x (37.86-33.05)/2 = 2.41 mm/side, y (26.07-21.24)/2 = 2.41 mm/side
 
+# ---- MEASURED cell layout (real2sim/scan_pipeline/cell_layout.json, from the
+# scan5 splat + scan_run2 grounding; see docs/real2sim.md §2e) --------------
+# Work surface = the mats on the optical breadboard: 1.240 x 0.739 m, with the
+# robot base flange 20.7 mm BELOW it (robosuite's stock arena puts the base
+# 112 mm ABOVE the table -- a 133 mm error that made sim and real impossible to
+# align at both the base and the work surface).
+# Axes are swapped vs the measurement frame (the table's long axis runs along
+# the robot's y), and the measured 91.2 deg base yaw is snapped to 90 deg:
+# a 1.2 deg residual, i.e. ~13 mm at the far table corner.
+MEASURED_TABLE_SIZE = (0.739, 1.240, 0.03)
+BASE_BELOW_SURFACE = 0.0207       # base flange -> work surface, measured
+MOUNT_BASE_Z = 0.912              # robosuite mount height (fixed by the mesh)
+MEASURED_TABLE_OFFSET = (0.0, 0.0, MOUNT_BASE_Z + BASE_BELOW_SURFACE)
+MEASURED_BASE_XY = (-0.489, -0.034)   # base wrt work-surface centre
+
 _SCAN_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "real2sim", "scan_pipeline", "peg_task",
@@ -109,7 +124,7 @@ class PegInsertion(SingleArmEnv_MG):
         controller_configs=None,
         gripper_types="default",
         initialization_noise="default",
-        table_full_size=(0.8, 0.8, 0.05),
+        table_full_size=MEASURED_TABLE_SIZE,
         table_friction=(1.0, 5e-3, 1e-4),
         use_camera_obs=True,
         use_object_obs=True,
@@ -135,7 +150,7 @@ class PegInsertion(SingleArmEnv_MG):
     ):
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.8))
+        self.table_offset = np.array(MEASURED_TABLE_OFFSET)
 
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
@@ -183,8 +198,12 @@ class PegInsertion(SingleArmEnv_MG):
     def _load_model(self):
         super()._load_model()
 
-        xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
-        self.robots[0].robot_model.set_base_xpos(xpos)
+        # MEASURED base placement (real2sim.md §2e), not robosuite's default
+        # table-relative offset: the real arm is bolted to the breadboard the
+        # mats sit on, 20.7 mm BELOW the work surface, 49 cm behind its centre.
+        # z stays 0 here -- the mount supplies the 0.912 m base height, and the
+        # base-to-surface relation is carried by MEASURED_TABLE_OFFSET[2].
+        self.robots[0].robot_model.set_base_xpos(MEASURED_BASE_XY + (0.0,))
 
         mujoco_arena = TableArena(
             table_full_size=self.table_full_size,

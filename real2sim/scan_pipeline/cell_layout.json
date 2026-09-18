@@ -1,0 +1,20 @@
+{
+  "table_top_z_boardframe": 0.8230000000000002,
+  "board_plane_above_table_mm": -23.00000000000013,
+  "table_extent": [
+    2.188481849006795,
+    1.1870113135966773
+  ],
+  "table_center_boardframe": [
+    1.1414743627095405,
+    0.1821612523934203
+  ],
+  "table_yaw_rad": -0.6977593884997586,
+  "base_in_table_frame": [
+    -0.8421233079551367,
+    0.3383003585599359,
+    -0.0437941470006763
+  ],
+  "base_yaw_in_table_frame": -0.894346389605919,
+  "n_slab_points": 717
+}

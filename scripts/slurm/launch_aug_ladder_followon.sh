@@ -25,7 +25,7 @@
 #   seed all rungs share the draw => paired deltas (~0.027); across seeds the
 #   draws differ => the error bar on the mean delta carries 0.092 honestly.
 # ★ Budget is IDENTICAL on every arm or cmp_adapt_runs.py refuses to compare:
-#   NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 DYN_ANCHOR_COEF=0.0.
+#   NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 DYN_ANCHOR_COEF=0.1.
 #   INTERVAL=2000 is the MINIMUM that reaches 100k inside 23:59 -- raise INTERVAL
 #   if you ever must economise, NEVER EVAL_N (it drives TopkSaver selection, so
 #   changing it is a protocol change; iron law #15 / §46i).
@@ -67,7 +67,12 @@ esac
 # take the job. Results are account-independent, so this costs nothing.
 ACCTS=(aip-rhinehar aip-gigor)
 ACCT="${SLURM_JOB_ACCOUNT:-aip-rhinehar}"
-acct_i=0
+# ★ ALTERNATE BY **SEED**, NOT BY SUBMISSION INDEX. Alternating per job put
+# B{2,4}+C{1,3,5} on one account and B{1,3,5}+C{2,4} on the other -- and since a
+# ladder delta must be PAIRED WITHIN SEED, the fast account delivered five
+# finished runs that shared NO seed with each other, i.e. ZERO measurable
+# anchor deltas. Keying on the seed puts both rungs of a seed on the same queue,
+# so whatever finishes first yields a usable pair.
 echo "=== §48 follow-on | ARCH=$ARCH | account=$ACCT ==="
 echo "stage1 = $STAGE1_DIR"
 [ -s "$STAGE1_DIR/latest.pt" ] || { echo "FATAL: no $STAGE1_DIR/latest.pt"; exit 1; }
@@ -85,16 +90,15 @@ for rung_spec in $RUNGS; do
           DEMOS="$DEMOS" ANCHOR="$ANCHOR_POOL" \
           SAVE="$ADAPT_DIR" \
           NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100 \
-          DYN_ANCHOR_COEF=0.0 ANCHOR_COEF="$COEF" DEMO_OFFSET="$OFF" \
+          DYN_ANCHOR_COEF=0.1 ANCHOR_COEF="$COEF" DEMO_OFFSET="$OFF" \
           sb --parsable --job-name="a48${RUNG}s${SEED}" \
                  --time=23:59:00 --mem=96G --cpus-per-task=12 \
-                 --account="${ACCTS[$((acct_i % 2))]}" scripts/slurm/adapt.slrm)
+                 --account="${ACCTS[$((SEED % 2))]}" scripts/slurm/adapt.slrm)
         if [ -z "$ADAPT_ID" ]; then
             echo "!! FAILED to submit rung $RUNG seed $SEED (offset $OFF)"
             n_bad=$((n_bad + 1)); continue
         fi
-        A_EVAL="${ACCTS[$((acct_i % 2))]}"
-        acct_i=$((acct_i + 1))
+        A_EVAL="${ACCTS[$((SEED % 2))]}"
         EVAL_ID=$(ADAPT="$ADAPT_DIR" N=500 MP=10 TAG="aug48_${RUNG}_s${SEED}" \
           sb --parsable --job-name="e48${RUNG}s${SEED}" \
                  --time=2:59:00 --account="$A_EVAL" \

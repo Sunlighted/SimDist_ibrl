@@ -90,6 +90,86 @@ RL env / demo / BC / IBRL 全部用 robosuite 默认 Panda gripper（现状即�
 （render_peg_splat.py 已按缺 body 自动 skip 对应 token），以后要么扫 Panda 手的 splat，
 要么接受 mesh 手（手在 wrist 相机里很大，pixel 阶段前要定）。
 
+## §2d-0 scan4 已废弃（owner 2026-09-16：「质量差到没用」）
+scan4 派生物全部退役：`sfm_scan4/scene.ply`、`scene_world_transform.json`、以及任何
+以 scan4 COLMAP 三角化角点为参照的解。替代链（全部 scan4-free）：
+**board_model.json**（scan_run2 的腕 ZED 近拍：14 视角互配准融合，68 角点、
+逐角点散布中位 2.6 mm、平面残差 p95 2.7 mm，米制）→ scan5 经
+`calibrate_scan5_to_board.py`（Umeyama 含尺度）挂到同一 board 系。
+
+## §2d 接地（grounding）架构：一切经由 ChArUco（2026-09-16）
+
+**锚 = ChArUco 板本身**（board 系由自己的角点定义 ⇒ 板在屋里挪动不碎链，但一个
+session 里 scene 扫描 / 相机照片 / 机器人标定必须共享同一次摆放）。三条边：
+
+1. **scene splat → board**：§2c 的流程，逐次扫描自动重解（scan5 进行中）。
+2. **外置相机 → board**：**一张照片即可**。ZED Explorer 拍板（rectified，无需 depth）→
+   已知米制角点世界坐标 → PnP。实测（相机挪位后的新照片）：31/32 内点、重投影中位
+   **1.06 px**；老位置上与 8 次独立 depth-Kabsch 解的散布 **0.36°/5.8 mm** 互证。
+   脚本：`scan_pipeline/` 里 `zed2i_new_extrinsic.json` 的生成段（session 开始例行跑）。
+   ⚠️ 内参必须用**该分辨率档的原生标定**（ZED 各档不共 FOV —— ×比例缩放会差 17%，见下）。
+3. **机器人 base → board**（待做，二选一，A 为主）：
+   - **A：重采 scan_run1 式 hand-eye**。现有 8 pose 失败的两个具体原因：wrist ZED 只有
+     3/8 pose 看到板 + 旋转多样性不足（Tsai "not enough informative motions"）。
+     规格：**12–15 pose、板全程在腕相机视野（0.3–0.6 m）、pose 间腕姿态绕 ≥2 根轴
+     各变 ±30–45°、板与机器人固定**。附赠 T_ee→wristcam（pixel 阶段的腕相机反正要）。
+   - **B（最简、无相机）：tip-touch**。EE 尖点触板上 4+ 个 marker 角点（记 FK）→
+     Kabsch。5 分钟、~2–5 mm；也可作 A 的交叉验证。
+   - 解出 T_base→board 后，**一切改为 base 系表达**（scene splat / 相机 / 任务板位姿），
+     钉到 robosuite 的 base 上 —— z=0.8 的"板面即桌面"约定退役。板或机器人不动就一直有效。
+
+★ **接地已全部解出（2026-09-16 重采后）**：board model 68 角点/1.5 mm；
+zed2i 从自身 HD2K 帧解出（64 角点/3.0 mm，不再依赖单照片）；hand-eye 旋转跨度
+15–167°，Tsai/Park/Daniilidis 三法互差 <2 mm ⇒ **T_base→board 一致性 1.0°/11.4 mm
+（14 pose）**，base 原点在板面下 2.1 cm（= 垫+夹板厚度，物理自洽）；T_ee→zedm 同轮解出。
+`ground_transforms.json` 为唯一真源。★ **「板动过 ~12 cm」是假警报，已撤回**：
+是我用 720p 内参 ×(2208/1280) 去解 HD2K 照片 —— **ZED 各分辨率档不共 FOV**（HD2K 真实
+fy=1057.6 vs 缩放值 906.6，差 17%，PnP 距离随焦距等比错）。换 native HD2K 内参后
+photo 与 in-session 解相差 **36.5 mm**（方法差+深度偏置量级内）⇒ 板与相机都没动，
+scene(scan5) 与新接地同一板位、可直接合成。**教训：ZED 内参必须用对应分辨率档的
+原生标定，绝不能跨档缩放**（前文 ×(2208/1280) 的说法作废）。板仍建议固定。
+
+★ **scan_run2 第一版的验尸（两条都写进采集清单）**：
+① 视觉侧完美（14/14 视角检出、旋转跨度 30–152°、~2 mm Kabsch）——但 **14 份 state.json
+的 joints/ee_pos/ee_quat 逐字节相同**：NUC 采集脚本记录的是同一份（陈旧的）机器人状态
+⇒ hand-eye 无法进行。**下次采集前先验证相邻 pose 的 `joints` 确实变化**（一行 diff）。
+② base 的姿态仍可从"纯平移"数据解出、位置不行 —— 若真机是 freedrive 平移 + 姿态不动，
+旋转多样性必须来自**腕关节**主动转（±30–45°，≥2 轴）。备选：tip-touch（4+ 角点）。
+
+代码/数据：`ground_scan_run2.py`（board model + hand-eye + 平移-only 退化路径）、
+`calibrate_scan5_to_board.py`、`render_camera_pov.py`（真实相机 POV 四联图：
+real|mujoco|splat|composite）、`handeye_ground.py`（含 calibrateHandEye 路径与 per-pose 一致性度量）、
+`ground_transforms.json`（老相机位的解 + 失败的 base 解，spread 13°/337 mm = 不可用）、
+`zed2i_new_extrinsic.json`（新相机位）。scan_run1 的 `state.json` 里 `ee_quat` 是 **xyzw**。
+
+## §2e 竞技场（arena）按实测重建（2026-09-16，owner 要求「先做忠实复现」）
+
+**发现**：robosuite 出厂 arena 与真实 cell 差 **133 mm** —— sim 的 base 在桌面
+**上方 112 mm**，真机的 base 法兰在工作面**下方 20.7 mm**（机器人拧在光学面包板上，
+垫子/海报铺在其上）。带着这个误差，sim 与真机**无法同时**在 base 和工作面上对齐
+（可达性也跟着错），所以这是保真度缺陷，不是训练选项。
+
+**实测**（`measure_table2.py` → `cell_layout.json`；先 RANSAC 桌面平面，再在**桌面系**
+里量，不在 board 系里量 —— 朴素的 z 直方图曾挑错 slab，给出「桌面在 ChArUco 上方 23 mm」
+的自相矛盾结果）：
+| 量 | 值 | 备注 |
+|---|---:|---|
+| board 系 z 与真实竖直方向夹角 | **0.36°** | 标定板确实平放 ⇒ board 系 z 可当竖直用 |
+| ChArUco 纸面高于工作面 | **+5.3 mm** | 夹板厚度，物理自洽 |
+| base 法兰相对工作面 | **−20.7 mm** | 垫子+海报厚度 |
+| 工作面尺寸（垫子覆盖区） | **1.240 × 0.739 m** | 28k 平面内点；**不是**整块面包板 |
+| base 在桌面系 | x −0.024 / y +0.490 / yaw −91.2° | base 在长边外侧，面向桌子 |
+
+**落实**（`env/peg_insertion.py` 顶部 `MEASURED_*` 常量）：
+`table_full_size=(0.739, 1.240, 0.03)`（长轴换到机器人 y 上）、
+`table_offset=(0,0,0.912+0.0207)`（mount 把 base 固定在 0.912，故用**桌高**承载
+base↔桌面关系；`base_xpos_offset` 的 z 是 0，改不了 base 高度）、
+`set_base_xpos((-0.489,-0.034,0))`。yaw 91.2°→90° 取整，残差 1.2° ≈ 远角 13 mm。
+
+⚠️ 后果：脚本专家从 10/10 掉到 **4/5（n=5，噪声内不可读，20 局在测）** —— 桌面相对 base
+升高 13 cm 改变了可达几何与抓取姿态。**§5 的所有旧数字（10/10、172 步）属于旧 arena，
+不可与新数字比较**；旧的 1000 条 demo 同样作废（已弃用，未训练）。
+
 ## §3 任务：peg-in-hole（方形）
 
 - **间隙 = 天花板的分母**（findings §27/§39）：地板 ~1.3 mm/边（oracle 也过不去）；

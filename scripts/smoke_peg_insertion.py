@@ -25,7 +25,8 @@ sys.path.insert(0, ".")
 from env.peg_insertion import PEG_HALF, HOLE_HALF_X, HOLE_HALF_Y, BOARD_HALF_Z
 from env.robosuite_wrapper import PixelRobosuite
 
-TABLE_Z = 0.8
+from env.peg_insertion import MEASURED_TABLE_OFFSET
+TABLE_Z = MEASURED_TABLE_OFFSET[2]      # measured work-surface height
 GRIP_DEPTH = 0.035  # grip point below the peg top (short lever, see docs §5)
 
 
@@ -161,8 +162,9 @@ def scripted_expert_action(raw_env, ctl):
             mode = "lift"
 
     elif mode == "lift":
-        dz = float(np.clip((0.96 - site_pos[2]) * 30.0, -0.4, 0.4))
-        if site_pos[2] > 0.952:
+        lift_to = raw_env.table_offset[2] + 0.16
+        dz = float(np.clip((lift_to - site_pos[2]) * 30.0, -0.4, 0.4))
+        if site_pos[2] > lift_to - 0.008:
             mode = "seek"
 
     elif mode == "seek":
