@@ -1,0 +1,35 @@
+{
+  "table_plane_normal_base": [
+    -0.004700018252918768,
+    0.016688974740812306,
+    0.9998496826776123
+  ],
+  "table_tilt_vs_base_z_deg": 0.9934535959076577,
+  "table_top_z_in_base_m": 0.02142508364339113,
+  "table_centre_in_base_m": [
+    0.4928013067763506,
+    0.02750129754834918,
+    0.01667704668864156
+  ],
+  "table_footprint_m": [
+    1.25963717671118,
+    0.7373694658594209
+  ],
+  "plane_rms_mm": 0.7758510948770566,
+  "charuco_above_table_mm": 2.3257417810591567,
+  "zed2i_in_base_m": [
+    0.12221978131222178,
+    0.5014422877609424,
+    0.7720635736399306
+  ],
+  "base_board_spread_mm": 6.072110996807782,
+  "n_plane_inliers": 11372,
+  "sim_table_size": [
+    0.8,
+    0.8
+  ],
+  "sim_table_top_z": 0.8,
+  "sim_base_z": 0.912,
+  "sim_base_above_table_mm": 112.0,
+  "note": "table_top_z_in_base_m>0 means the table surface is ABOVE the base origin"
+}

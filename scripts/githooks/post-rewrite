@@ -1,0 +1,4 @@
+#!/bin/bash
+# fires after rebase / commit --amend
+"$(git rev-parse --show-toplevel)/scripts/check_storage_links.sh" || true
+exit 0

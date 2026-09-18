@@ -1,0 +1,3 @@
+#!/bin/bash
+"$(git rev-parse --show-toplevel)/scripts/check_storage_links.sh" || true
+exit 0

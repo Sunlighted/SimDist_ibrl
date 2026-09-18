@@ -1,0 +1,70 @@
+#!/bin/bash
+# Refuse to TRACK per-machine storage paths. This is the fix for the incident
+# documented in .gitignore: `release/data` is a symlink into one developer's
+# scratch, it got committed once, and on everyone else's machine git had to
+# "make room" for the newly tracked path -- silently deleting what was there.
+#
+# Two rules, both aimed at that mechanism:
+#   1. the known storage paths (data / release/data / exps) may never be staged;
+#   2. more generally, NO staged path may be one that .gitignore matches, because
+#      git deletes ignored files to make room for a tracked path with no warning,
+#      and it may never be an absolute symlink (that is per-machine config).
+#
+# Installed via `git config core.hooksPath scripts/githooks` (docs/setup.md).
+# Deliberate exception:  git commit --no-verify
+set -uo pipefail
+
+PROTECTED_RE='^(data|exps|release/data|release/model)(/|$)'
+fail=0
+
+if git rev-parse --verify -q HEAD >/dev/null; then
+  DIFF_BASE=HEAD
+else
+  DIFF_BASE=$(git hash-object -t tree /dev/null)
+fi
+
+# staged additions/modifications/renames/copies, NUL-separated (paths may have spaces)
+mapfile -t -d '' staged < <(git diff --cached -z --name-only --diff-filter=ACMR "$DIFF_BASE")
+
+for p in "${staged[@]}"; do
+  [ -n "$p" ] || continue
+
+  # --- rule 1: the known per-machine storage paths ------------------------
+  if [[ "$p" =~ $PROTECTED_RE ]]; then
+    echo "pre-commit: REFUSING to track per-machine storage path: $p" >&2
+    fail=1
+    continue
+  fi
+
+  # --- rule 2a: anything .gitignore matches ------------------------------
+  # `--no-index` so the pattern is tested even for already-tracked paths.
+  if git check-ignore -q --no-index -- "$p"; then
+    echo "pre-commit: REFUSING to track a gitignored path: $p" >&2
+    echo "            (git DELETES ignored files to make room for a tracked" >&2
+    echo "             path, with no warning -- that is how data was lost)" >&2
+    fail=1
+    continue
+  fi
+
+  # --- rule 2b: symlinks with absolute targets ---------------------------
+  mode=$(git ls-files --stage -- "$p" | awk '{print $1; exit}')
+  if [ "$mode" = "120000" ]; then
+    target=$(git cat-file blob ":$p" 2>/dev/null)
+    case "$target" in
+      /*) echo "pre-commit: REFUSING to track absolute symlink: $p -> $target" >&2
+          echo "            Absolute links are per-machine storage config." >&2
+          fail=1 ;;
+    esac
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+  To unstage:   git rm --cached -r --ignore-unmatch <path>
+  If you really mean it (you almost certainly do not, see .gitignore and
+  docs/setup.md): git commit --no-verify
+MSG
+  exit 1
+fi
+exit 0

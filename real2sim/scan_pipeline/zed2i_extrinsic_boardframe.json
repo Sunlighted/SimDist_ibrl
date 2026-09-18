@@ -1,0 +1,34 @@
+{
+  "T_world_zed2i": [
+    [
+      -0.533606755753674,
+      0.4654236598158782,
+      -0.706147751605592,
+      1.8363886284459854
+    ],
+    [
+      0.7428032848918918,
+      0.6571219630840122,
+      -0.1281951855040958,
+      1.397848336532858
+    ],
+    [
+      0.40436012435433616,
+      -0.5929346865517382,
+      -0.6963629422333857,
+      2.1653423938269274
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "reproj_med_px": 1.8107791807550555,
+  "method": "SQPNP",
+  "n_corners": 32,
+  "frame": "board_model.json",
+  "source_photo": "Explorer_HD2K_SN37597132_17-54-59.png (left half)",
+  "note": "solved here because zed2i_new_extrinsic.json reprojects 1344 px against this same board model -- see real2sim notes"
+}

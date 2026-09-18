@@ -142,6 +142,37 @@ real|mujoco|splat|composite）、`handeye_ground.py`（含 calibrateHandEye 路�
 `ground_transforms.json`（老相机位的解 + 失败的 base 解，spread 13°/337 mm = 不可用）、
 `zed2i_new_extrinsic.json`（新相机位）。scan_run1 的 `state.json` 里 `ee_quat` 是 **xyzw**。
 
+### §2d-x 独立复算（2026-09-17，另一条 pipeline，结论一致 ⇒ 接地可信）
+
+用 **2D PnP（不用 depth）** 对同一 `scan_run2`（14 pose）重解，并用 splat 侧的桌面拟合
+交叉验证。脚本 `scan_pipeline/ground_base_run2.py` → `ground_run2_solved.json` /
+`cell_layout_base.json`。**两条独立链的数字互相印证**（左=§2d/§2e，右=本次）：
+
+| 量 | §2d/§2e | 独立复算 | 差 |
+|---|---:|---:|---:|
+| T_base→board 一致性（14 pose） | 1.0° / 11.4 mm | **0.11° / 6.1 mm** | PnP 比 depth 紧 ~2× |
+| base 法兰 vs 工作面 | −20.7 mm | **−21.4 mm** | 0.7 mm |
+| 工作面尺寸 | 1.240 × 0.739 m | **1.260 × 0.737 m** | ≤20 mm |
+| ChArUco 高于工作面 | +5.3 mm | **+2.3 mm** | 3 mm（均 = 夹板厚，物理自洽）|
+| 桌面相对 base z 的倾角 | — | **0.99°** | — |
+| zed2i 位姿一致性（14 pose 各自解） | — | **0.41° / 20.0 mm** | — |
+
+要点：
+- **ZED 内参陷阱与 §2d 的记载一致，但根因更具体**：不是「各档不共 FOV」，而是
+  **`scan_run2/intrinsics.json` 存的就是原生 2208×1242 的标定**（fx 1057.6），而
+  `ground_scan_run2.py` 里写死 `width/1280` 又乘了 1.725 ⇒ fx 1824（等于把 92.5° 的相机
+  当成 62°）。剂量-响应实测：修正前后 depth-Kabsch 残差 18.4→**3.5** mm(外) /
+  32.9→**1.6** mm(腕)，腕 PnP 重投影 9.5→**1.16** px，T_base→board 散布
+  170→**6.1** mm。**⇒ 所有读 manifest 的地方都必须用 manifest 自己的 `resolution` 字段缩放。**
+- **hand-eye 五法（Tsai/Park/Horaud/Andreff/Daniilidis）互差 ≤0.6 mm** ⇒ 不是单法伪解。
+- scan_run2 的 state.json **确实逐 pose 变化**（14 个唯一值，ee_pos sd 125/98/66 mm，
+  EE 姿态跨度 12–178°）⇒ §2d 那条「14 份 state 逐字节相同」的验尸属于**更早的一版采集**，
+  当前 `/home/yifanr/scan_run2` 是好数据，不要据此再判 hand-eye 不可做。
+- ⚠️ **唯一未闭合的绝对尺度**：全链条的米制都来自 `board_model.json`（ZED depth 融合）。
+  自洽性极好（平面 0.44 mm rms、marker 边 30.88±0.52 mm、相邻中心 60.0±0.2 mm ⇒
+  方格 42.43 mm = 60/√2），但**没有和实物尺寸比对过**。拿尺子量一次 ChArUco 方格
+  （或查打印稿）即可把绝对尺度钉死；若真值是 40 mm，则全链条尺度偏大 6%。
+
 ## §2e 竞技场（arena）按实测重建（2026-09-16，owner 要求「先做忠实复现」）
 
 **发现**：robosuite 出厂 arena 与真实 cell 差 **133 mm** —— sim 的 base 在桌面

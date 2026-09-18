@@ -289,6 +289,11 @@ in-training 乐观，**选择偏差还在**，而且**溢价随该臂曲线方�
 cd /home/Chenyang/ibrl && source set_env.sh          # conda + PYTHONPATH + MUJOCO_GL
 python -m pip install ...                            # 不要直接用 pip（shebang 是坏的）
 
+# ★ 新机器/新 clone 必做一次（否则 release/data 的 wipe 事故会重演，setup.md「Data-loss guard」）
+git config core.hooksPath scripts/githooks            # pre-commit 拦截被 gitignore 的路径 / 绝对 symlink
+git config --add simdist.storagelink "release/data=<your>/simdist/data"
+./scripts/check_storage_links.sh                      # 随时可单独跑；exit 1 = 要人看
+
 # SimDist：stage-1 蒸馏 → stage-2/3 target adapt
 python train_simdist.py --config_path release/cfgs/mimicgen/threading_d0_state_simdist.yaml \
     --source_agent <src ckpt> --save_dir exps/mimicgen/<run>

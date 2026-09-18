@@ -80,6 +80,12 @@ mkdir -p release/data
 #    `source set_env_drac.sh` prints `data -> <resolved path>`; check that line
 #    before launching anything. A dangling link reports exists=False while
 #    still being a link, which reads as "my data vanished".
+
+# 8) install the storage-link guard (see "Data-loss guard" below) -- 3 commands,
+#    do NOT skip: this is what stops step 7 from being re-committed.
+git config core.hooksPath scripts/githooks
+git config --add simdist.storagelink "release/data=/your/storage/simdist/data"
+git config --add simdist.storagelink "exps=/your/storage/simdist/exps"
 ```
 
 > ⚠️ **Never commit `release/data`.** It was committed once as a symlink into one
@@ -92,6 +98,48 @@ mkdir -p release/data
 > dataset directory deleted with no warning and `rc=0`, and was left with either a
 > link to someone else's data or a dangling link. `release/data` is now in
 > `.gitignore` explicitly.
+
+### Data-loss guard (`scripts/githooks/`, `scripts/check_storage_links.sh`)
+
+`.gitignore` documents the incident above but cannot prevent it: `git add -f`
+bypasses it, and a branch that *already* tracks the path clobbers the link on
+checkout regardless. Two hooks close that, installed with
+`git config core.hooksPath scripts/githooks` (step 8 above -- **the hooks do
+nothing until you run that**, git never enables a repo's hooks automatically).
+
+- **`pre-commit`** refuses to stage (a) the known per-machine storage paths
+  `data` / `exps` / `release/data` / `release/model`, (b) **any** path
+  `.gitignore` matches -- that is the exact wipe mechanism, since git deletes
+  ignored files to make room for a tracked path -- and (c) any symlink with an
+  absolute target, which is per-machine config by definition.
+  Escape hatch, for when you genuinely mean it: `git commit --no-verify`.
+- **`post-checkout` / `post-merge` / `post-rewrite`** run
+  `scripts/check_storage_links.sh` after anything that can move the working
+  tree (checkout, merge, rebase, `commit --amend`). It never blocks the git
+  operation; it only reports, and it re-creates a link that went missing.
+
+The expected targets are *not* in git -- they are per-machine, which is how this
+went wrong the first time. They live in local git config as
+`simdist.storagelink = <path>=<target>` entries (step 8), so
+`scripts/check_storage_links.sh` can be run standalone at any time:
+
+```bash
+./scripts/check_storage_links.sh   # exit 0 = fine; 1 = needs a human
+```
+
+Behaviour per failure mode (all five are covered by hand-tested cases):
+
+| situation | what happens |
+|---|---|
+| link missing, target present | **restored** automatically, warns, exit 0 |
+| link points somewhere else | warns with both paths, exit 1 |
+| a **real dir/file** sits where the link belongs | **left untouched** (it may be data), exit 1 |
+| link intact but target gone (scratch purged) | warns, exit 1 |
+| the path is **TRACKED by git** (the original incident) | warns with the `git rm --cached` fix, exit 1 |
+
+⚠️ These links point into `/scratch`, which the cluster purges on an
+inactivity timer. The guard detects a purged target but cannot undo it --
+anything you cannot regenerate does not belong only in `/scratch`.
 
 ### How
 ```bash

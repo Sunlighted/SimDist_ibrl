@@ -1,0 +1,85 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=sfm_merged
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=64G
+#SBATCH --time=11:59:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/sfm_merged_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/sfm_merged_%j.out
+#
+# Joint SfM over THREE sweeps (scan5 + the two aux scans), robot-free frames only.
+#
+# Two things this does that the single-scan sfm.slrm cannot:
+#   1. `--ImageReader.single_camera_per_folder 1` -- MANDATORY here. The old
+#      script hardcodes `single_camera 1`, which would force one intrinsic set
+#      across a 4K phone and a different phone at a different FOV. Per-folder
+#      gives each source its own camera while still solving them jointly, so the
+#      aux views land in the SAME frame as scan5 (one posed set for one 3DGS run).
+#   2. Keep-ranges per video (extract_frames_ranges.py): drops every stretch
+#      where the ROBOT is visible, so the scene splat cannot contain a ghost arm,
+#      plus scan5's ~13% excursion to a whiteboard in another part of the room.
+#
+# Exhaustive matching at ~800 images = ~320k pairs. Sequential+loop would be
+# cheaper but would not reliably link three SEPARATE videos to each other, and
+# cross-video linking is the whole point.
+set -uo pipefail
+WORK=/scratch/yifanr/gsbench/sfm_merged
+IMG=$WORK/images
+mkdir -p "$WORK" /scratch/yifanr/gsbench/logs
+cd /scratch/yifanr/gsbench
+
+echo "=== node $(hostname) ==="
+source /project/6101830/yifanr/SimDist_ibrl/set_env_drac.sh >/dev/null 2>&1
+
+# one folder per source => one camera per source
+if [ -z "$(ls -A "$IMG" 2>/dev/null)" ]; then
+    python extract_frames_ranges.py /home/yifanr/scan5.MOV     "$IMG/scan5" 350 "0.145-0.36,0.51-1.0" s5_ || exit 1
+    python extract_frames_ranges.py /home/yifanr/aux_scan1.MOV "$IMG/aux1"  280 "0.0-0.92"           a1_ || exit 1
+    python extract_frames_ranges.py /home/yifanr/aux_scan2.MOV "$IMG/aux2"  170 "0.0-0.54,0.65-1.0"  a2_ || exit 1
+fi
+echo "frames: $(find "$IMG" -name '*.jpg' | wc -l)  ($(ls "$IMG"))"
+
+module load StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.6 colmap/3.12.6 >/dev/null 2>&1
+command -v colmap || { echo "FATAL: colmap not on PATH"; exit 1; }
+
+DB=$WORK/database.db
+rm -f "$DB"; mkdir -p "$WORK/sparse"
+colmap feature_extractor --database_path "$DB" --image_path "$IMG" \
+    --ImageReader.single_camera_per_folder 1 --ImageReader.camera_model OPENCV \
+    --SiftExtraction.use_gpu 1 --SiftExtraction.max_image_size 1600 \
+    --SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 || exit 1
+colmap exhaustive_matcher --database_path "$DB" --SiftMatching.use_gpu 1 \
+    --SiftMatching.guided_matching 1 || exit 1
+colmap mapper --database_path "$DB" --image_path "$IMG" --output_path "$WORK/sparse" \
+    --Mapper.ba_global_function_tolerance 1e-6 || exit 1
+
+echo; echo "=== RESULT ==="
+for m in "$WORK"/sparse/*/; do
+    [ -d "$m" ] || continue
+    echo "--- model $(basename $m) ---"
+    colmap model_analyzer --path "$m" 2>&1 | grep -E "Registered|Points|reprojection|Cameras"
+done
+echo "input frames: $(find "$IMG" -name '*.jpg' | wc -l)"
+# per-source registration counts: a source that registers poorly is a real finding
+python - <<'PY'
+import glob, struct
+for p in sorted(glob.glob("/scratch/yifanr/gsbench/sfm_merged/sparse/*/images.bin")):
+    with open(p, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        pre = {}
+        for _ in range(n):
+            f.read(4 + 32 + 24 + 4)
+            name = b""
+            while True:
+                c = f.read(1)
+                if c == b"\x00":
+                    break
+                name += c
+            npts = struct.unpack("<Q", f.read(8))[0]
+            f.read(npts * 24)
+            pre[name.decode().split("/")[0]] = pre.get(name.decode().split("/")[0], 0) + 1
+    print(f"{p}: {n} images {pre}")
+PY
+echo "=== done ==="

@@ -1,0 +1,68 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=gs_merged
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --time=2:59:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/gs_merged_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/gs_merged_%j.out
+#
+# Full v2 training on the merged (robot-free, 3-sweep) model + board calibration
+# + honest A/B against the v1 recipe on the SAME model and SAME held-out split.
+# ~269 s / 2k iters at 1080p x 498 imgs measured => 30k ~ 70 min; 2:59 -> b1.
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9;9.0" MUJOCO_GL=egl
+source .venv/bin/activate
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+BEST=$(python - <<'PY'
+import glob, struct
+best, n = None, -1
+for p in glob.glob("sfm_merged/sparse/*/images.bin"):
+    k = struct.unpack("<Q", open(p, "rb").read(8))[0]
+    print(f"# {p}: {k}")
+    if k > n: best, n = p.rsplit("/",1)[0], k
+assert best and n >= 300, f"merged SfM failed: best model {n} images"
+print(best)
+PY
+)
+BEST=$(echo "$BEST" | tail -1)
+echo "=== sparse model: $BEST"
+
+echo "=== board calibration (metric, mm residual is the gate) ==="
+python calibrate_to_board.py --work sfm_merged --out scene_merged_world_transform.json || exit 1
+
+echo "=== v2 training (30k) ==="
+python train_3dgs_v2.py \
+    --colmap_dir "$BEST" --image_dir sfm_merged/images \
+    --output sfm_merged/scene_v2.ply \
+    --iterations 30000 --max_long_side 1600 --bg_color_json wall_color.json \
+    --world_transform scene_merged_world_transform.json \
+    --eval_every 5000 --val_render_dir /scratch/yifanr/gsbench/val_pairs_v2 || exit 1
+
+echo "=== v1 recipe on the SAME model (baseline arm) ==="
+python train_3dgs.py \
+    --colmap_dir "$BEST" --image_dir sfm_merged/images \
+    --output sfm_merged/scene_v1.ply \
+    --iterations 7000 --sh_degree 3 --image_scale 0.5 --max_gaussians 800000 || exit 1
+
+echo "=== A/B on the same held-out split ==="
+# v2 is trained in the WORLD frame -> its eval must map the poses the same way.
+# v1 stays in COLMAP frame -> no transform. Both are scored on the same frames.
+for L in channel coeff; do
+  python eval_splat.py --ply sfm_merged/scene_v2.ply --colmap_dir "$BEST" \
+      --image_dir sfm_merged/images --bg_color_json wall_color.json --sh_layout $L \
+      --image_scale 0.5 --max_frames 24 \
+      --world_transform scene_merged_world_transform.json
+done
+for L in channel coeff; do
+  python eval_splat.py --ply sfm_merged/scene_v1.ply --colmap_dir "$BEST" \
+      --image_dir sfm_merged/images --bg_color_json wall_color.json --sh_layout $L \
+      --image_scale 0.5 --max_frames 24
+done
+echo "rc=$?"

@@ -1,0 +1,6 @@
+#!/bin/bash
+# $3 == 1 for a branch checkout (what can move/clobber the storage links);
+# 0 is a per-file checkout, which we skip to stay quiet.
+[ "${3:-0}" = "1" ] || exit 0
+"$(git rev-parse --show-toplevel)/scripts/check_storage_links.sh" || true
+exit 0
