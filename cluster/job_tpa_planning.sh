@@ -9,12 +9,22 @@
 #
 #   JOBS=cluster/jobs_tpa_planning.txt \
 #     sbatch --account=def-<pi> --array=1-20 --export=ALL,JOBS cluster/job_tpa_planning.sh
+#   WANDB_MODE=online SIF=cluster/ibrl.sif JOBS=cluster/jobs_tpa_lamA.txt \
+#     sbatch --account=rrg-rhinehar --array=1-40 --export=ALL,JOBS cluster/job_tpa_planning.sh
 #
 # ThreePieceAssembly_D0 (target kp0.25), the PLANNING methods, 100k transitions,
 # into their own wandb project exps/tpa_planning (group = arm name).
 #
 #   tpa_plan_plain_nd20        single-head stage-1, NO anchor (bc_anchor_coef 0)
 #   tpa_plan_dynens_anch3_nd20 5-head stage-1, anchor lambda=3
+#   tpa_lamA_<v>_nd20          lambda tuning LINE A on TPA: tpa_plan_dynens_anch3
+#                              with bc_anchor_coef = v, NOTHING else changed (the
+#                              TPA counterpart of Threading's lamA_* and Square/
+#                              Coffee's sq_/cof_lamA_*). lambda=3 IS
+#                              tpa_plan_dynens_anch3_nd20 -- not re-run. Unlike
+#                              Threading, lambda=0 on the 5-head stage-1 does not
+#                              exist yet (tpa_plan_plain is the 1-head stage-1),
+#                              so it is in the list. -> exps/lamtune_tpa
 #   tpa_valabl_{joint,v2d,d2v,marg}_nd20   the value-adapt ablation, all on the
 #                              dynens + lambda=3 recipe; cell (i) "dynamics only"
 #                              IS tpa_plan_dynens_anch3_nd20, not re-run
@@ -138,6 +148,7 @@ STAGE1_DYNENS=exps/mimicgen/tpa_simdist_diversev1_h5_seed1/latest.pt
 
 case $ARM in
   tpa_valabl_*) EXP_DIR=${EXP_DIR:-exps/valabl_tpa} ;;
+  tpa_lamA_*)   EXP_DIR=${EXP_DIR:-exps/lamtune_tpa} ;;
   *)            EXP_DIR=${EXP_DIR:-exps/tpa_planning} ;;
 esac
 OUT=$EXP_DIR/${ARM}_seed${SEED}
@@ -145,6 +156,8 @@ OUT=$EXP_DIR/${ARM}_seed${SEED}
 case $ARM in
   tpa_plan_plain_nd*)        STAGE1=$STAGE1_PLAIN;  LAM=0.0 ;;
   tpa_plan_dynens_anch3_nd*) STAGE1=$STAGE1_DYNENS; LAM=3.0 ;;
+  # lambda tuning: the dynens_anch3 recipe with only the anchor multiplier changed
+  tpa_lamA_*_nd*)            STAGE1=$STAGE1_DYNENS; LAM=${ARM#tpa_lamA_}; LAM=${LAM%_nd*} ;;
   # value ablation: same stage-1 / anchor as the dynens planning arm, only the
   # heads that move (and their order) change.
   tpa_valabl_*_nd*)          STAGE1=$STAGE1_DYNENS; LAM=3.0 ;;
@@ -170,7 +183,7 @@ COMMON="--stage1_ckpt $STAGE1 --seed $SEED \
   --use_wb $USE_WB --state_only_no_render 1"
 
 case $ARM in
-  tpa_plan_*)
+  tpa_plan_*|tpa_lamA_*)
     $PY train_simdist_adapt.py $COMMON --save_dir "$OUT" --max_transitions 100000 ;;
 
   # ---- value-adapt ablation (docs/on-policy-adaptation.md 2) ---------------

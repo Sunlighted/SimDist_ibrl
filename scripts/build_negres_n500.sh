@@ -57,8 +57,23 @@ nb, ne = len(fb["data"]), len(fe["data"])
 assert ne >= new, f"extra set has only {ne} < {new} demos"
 # the two env_cfg.json must describe the same collection (shift, sigma, collector)
 cb = json.load(open(f"{base}/env_cfg.json")); ce = json.load(open(f"{extra}/env_cfg.json"))
-for k in ("env_name", "domain_shift", "hand_init_perturb_joint_sigma", "init_distribution"):
+for k in ("env_name", "hand_init_perturb_joint_sigma"):
     assert cb.get(k) == ce.get(k), f"env_cfg mismatch on {k}: {cb.get(k)} vs {ce.get(k)}"
+# init_distribution: an older writer stored None where a newer one stores the
+# disabled config -- both mean "default reset"
+_idb, _ide = cb.get("init_distribution"), ce.get("init_distribution")
+_off = lambda d: d is None or not d.get("enabled", False)
+assert (_off(_idb) and _off(_ide)) or _idb == _ide, f"init_distribution: {_idb} vs {_ide}"
+# domain_shift: shared fields must match; fields added to DomainShiftConfig after the
+# base set was written are absent there and must sit at their neutral value
+db, de = cb["domain_shift"], ce["domain_shift"]
+for k in set(db) | set(de):
+    if k in db and k in de:
+        assert db[k] == de[k], f"domain_shift.{k}: {db[k]} vs {de[k]}"
+    else:
+        v = db.get(k, de.get(k))
+        neutral = 0.0 if k == "lid_frictionloss" else 1.0
+        assert v == neutral, f"domain_shift.{k} only on one side and non-neutral: {v}"
 assert os.path.basename(cb["source_weight"]) == os.path.basename(ce["source_weight"]), \
     (cb["source_weight"], ce["source_weight"])
 seeds_b = {int(fb[f"data/demo_{i}"].attrs["seed"]) for i in range(nb)}

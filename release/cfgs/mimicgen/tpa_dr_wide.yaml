@@ -1,0 +1,139 @@
+task_name: ThreePieceAssembly_D0
+episode_length: 1000
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+bc_policy: exps/mimicgen/tpa_source_rnn_bc_tp1_n1000_seed1/model0.pt
+preload_num_data: 10
+preload_datapath: release/data/mimicgen/core/three_piece_assembly_d0/processed_data96.hdf5
+num_warm_up_episode: 50
+num_train_step: 1500000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+train_domain_shift:
+  mode: dr
+  dr_seed: 1
+  mask_hole_offset_in_obs: false
+  dr_gripper_kp_range:
+  - 0.6
+  - 1.5
+  dr_base_friction_range:
+  - 0.3
+  - 1.5
+  dr_base_hole_size_range:
+  - 1.0
+  - 1.15
+  dr_friction_range:
+  - 0.7
+  - 1.4
+  dr_mass_range:
+  - 0.5
+  - 2.0
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+eval_domain_shift:
+  base_friction_scale: 2.0
+  base_hole_size_scale: 0.96
+  com_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  dr_arm_mass_range:
+  - 0.9
+  - 1.1
+  dr_damping_range:
+  - 0.7
+  - 1.3
+  dr_friction_range:
+  - 0.7
+  - 1.3
+  dr_gripper_kp_range:
+  - 1.0
+  - 1.0
+  dr_hole_offset_range:
+  - 0.0
+  - 0.0
+  dr_mass_range:
+  - 0.7
+  - 1.5
+  dr_ring_friction_range:
+  - 1.0
+  - 1.0
+  dr_ring_size_range:
+  - 1.0
+  - 1.0
+  dr_seed: 0
+  dr_solimp_range:
+  - 0.85
+  - 1.15
+  dr_solref_range:
+  - 0.7
+  - 1.5
+  friction_scale: 1.0
+  gripper_kp_scale: 0.25
+  hole_offset:
+  - 0.0
+  - 0.0
+  - 0.0
+  lid_damping_scale: 1.0
+  lid_frictionloss: 0.0
+  mask_hole_offset_in_obs: true
+  mass_scale: 1.0
+  mode: fixed
+  needle_size_scale: 1.0
+  nut_size_scale: 1.0
+  peg_friction_scale: 1.0
+  peg_size_scale: 1.0
+  pod_holder_friction_scale: 1.0
+  pod_holder_size_scale: 1.0
+  ring_friction_scale: 1.0
+  ring_size_scale: 1.0
+  solimp_scale: 1.0
+  solref_scale: 1.0
+  tripod_com_height_scale: 1.0
+  tripod_mass_scale: 1.0
+strict_success:
+  dwell_steps: 3
+  enabled: false
+  max_needle_speed: 0.0
+  max_nut_speed: 0.0
+  max_tripod_disp: 0.04
+eval_hand_init_perturb_joint_sigma: null
