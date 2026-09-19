@@ -677,3 +677,42 @@ STRICT 85/100、均长 215（旧 arena 99/83/216）。**任何脚本都别再手
 采集：`scripts/collect_threading_realcell_batches.sh`（TPA 批处理脚本的通用版），8 批 × 25k = **20 万条**，
 两条链分跑 GPU 2/3，落 `/user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_source_diverse_v1/part{b}.hdf5`；
 开跑前快照 cell yaml + 专家 sha + git diff，每批后比对 yaml，变了就停。
+
+### 14d. ★ RealCell 的全部随机化（汇总，2026-09-19；stage-1 数据 `threading_realcell_source_diverse_v1` 的口径）
+
+每个 episode 在 reset 时独立抽一次，均为均匀分布（关节噪声除外）。唯一真源 = `release/cfgs/sim2real/threading_real_cell.yaml`
++ 采集命令行（`scripts/collect_threading_realcell_batches.sh`）；每批的 `env_cfg.json` 记录 cell 的 path/sha256/resolved。
+
+**① 初始状态**
+| 项 | 设置 | 来源 |
+|---|---|---|
+| 机器人关节 | 以 Franka ready `[0,−π/4,0,−3π/4,0,π/2,π/4]` 为中心，逐关节 **高斯 σ=0.1 rad** | `init_qpos` + `hand_init_perturb_joint_sigma`（§14b） |
+| 物体 | Threading D0 原生采样框（needle 位置框+旋转，tripod 固定），整体平移 `workspace_offset (0.071, 0.066)` | robosuite / §14 |
+
+**② 几何 DR —— 扰动机器人 base 位姿，桌子保持水平不动**（§14c；宽度取自 §14a 的实测分歧）
+| 旋钮 | 范围 | 依据 |
+|---|---|---|
+| `dr_base_height` | ±5 mm | 安装公差 |
+| `dr_base_xy` | x、y 各 ±7 mm | R3：两次接地解相差 ~7 mm |
+| `dr_base_yaw_deg` | ±1.5° | R1：真机 yaw 91.2° 取整为 90° |
+| `dr_base_tilt_deg` | 绕 x、y 各 ±1° | R2：桌面相对 base 倾 0.99° |
+扰动后 OSC 重新锁定目标（`any_base_dr()`），gate §K 验证零动作不漂移。
+
+**③ 采集时的策略与动作扰动**（`generate_simdist_data.py`，与 Threading v2 相同）
+- 策略混合：每条轨迹 50% 专家（`model0.pt`），否则从 16 个 IBRL snapshot（25k–400k）中抽，全部为 IBRL hybrid（`HYBRID=1 SNAP_HYBRID=1`）。
+- 动作噪声：加噪段（1–5 步）与不加噪段（5–10 步）交替；每条轨迹重抽 σ ~ U[0.05, 0.2]。
+- `max_len 400`（= episode_length）。
+
+**④ 视觉 DR —— 已接好，对 state 数据无作用**（渲染 pixel 时自动生效）
+桌面色调 ±0.02 / 亮度 ×[0.85,1.10]；物体色调 ±0.025 / 亮度 ×[0.85,1.15]；背景灰度 [0.25,0.85]；
+灯光漫反射 ×[0.70,1.25]、环境光 [0.02,0.20]、高光 ×[0.40,1.50]、方向 ±0.30、位置 ±0.40 m；
+相机位置 ±11 mm、旋转 ±1°、fovy ±1°。
+
+**刻意不随机化**
+- 物理参数（摩擦、质量、solref/solimp、阻尼）：`domain_shift.mode = none`（选定的 DR 范围里没有这一项）。
+- 桌子尺寸 / 桌高：实测值精确对齐。
+- 绝对尺度（R4）：应该去量，不用 DR 吸收。
+
+**专家对 DR 的覆盖**：IBRL 专家（2026-09-18）训练时只见过 ② 里的高度 DR，R1–R3 是采集时才加的。
+独立重评（n=300，strict，σ=0.1）：只开高度 **0.957** → 全开 **0.947**，差异在噪声内。
+采集混合数据的成功率 ≈ 73.5%（专家 + snapshot + 动作噪声，不是专家水平）。
