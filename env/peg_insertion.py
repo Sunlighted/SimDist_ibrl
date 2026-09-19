@@ -63,6 +63,17 @@ MOUNT_BASE_Z = 0.912              # robosuite mount height (fixed by the mesh)
 MEASURED_TABLE_OFFSET = (0.0, 0.0, MOUNT_BASE_Z + BASE_BELOW_SURFACE)
 MEASURED_BASE_XY = (-0.489, -0.034)   # base wrt work-surface centre
 
+# Franka's own "ready" configuration, which is what the real cell resets to.
+# robosuite's Panda default is wrong for this task in the MEASURED arena: it puts
+# the grip site only 78 mm above the table top, i.e. BELOW the top of the 123 mm
+# peg it has to grasp (1.011 m vs the peg tip at 1.056 m), so the episode begins
+# with the gripper under the object. Ready starts 473 mm up with the approach axis
+# exactly vertical ([0,0,-1] vs 7.3 deg off), and matching the real robot's reset
+# means sim and real episodes start from the same configuration.
+FRANKA_READY_QPOS = np.array(
+    [0.0, -np.pi / 4.0, 0.0, -3.0 * np.pi / 4.0, 0.0, np.pi / 2.0, np.pi / 4.0]
+)
+
 _SCAN_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "real2sim", "scan_pipeline", "peg_task",
@@ -204,6 +215,14 @@ class PegInsertion(SingleArmEnv_MG):
         # z stays 0 here -- the mount supplies the 0.912 m base height, and the
         # base-to-surface relation is carried by MEASURED_TABLE_OFFSET[2].
         self.robots[0].robot_model.set_base_xpos(MEASURED_BASE_XY + (0.0,))
+
+        # Reset to Franka's READY pose, not robosuite's Panda default (see the
+        # FRANKA_READY_QPOS note). Set here rather than at construction because
+        # Robot.load_model() fills init_qpos from the robot model, and _load_model
+        # re-runs on every hard reset, so the override has to re-apply each time.
+        # hand_init_perturb_joint_sigma noise is added on top of this by
+        # Robot.reset(), so the reset distribution is centred on ready.
+        self.robots[0].init_qpos = FRANKA_READY_QPOS.copy()
 
         mujoco_arena = TableArena(
             table_full_size=self.table_full_size,

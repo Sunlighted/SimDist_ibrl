@@ -30,7 +30,8 @@ DIC = cv2.aruco.DICT_5X5_50
 
 def best_sparse(work, min_images):
     best, n_best = None, -1
-    for p in glob.glob(f"{work}/sparse/*/images.bin"):
+    for p in glob.glob(f"{work}/sparse/*/images.bin") + \
+             glob.glob(f"{work}/sparse_plus_*/images.bin"):
         n = struct.unpack("<Q", open(p, "rb").read(8))[0]
         print(f"#   {p}: {n} images")
         if n > n_best:

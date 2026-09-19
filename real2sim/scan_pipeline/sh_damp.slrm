@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=sh_damp
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=64G
+#SBATCH --time=1:29:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/sh_damp_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/sh_damp_%j.out
+#
+# Does damping unconstrained view-dependence fix the novel-view junk?
+# Two measurements per variant: held-out PSNR (INTERPOLATION -- should barely
+# move) and the ZED-pose render (EXTRAPOLATION -- the case we deploy in).
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9;9.0"
+source .venv/bin/activate
+EX="0-1044,2592-3672"; CD="sfm_scan5/sparse/1"; ID="sfm_scan5/images"
+BASE=sfm_scan5/scene_v2_clean_pruned.ply
+[ -s "$BASE" ] || BASE=sfm_scan5/scene_v2_norobot_pruned.ply
+echo "base ply: $BASE"
+for MODE in narrow all; do
+  OUT=${BASE%.ply}_sh$MODE.ply
+  python damp_sh.py --ply "$BASE" --out "$OUT" --colmap_dir $CD --image_dir $ID \
+      --world_transform scene5_world_transform.json --exclude_idx_ranges "$EX" \
+      --mode $MODE --min_R 0.9
+  python eval_splat.py --ply "$OUT" --colmap_dir $CD --image_dir $ID \
+      --bg_color_json wall_color.json --exclude_idx_ranges "$EX" \
+      --world_transform scene5_world_transform.json --long_side 1920
+  python render_zed_pov.py --ply "$OUT" --out pov_sh$MODE
+done
+echo "rc=$?"

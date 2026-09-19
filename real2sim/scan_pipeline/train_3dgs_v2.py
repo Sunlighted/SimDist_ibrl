@@ -46,6 +46,7 @@ import argparse
 import json
 import math
 import os
+import re
 import time
 
 import numpy as np
@@ -132,6 +133,16 @@ def main():
     p.add_argument("--refine_stop_frac", type=float, default=0.5,
                    help="stop densifying after this fraction of iterations")
     p.add_argument("--eval_every", type=int, default=5000)
+    p.add_argument("--exclude_idx_ranges", default="",
+                   help="drop frames whose SOURCE VIDEO index (the trailing number in "
+                        "the filename, e.g. f0123_001044.jpg -> 1044) falls in these "
+                        "'a-b,c-d' ranges. Lets SfM keep the robot frames -- they are "
+                        "the connective tissue that stops a range-gapped sweep from "
+                        "fragmenting into 50 models -- while 3DGS never sees them, so "
+                        "no gaussian is ever created on the robot. Excluded frames are "
+                        "dropped from the HELD-OUT set too: scoring against an image "
+                        "containing a robot the splat deliberately lacks would penalise "
+                        "exactly the behaviour we asked for.")
     p.add_argument("--world_transform", default="",
                    help="similarity json (scale,R,t) from calibrate_to_board.py. When "
                         "given, the COLMAP points AND camera poses are mapped into the "
@@ -182,6 +193,20 @@ def main():
     extent, centres = camera_extent(frames)
     print(f"[v2] {len(frames)} frames, {len(init_xyz)} init points, "
           f"camera extent {extent:.3f} colmap-units")
+
+    # ---- optional frame exclusion (robot / off-cell) ----
+    if a.exclude_idx_ranges:
+        rr = [tuple(int(x) for x in r.split("-")) for r in a.exclude_idx_ranges.split(",")]
+        keep, dropped = [], 0
+        for i, fr in enumerate(frames):
+            nums = re.findall(r"(\d+)", os.path.basename(fr["path"]))
+            src = int(nums[-1]) if nums else -1
+            if any(lo <= src <= hi for lo, hi in rr):
+                dropped += 1
+            else:
+                keep.append(i)
+        print(f"[v2] excluded {dropped}/{len(frames)} frames by source index {rr}")
+        frames = [frames[i] for i in keep]
 
     # ---- train / held-out split ----
     idx_all = np.arange(len(frames))

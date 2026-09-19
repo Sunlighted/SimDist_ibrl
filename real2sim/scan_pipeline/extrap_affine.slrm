@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=extrap_af
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=64G
+#SBATCH --time=0:39:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/extrap_af_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/extrap_af_%j.out
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+source .venv/bin/activate
+unset PYTHONPATH
+M=sfm_merged/sparse_plus_2; MI=sfm_merged/images; WT=scene_merged_world_transform.json
+for PFX in a1_ a2_; do
+  for AF in 0 1; do
+    echo "=== $PFX  affine_correct=$AF ==="
+    python eval_splat.py --ply sfm_scan5/scene_v2_clean_pruned.ply --colmap_dir $M \
+        --image_dir $MI --bg_color_json wall_color.json --long_side 1920 \
+        --world_transform $WT --only_prefix $PFX --holdout_stride 4 --affine_correct $AF
+  done
+done
+echo "=== sanity: the SAME correction on scan5's own held-out (interpolation) ==="
+python eval_splat.py --ply sfm_scan5/scene_v2_clean_pruned.ply \
+    --colmap_dir sfm_scan5/sparse/1 --image_dir sfm_scan5/images \
+    --bg_color_json wall_color.json --long_side 1920 \
+    --world_transform scene5_world_transform.json \
+    --exclude_idx_ranges "0-1044,2592-3672" --affine_correct 1
+echo "rc=$?"

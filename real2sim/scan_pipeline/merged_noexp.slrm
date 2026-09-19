@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=merge_nx
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --time=1:29:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/merge_nx_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/merge_nx_%j.out
+#
+# Control for the merged arm: exposure comp OFF. Needed before claiming "merging
+# the three sweeps hurts" -- exposure comp cost 4.0 dB on the single sweep, and
+# concluding without controlling for it would repeat exactly the error that made
+# the first v1-vs-v2 A/B point the wrong way.
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9;9.0"
+source .venv/bin/activate
+BEST=sfm_merged/sparse_plus_2
+python train_3dgs_v2.py --colmap_dir $BEST --image_dir sfm_merged/images \
+    --output sfm_merged/scene_v2_noexp.ply --iterations 30000 --max_long_side 1920 \
+    --exposure 0 --bg_color_json wall_color.json \
+    --world_transform scene_merged_world_transform.json --eval_every 10000
+python prune_unseen.py --ply sfm_merged/scene_v2_noexp.ply \
+    --out sfm_merged/scene_v2_noexp_pruned.ply --colmap_dir $BEST \
+    --image_dir sfm_merged/images --world_transform scene_merged_world_transform.json \
+    --min_views 3
+python eval_splat.py --ply sfm_merged/scene_v2_noexp_pruned.ply --colmap_dir $BEST \
+    --image_dir sfm_merged/images --bg_color_json wall_color.json --long_side 1920 \
+    --world_transform scene_merged_world_transform.json
+# the model-independent comparison: same real photo, same PnP pose, both splats
+python render_zed_pov.py --ply sfm_merged/scene_v2_noexp_pruned.ply --out pov_merged_noexp
+echo "rc=$?"

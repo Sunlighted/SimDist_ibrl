@@ -2208,6 +2208,82 @@ need a dedicated arm).
 ⚠️ Rungs B and C are not yet run, so **neither ladder delta exists yet.** Nothing
 here speaks to the ensemble or the anchor.
 
+#### h. ★★★ FINAL RESULTS — the ensemble reproduces, the anchor does NOT (2026-09-18)
+
+All 15 runs reached the **full 100,000 transitions** (no truncated window, nothing
+marked NON-STANDARD), one shared demo draw per seed, 5 disjoint draws across
+seeds, all 15 independent n=500 evals landed on one `[EVAL ENV]` line.
+
+| rung | seed 1 `[0,20)` | seed 2 `[20,40)` | seed 3 `[40,60)` | seed 4 `[60,80)` | seed 5 `[80,100)` | **mean over 5 seeds** |
+|---|---:|---:|---:|---:|---:|---:|
+| **A** `plain_h3` window | 0.285 ±0.056 | 0.122 ±0.033 | 0.445 ±0.077 | 0.272 ±0.057 | 0.100 ±0.042 | **0.245 ±0.140** |
+| **A** indep n=500 | 0.334 | 0.128 | 0.372 | 0.244 | 0.136 | **0.243 ±0.111** |
+| **B** `dynens_h5` window | 0.462 ±0.061 | 0.428 ±0.058 | 0.522 ±0.039 | 0.447 ±0.059 | 0.653 ±0.085 | **0.502 ±0.091** |
+| **B** indep n=500 | 0.358 | 0.350 | 0.452 | 0.336 | 0.498 | **0.399 ±0.072** |
+| **C** `+anchor λ=1` window | 0.428 ±0.029 | 0.318 ±0.058 | 0.417 ±0.058 | 0.475 ±0.054 | 0.532 ±0.057 | **0.434 ±0.079** |
+| **C** indep n=500 | 0.342 | 0.240 | 0.356 | 0.392 | 0.484 | **0.363 ±0.088** |
+
+#### ★ THE TWO DELTAS, PAIRED WITHIN SEED
+```
+ensemble (B-A)  window  +0.258 ±0.184  (SE 0.082, 3.1 sigma)   all 5 seeds POSITIVE
+                indep   +0.156 ±0.136  (SE 0.061, 2.6 sigma)   all 5 seeds POSITIVE
+anchor   (C-B)  window  -0.068 ±0.064  (SE 0.029, 2.4 sigma)   4 of 5 seeds NEGATIVE
+                indep   -0.036 ±0.068  (SE 0.030, 1.2 sigma)   4 of 5 seeds NEGATIVE
+```
+Per-seed: ensemble window +0.178/+0.306/+0.077/+0.175/+0.553; anchor window
+−0.035/−0.109/−0.105/+0.028/−0.122.
+
+#### ★★★ VERDICT
+- **THE ENSEMBLE REPRODUCES.** +0.258 (window) lands essentially ON the published
+  **+0.249**, and clears the honest de-selected comparator of **+0.20-0.22**.
+  **Both measures agree in sign and all five seeds are positive on both.** Window
+  SDs are comparable (B 0.060 vs A 0.053) ⇒ §47a's exchangeability condition is
+  SATISFIED, so the delta is readable on either measure.
+  ⇒ **§47's "the ensemble does NOT reproduce" is WITHDRAWN.** It was an n=1
+  artifact — exactly the failure §48b was built to expose. Its two measures
+  disagreed in sign (+0.060 / −0.084) because at n=1 the SE is ~0.19.
+- **THE ANCHOR DOES NOT REPRODUCE — and trends NEGATIVE.** −0.068 (window) /
+  −0.036 (indep), 4 of 5 seeds negative on both measures. Against §47's
+  **+0.432/+0.450** this is a full reversal on the same encoder.
+  ⇒ **§47's headline "the anchor is the dominant lever on pixel" does NOT
+  survive 5 seeds.** The published state ladder's +0.081 is also not recovered.
+- ⚠️ **The two §47 conclusions swapped places.** The one §47 called solid
+  (anchor, z=+15.2) is the casualty; the one it called noise (ensemble) is real.
+  The mechanism is §47a's own warning applied one level up: z-scores computed
+  against EVAL sampling noise say nothing about DRAW or SEED variance, and §38's
+  0.092 dominates both.
+
+#### i. ⚠️ What this does and does not say about the augmentation
+§47's arms were **shift-only**; ours add colour jitter, Gaussian blur and proprio
+noise. So "§47 anchor +0.450 vs our −0.068" is confounded by **three** things at
+once: the augmentation, the stage-1 seed (§47d flagged its own as unmeasured),
+and the seed count. **Iron law #10: collinear explanations need a dedicated arm.**
+⇒ **Do NOT attribute the anchor's collapse to augmentation.** Nothing here
+isolates it.
+★ One suggestive observation, offered as a hypothesis only: our anchor delta
+(−0.068/−0.036) is close to **§47b's vit96 anchor effect of −0.072**, while
+§47's r18 cell read +0.432. If that holds up, the fragile single-seed result was
+**§47b's encoder×anchor INTERACTION (+0.504)**, not the ensemble delta — i.e. the
+`+anchor` column of that 2×2 is what needs re-running, and the ★★★ PIXEL block in
+`CLAUDE.md` rests on it. Testing it needs a vit96×5-seed arm at this exact
+protocol; §48 does not have one.
+
+#### j. What survives from §47
+| §47 claim | status after 5 seeds |
+|---|---|
+| ensemble does not reproduce on pixel | **WITHDRAWN** — reproduces, +0.258, published-equivalent |
+| anchor reproduces hugely (+0.432) | **WITHDRAWN** — −0.068, wrong sign |
+| anchor is the dominant pixel lever | **WITHDRAWN** |
+| §47a: independent re-eval keeps TopkSaver's selection bias | **STANDS** and was load-bearing — it is why we required comparable window SDs before reading either delta |
+| §47c: anchor guards MPPI's proposal | untested here; its premise (a large positive anchor effect) is gone |
+| §47b: encoder×anchor interaction +0.504 | **NOT RETESTED** — but now the prime suspect (see §48i) |
+
+⇒ Phase 2 (2 extra stage-1 seeds per arch, rungs A and B) is **NOT triggered**:
+its condition was an ambiguous ensemble delta (|delta| < 0.10 or measures
+disagreeing in sign), and the ensemble delta is +0.258 with both measures
+agreeing and 5/5 seeds positive. The open question has moved to the **anchor**,
+which no amount of extra stage-1 seeds on A/B would address.
+
 **Conditional Phase 2, pre-registered:** only if the ensemble delta lands
 ambiguous (|delta| < ~0.10, or the two measures disagree in sign as in §47), add
 **2 more stage-1 seeds per architecture** and rerun rungs **A and B only** (C is

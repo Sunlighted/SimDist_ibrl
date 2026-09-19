@@ -26,7 +26,7 @@ cd "$SLURM_SUBMIT_DIR"
 source set_env_drac.sh
 
 N="${N:-1000}"
-OUT="${OUT:-release/data/peg_insertion/demos_n1000}"
+OUT="${OUT:-release/data/peg_insertion/demos_n1000_v2}"
 SEED="${SEED:-0}"
 SIGMA="${SIGMA:-0.1}"
 

@@ -23,7 +23,9 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 BEST=$(python - <<'PY'
 import glob, struct
 best, n = None, -1
-for p in glob.glob("sfm_merged/sparse/*/images.bin"):
+import itertools
+for p in itertools.chain(glob.glob("sfm_merged/sparse/*/images.bin"),
+                         glob.glob("sfm_merged/sparse_plus_*/images.bin")):
     k = struct.unpack("<Q", open(p, "rb").read(8))[0]
     print(f"# {p}: {k}")
     if k > n: best, n = p.rsplit("/",1)[0], k
@@ -41,7 +43,7 @@ echo "=== v2 training (30k) ==="
 python train_3dgs_v2.py \
     --colmap_dir "$BEST" --image_dir sfm_merged/images \
     --output sfm_merged/scene_v2.ply \
-    --iterations 30000 --max_long_side 1600 --bg_color_json wall_color.json \
+    --iterations 30000 --max_long_side 1920 --bg_color_json wall_color.json \
     --world_transform scene_merged_world_transform.json \
     --eval_every 5000 --val_render_dir /scratch/yifanr/gsbench/val_pairs_v2 || exit 1
 
@@ -57,12 +59,21 @@ echo "=== A/B on the same held-out split ==="
 for L in channel coeff; do
   python eval_splat.py --ply sfm_merged/scene_v2.ply --colmap_dir "$BEST" \
       --image_dir sfm_merged/images --bg_color_json wall_color.json --sh_layout $L \
-      --image_scale 0.5 --max_frames 24 \
-      --world_transform scene_merged_world_transform.json
+      --long_side 1920 --world_transform scene_merged_world_transform.json
 done
 for L in channel coeff; do
   python eval_splat.py --ply sfm_merged/scene_v1.ply --colmap_dir "$BEST" \
       --image_dir sfm_merged/images --bg_color_json wall_color.json --sh_layout $L \
-      --image_scale 0.5 --max_frames 24
+      --long_side 1920
 done
+echo "rc=$?"
+
+echo "=== prune unsupported gaussians + POV render ==="
+python prune_unseen.py --ply sfm_merged/scene_v2.ply --out sfm_merged/scene_v2_pruned.ply \
+    --colmap_dir "$BEST" --image_dir sfm_merged/images \
+    --world_transform scene_merged_world_transform.json --min_views 3
+python eval_splat.py --ply sfm_merged/scene_v2_pruned.ply --colmap_dir "$BEST" \
+    --image_dir sfm_merged/images --bg_color_json wall_color.json --long_side 1920 \
+    --world_transform scene_merged_world_transform.json
+python render_zed_pov.py --ply sfm_merged/scene_v2_pruned.ply --out pov_merged
 echo "rc=$?"

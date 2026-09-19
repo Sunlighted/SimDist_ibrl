@@ -1,0 +1,15 @@
+{
+  "n_gaussians": 1108793,
+  "held_out_psnr": 34.05752591111443,
+  "iterations": 30000,
+  "bg_rgb": [
+    0.8313725490196079,
+    0.8215686274509804,
+    0.8019607843137255
+  ],
+  "extent": 0.7995688055274153,
+  "image_scale": 0.5,
+  "colmap_dir": "sfm_scan5/sparse/1",
+  "exposure_comp": false,
+  "sh_degree": 3
+}

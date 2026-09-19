@@ -1,0 +1,26 @@
+{
+  "scale": 0.913771928926877,
+  "R": [
+    [
+      0.7492976058398636,
+      -0.27687722584205543,
+      0.6015746833874048
+    ],
+    [
+      0.06370994957426321,
+      0.9343280789238098,
+      0.35067375616060426
+    ],
+    [
+      -0.6591616950399147,
+      -0.22443271317824817,
+      0.7177296267032292
+    ]
+  ],
+  "t": [
+    0.3821540905500383,
+    0.9902284898279158,
+    1.5140692779485772
+  ],
+  "note": "merged-COLMAP -> scan5-COLMAP, composed via the shared board frame. Needed to score the v1 scan5 ply (which lives in scan5 COLMAP coordinates) against the merged model's aux-sweep poses."
+}

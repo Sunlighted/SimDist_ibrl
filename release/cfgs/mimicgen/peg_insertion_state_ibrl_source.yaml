@@ -7,7 +7,7 @@
 # No prior_margin (docs/tasks.md §32: it lowers final performance).
 # --snapshot_period 25000 is passed by scripts/slurm/ibrl_source.slrm and is
 # LOAD-BEARING: stage-1 source-replay generation needs sub-optimal snapshots.
-bc_policy: exps/mimicgen/peg_source_mlp_bc_n1000_seed1/model0.pt
+bc_policy: exps/mimicgen/peg_source_mlp_bc_n1000_v2_seed1/model0.pt
 discount: 0.99
 end_on_success: 1
 episode_length: 300
@@ -23,7 +23,7 @@ num_eval_episode: 50
 num_train_step: 400000
 num_warm_up_episode: 50
 obs_stack: 1
-preload_datapath: release/data/peg_insertion/demos_n1000/dataset.hdf5
+preload_datapath: release/data/peg_insertion/demos_n1000_v2/dataset.hdf5
 preload_num_data: 10
 prop_stack: 1
 q_agent:
@@ -42,7 +42,7 @@ q_agent:
     num_layer: 3
     num_q: 5
 replay_buffer_size: 1000
-save_dir: exps/mimicgen/peg_ibrl_source_sig01_seed1
+save_dir: exps/mimicgen/peg_ibrl_source_v2_seed1
 seed: 1
 state_stack: 1
 stddev_max: 0.1

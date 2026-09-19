@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=extrap
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=64G
+#SBATCH --time=0:39:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/extrap_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/extrap_%j.out
+#
+# THE test that matches deployment: both splats trained ONLY on scan5, scored on
+# the aux sweeps' frames -- a different trajectory, a different phone, and poses
+# that are exactly registered (no PnP error). Both plys and the merged model's
+# poses live in the same board frame, so this is apples-to-apples.
+# Held-out-within-sweep PSNR is interpolation; this is extrapolation.
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+source .venv/bin/activate
+# sbatch inherits the submitting shell's env (--export=ALL default). If that shell
+# had sourced set_env_drac.sh, PYTHONPATH carries the Lmod opencv built for
+# python3.10, which this venv's python3.11 cannot load ("missing configuration
+# file: config-3.11.py"). The venv and the scripts set their own paths, so drop it.
+unset PYTHONPATH
+M=sfm_merged/sparse_plus_2; MI=sfm_merged/images; WT=scene_merged_world_transform.json
+for PFX in a1_ a2_; do
+  echo "=== extrapolation onto $PFX frames (never trained on by either ply) ==="
+  echo "--- v2 clean+pruned (scan5 only) ---"
+  python eval_splat.py --ply sfm_scan5/scene_v2_clean_pruned.ply --colmap_dir $M \
+      --image_dir $MI --bg_color_json wall_color.json --long_side 1920 \
+      --world_transform $WT --only_prefix $PFX --holdout_stride 4
+  echo "--- v1 (scan5 only), correct SH layout ---"
+  python eval_splat.py --ply sfm_scan5/scene.ply --colmap_dir $M --image_dir $MI \
+      --bg_color_json wall_color.json --long_side 1920 --sh_layout coeff \
+      --only_prefix $PFX --holdout_stride 4 \
+      --world_transform merged_to_scan5_transform.json
+  echo "--- v2 with SH damped (does damping help EXTRAPOLATION?) ---"
+  python eval_splat.py --ply sfm_scan5/scene_v2_clean_pruned_shall.ply --colmap_dir $M \
+      --image_dir $MI --bg_color_json wall_color.json --long_side 1920 \
+      --world_transform $WT --only_prefix $PFX --holdout_stride 4
+done
+echo "rc=$?"

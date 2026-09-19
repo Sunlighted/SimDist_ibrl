@@ -201,6 +201,162 @@ base↔桌面关系；`base_xpos_offset` 的 z 是 0，改不了 base 高度）�
 升高 13 cm 改变了可达几何与抓取姿态。**§5 的所有旧数字（10/10、172 步）属于旧 arena，
 不可与新数字比较**；旧的 1000 条 demo 同样作废（已弃用，未训练）。
 
+## §2f 场景 splat 质量：四个缺陷 + 干净 A/B（2026-09-18，owner 要求「尽力改进 splat」）
+
+**结果（同一 scan5 模型、同一 44 帧 robot-free held-out、同一 1920 长边）**：
+
+| ply | gaussians | held-out PSNR | L1 | 说明 |
+|---|---:|---:|---:|---|
+| v1，**渲染器实际读到的样子** | 154k | 28.56 | 0.0277 | 迄今所有渲染都是这一行 |
+| v1，SH 布局修正后 | 154k | 31.24 | 0.0179 | 布局 bug 值 **+2.68 dB** |
+| v2 干净版 + 剪枝 | 953k | **34.24** | **0.0131** | 训练器值 **+3.00 dB** |
+
+⇒ **总计 +5.7 dB**（28.56→34.24），拆成「布局 bug 2.7」+「训练器 3.0」。
+30k 曲线单调上升（29.50→34.06），1.1M gaussians 未见过拟合。
+脚本：`scan_pipeline/{train_3dgs_v2,eval_splat,prune_unseen,damp_sh,render_zed_pov}.py`。
+
+**四个缺陷**（都在 `train_3dgs.py` v1 里）：
+1. **densify 只 clone 不 split，且每 100 步重建 Adam**（动量全丢）。split 才是把大团
+   变清晰的操作 ⇒ scan5 停在 154k，而 800k 上限从未接近。v2 用 gsplat `DefaultStrategy`。
+   ⚠️ `initialize_state(scene_scale=)` 必须传（阈值是它的比例；默认 1.0 在米制场景下
+   会把 >10 cm 的墙/桌 gaussian 全剪掉）。
+2. **means 学习率没按场景尺度缩放**（标准 3DGS 是 `1.6e-4×extent`）⇒ 固定 1.6e-4 在
+   extent 7.8 的场景里小 ~10×，gaussian 基本没离开 SfM 初值。
+3. ★ **SH 布局 bug（静默，影响此前每一个 ply）**：v1 按 **coeff-major** 写 `f_rest`，
+   而 `util_gau.load_ply`（= INRIA 约定 = 所有标准 viewer）按 **channel-major** 读 ⇒
+   degree≥1 全部被置换。**实测代价 2.68 dB**。v2 写 channel-major。
+4. 只跑 7k 步（标准 30k）。
+另加：背景改为**实测墙色** `#d4d1cc`（`wall_color.json`，36 个亮-平样本），训练时也用它
+⇒ 未观测区域渲染成墙色而非黑洞，且优化器不必去「涂掉」黑画布。
+
+**两个反直觉的实测结论（都差点写成错的）**：
+- ★ **per-image 曝光补偿在单条 AE 锁定扫描上是有害的：−4.0 dB**（30.41→34.24 是关掉它）。
+  AE 锁了就没什么可补的，而 352×6 个自由参数会吸走真实信号，ply 本身反而更差。
+  **只在多机/多次扫描合并时才开，且必须实测。**
+- ★ **held-out PSNR 是「插值」指标，不是我们的部署工况。** held-out 取自同一条连续扫描
+  （每 8 帧），是训练帧的近邻；而 stage-1 要从 **sim 相机位**渲染，那是**外插**。
+  外插的真实表现要看「真实相机位复现」（`render_zed_pov.py`，用 ChArUco PnP 位姿，
+  与真实照片同机位并排）。
+- 可见性剪枝：352 个训练视角里 **有 140,747 个 gaussian 一个视角都没渲染到**（12.7%），
+  剪掉后 held-out **完全不变**（34.241 vs 34.06）⇒ 纯垃圾。但**剪不掉新视角里的黑块**：
+  那些 gaussian 在训练视角里是可见的，只是方向锥很窄，SH 在锥外无约束（§2f-b 在测
+  「窄支撑就退化成漫反射」）。
+
+**机器人怎么去掉（owner 要求）**：不做 mask、不做 3D 裁剪。做法 = **SfM 保留机器人帧**
+（它们是连通组织），**3DGS 训练时按源帧号区间排除**（`--exclude_idx_ranges`；scan5 =
+`0-1044,2592-3672`，即机器人 0-14.5% + 跑到别的房间的 36-51%）⇒ 没有任何视角观测过机器人
+⇒ 不会长出机器人 gaussian，它原来的位置自然退化成墙色。
+⚠️ 排除帧必须**同时**从 held-out 里去掉，否则是在拿「含机器人的照片」惩罚一个刻意不含
+机器人的 splat。
+
+**三条扫描合并（robot-free）**：scan5 + aux_scan1 + aux_scan2 → 800 帧联合 SfM。
+⚠️ 必须 `--ImageReader.single_camera_per_folder 1`（两台手机不同 FOV；旧 `sfm.slrm` 写死
+`single_camera 1`）。mapper 会**碎成 50 个模型**（最大 355/800）—— 区间排除把每条 sweep
+切断了 + aux 有 ~68% 帧几乎无纹理。**不要重跑 SfM**：匹配已缓存在 database.db 里，
+`colmap image_registrator`（2 轮 + BA + retriangulate）**24 分钟把 355 补到 800/800**
+（183,750 点、1.36 px）。board 定标 0.90 mm 中位残差（比 scan5 的 0.98 更好）。
+
+**踩过的坑（都花过一次提交）**：
+① `train_3dgs.py` 的 COLMAP 相机参数表把 OPENCV(model 4) 写成 4 个参数（实为 8）⇒
+   读完第一个相机后文件指针错位。**单相机模型完全无症状**（循环结束，且前 4 个参数就是
+   fx,fy,cx,cy），但 3 相机的合并模型直接 `KeyError`。已修正整张表。
+② `util_gau.load_ply` 返回的是**激活后**的值（`exp(scale)`、`sigmoid(opacity)`、归一化四元数），
+   自写 reader 返回**原始** ply 值 ⇒ 两者拼接会让场景 gaussian 得到负的线性 scale，
+   **整个场景渲染为空**。
+③ gsplat 1.5.3：`backgrounds` 形状是 `image_dims+(channels,)`；未批处理的 means (N,3) ⇒
+   `image_dims=()` ⇒ 必须是 **(3,)**（(1,3) 会 assert）。且 `DefaultStrategy` 必须配
+   `packed=True`（非 packed 路径下单相机的 means2d 被压成 (N,2)，strategy 会 IndexError）。
+④ ZED Explorer 静态图是**左右并排立体图**（HD2K = 4416×1242）⇒ 不切一半的话宽度翻倍、
+   主点落在基线中点，渲染全黑。
+⑤ sim 的 `frontview` 相机在真实 cell 里**位于墙内**（离桌 1.5–2 m，而真实 cell 是个墙角）
+   ⇒ 渲出来是一团白色条纹。**stage-1 要用的相机位必须在真实房间里物理存在**。
+
+### §2f-b 插值 vs 外插：**13 dB 的缺口，且主要是几何**（2026-09-18，决定下次怎么扫）
+
+「同一条扫描里每 8 帧留出」是**插值**；stage-1 要从 **sim 相机位**渲染，是**外插**。
+真外插测试 = 用 scan5-only 的 splat 去打 **aux 两条扫描的帧**（不同轨迹 + 不同手机 +
+位姿是精确注册的，没有 PnP 误差；两边都在同一 board 系，`--only_prefix a1_/a2_`）：
+
+| splat | 插值(scan5 held-out) | 外插→aux1 | 外插→aux2 |
+|---|---:|---:|---:|
+| v2 clean+pruned | **34.24** | **20.55** | 18.46 |
+| v1（SH 布局修正） | 31.24 | 19.16 | 16.28 |
+| v2 + SH 全退化成漫反射 | 28.38 | 20.46 | 18.70 |
+
+- ★ **v2 在外插上也赢**（+1.4 / +2.2 dB）⇒ 训练器的收益是真泛化，不是记住训练帧。
+- ★ **SH 退化在外插上是中性的（∓0.2），在插值上代价 5.9 dB ⇒ 判死，不要做。**
+  连带推翻我自己的假设：新视角的黑块**不是** SH 外插失控，而是**几何**（gaussian 长错
+  位置）。⇒ 要清掉它只能靠覆盖或按区域裁剪，不能靠外观项。
+  （`damp_sh.py --mode narrow` 的阈值 R≥0.9 命中 **99.9%** 的 gaussian —— 手持扫描里
+  每个面片本来就只被一小段方向锥看到，「窄支撑」是常态不是病态。）
+- ★ **缺口只有 1.5–2 dB 是光度差**：加逐图 per-channel 增益/偏置后 aux1 20.55→22.10、
+  aux2 18.46→20.50；而同一修正用在**同机同扫描**的 held-out 上只值 +0.28（34.24→34.52）
+  ⇒ 修正确实只在吃跨设备的 AE/白平衡差，不是白送自由度。**剩下 ~12–14 dB 是几何/细节**
+  （近距特写把细节放大到超过采集分辨率、没被观测到的面）。
+- ⇒ **下次扫描的规格**：不要再只做一条大范围 sweep，要**按我们真正要用的 sim 相机位去采**
+  （agentview 类的距离/俯角 + 腕相机类的近距），围着工作空间做轨道式覆盖。
+  **stage-1 的实际画质预期是 ~20–22 dB，不是 34。**
+- ⚠️ POV(真实照片) 的 `mean|diff|` **不能用来排序 splat**：相差 6 dB 的两个 splat 在这个
+  指标上只差 1（57.8 vs 56.6），因为它被 1.81 px 的 PnP 位姿误差主导。只能看图，别看数。
+
+### §2f-c 三条扫描合并：**受控后仍然更差，别用**（2026-09-18）
+
+| splat | held-out | POV mean\|diff\| | 细节比 |
+|---|---:|---:|---:|
+| scan5-only v2 clean+pruned | **34.24** | **57.8** | 1.34 |
+| merged 800 帧，曝光补偿 ON | 24.95 | 67.2 | 1.07 |
+| merged 800 帧，曝光补偿 OFF（对照） | 26.69 | 62.9 | 0.85 |
+
+关掉曝光补偿确实帮了 merged（+1.74 dB，比单扫描上的 +4.0 小 —— 合理，这里确实存在
+真实的跨设备曝光差），但**仍然差 scan5-only 7.5 dB** ⇒ 「合并更差」不是曝光补偿造成的。
+剩下的嫌疑：**位姿精度**（merged SfM 重投影 1.36 px vs scan5 的 1.01 px；细节比 0.85 < 1
+= 比照片更糊，正是位姿噪声的样子）+ aux 帧本身难（特写、~68% 帧近乎无纹理）。
+⇒ **生产用 scan5-only**（`real2sim/splats/scene_scan5_norobot_v2.ply`，952k gaussians）。
+aux 想用的话，路线是**固定 scan5 位姿、只精修 aux 位姿与逐相机内参**，不要整体 BA。
+
+⑥ 又一个坑：`sbatch` 默认 `--export=ALL` ⇒ 若提交前的 shell source 过 `set_env_drac.sh`，
+`PYTHONPATH` 会把 **python3.10 的 Lmod opencv** 带进 gsbench 的 **python3.11** venv，
+报 `missing configuration file: config-3.11.py`。gsbench 的 slrm 里都要 `unset PYTHONPATH`。
+
+### §2e-b reset 姿态：arena 修好之后它就坏了（2026-09-18/19）
+
+**症状链**：脚本专家 10/10（旧 arena）→ **4/5**（§2e 修完 arena 之后）→ **20/20**（改 reset 姿态之后）。
+中间那次下降**不是 arena 修错了**，是 arena 修对了之后 reset 姿态变得不合法。
+
+**根因**：`env/peg_insertion.py` 从来没设过 `init_qpos`，一直吃 robosuite 的 Panda 默认
+`[0, π/16, 0, −π/2−π/3, 0, π−0.2, π/4]`。在**实测 arena**（桌面相对 base 抬高 13 cm）下：
+grip site 只在桌面上方 **78 mm**，而立在桌上的 peg 顶端在 **124 mm** ⇒
+**夹爪开局在它要抓的物体顶端下面 45 mm**。旧 arena 里桌面低 13 cm，所以同一姿态没问题。
+
+**改法**：`FRANKA_READY_QPOS = [0, −π/4, 0, −3π/4, 0, π/2, π/4]`（Franka 官方 ready，
+**也是真机 reset 的姿态** ⇒ sim/real 开局一致）。必须写在 `_load_model()` 里：
+`Robot.load_model()` 只在 `init_qpos is None` 时从 robot model 取值，而 `hard_reset=True`
+每次 reset 都重跑 `_load_model`，所以覆盖要放在那里才会每次生效。
+`hand_init_perturb_joint_sigma` 的噪声由 `Robot.reset()` 加在它上面。
+
+**实测（12 次 reset，σ=0.1）**：grip 高于桌面 **495±40 mm**（最低 415）= 高于 peg 顶端
+**+371 mm**；approach 轴离竖直 11±5.6°（标称 0°）；robot/table/board 接触 **0**。
+步数 172→191（开局高了 40 cm，下降路程变长），仍远小于 300 的 episode 上限。
+
+**高度全链核对**（`cell_layout_base.json` + sim 实测）：桌面相对 base sim **+20.7 mm**
+vs 实测 **+21.4 mm**（差 0.7 mm）；splat 侧独立交叉验证 **+4.6 mm**。peg 静止在桌面
+（差 1.0 mm = sampler 的 z_offset）；board 板面 +41 mm = 板厚。
+⚠️ 真桌**有 0.99° 倾角**，sim 是水平的（长轴上差 ~13 mm），目前未建模。
+
+**相机可见性（10 次 reset，物体包围盒 8 角点）**：
+| 相机 | peg | board |
+|---|---|---|
+| agentview | 100% | **只有 75% 角点在画面内，0% 的 reset 完整可见** |
+| frontview | 100% | 100% |
+| 外置 ZED 位姿 | 100% | 100% |
+⇒ **agentview 会把 board 切掉**；真正要用的外置 ZED 位姿两个物体都完整可见。
+pixel 阶段的相机应该直接放在 ZED 位姿上（`zed2i_extrinsic_correctK.json`），
+sim 坐标 `[-0.354, 0.480, 1.691]`（桌面上方 758 mm）。
+
+⚠️ **旧 demo 必须作废**：2026-09-16 采的 1000 条来自旧 arena + 旧 reset 姿态，
+已移到 `release/data/peg_insertion/demos_n1000_OLDARENA_donotuse/`。
+新链（2026-09-19）：collect 5550284 → BC 5550285 → IBRL 5550286，数据在 `demos_n1000_v2/`。
+
 ## §3 任务：peg-in-hole（方形）
 
 - **间隙 = 天花板的分母**（findings §27/§39）：地板 ~1.3 mm/边（oracle 也过不去）；

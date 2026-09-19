@@ -24,7 +24,13 @@ def read_cameras_binary(path):
             cid = struct.unpack("<i", f.read(4))[0]
             model = struct.unpack("<i", f.read(4))[0]
             w, h = struct.unpack("<QQ", f.read(16))
-            nparams = {0:3,1:4,2:4,3:5,4:4,5:5,6:8,7:12,8:12,9:12}.get(model, 4)
+            # COLMAP camera-model param counts. The old table had OPENCV(4)=4
+            # instead of 8, so the file pointer desynced after the FIRST camera.
+            # Harmless with one camera (the loop ends, and fx,fy,cx,cy are the
+            # first four params either way) -- but the merged 3-camera model then
+            # parsed garbage and died with KeyError on cam_id 2.
+            nparams = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12,
+                       7: 5, 8: 4, 9: 5, 10: 12}.get(model, 4)
             params = struct.unpack(f"<{nparams}d", f.read(8*nparams))
             cams[cid] = {"model": model, "w": w, "h": h, "params": params}
     return cams

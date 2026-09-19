@@ -12,12 +12,12 @@
 # distribution by construction (unlike Square, where official demos are 0.02).
 #
 #   python train_bc.py --config_path release/cfgs/mimicgen/peg_insertion_state_source_mlp_bc.yaml \
-#       --save_dir exps/mimicgen/peg_source_mlp_bc_n1000_seed1
+#       --save_dir exps/mimicgen/peg_source_mlp_bc_n1000_v2_seed1
 
 seed: 1
 
 dataset:
-  path: release/data/peg_insertion/demos_n1000/dataset.hdf5
+  path: release/data/peg_insertion/demos_n1000_v2/dataset.hdf5
   num_data: -1                # all 1000 demos
   use_state: 1
   state_stack: 1
@@ -52,4 +52,4 @@ eval_domain_shift:
   mode: none
 
 use_wb: 1
-save_dir: exps/mimicgen/peg_source_mlp_bc_n1000_seed1
+save_dir: exps/mimicgen/peg_source_mlp_bc_n1000_v2_seed1

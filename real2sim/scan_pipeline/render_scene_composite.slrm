@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=peg_scene
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=64G
+#SBATCH --time=0:29:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/peg_scene_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/peg_scene_%j.out
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9;9.0" MUJOCO_GL=egl
+source .venv/bin/activate
+PLY=sfm_scan5/scene_v2_norobot_pruned.ply
+[ -s "$PLY" ] || PLY=sfm_scan5/scene_v2_norobot.ply
+echo "using $PLY"
+python render_peg_scene_splat.py --ply "$PLY" --out /scratch/yifanr/gsbench/peg_scene_shots
+echo "rc=$?"

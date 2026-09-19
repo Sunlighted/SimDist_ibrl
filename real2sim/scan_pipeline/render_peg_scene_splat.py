@@ -14,10 +14,12 @@ the first version of this script did) silently leaves every view-dependent term
 in the old frame. The arm is unaffected because its gaussians are already being
 re-posed per body each frame.
 
-Sim->board placement is measured, not guessed: RANSAC the tabletop plane out of
-the scene splat, put the sim tabletop (z = 0.8) on it, and align the sim origin
-with the real table's centroid. This is a VISUALISATION convention -- the
-load-bearing grounding (robot base <-> board) is still open, see real2sim.md 2d.
+Sim->board placement is ANCHORED ON THE ROBOT BASE via the solved T_base_board
+(6.1 mm / 0.11 deg, ground_run2_solved.json). That is the frame the policy's
+actions live in, so aligning there is what actually matters -- and it makes the
+tabletop agreement a free CROSS-CHECK rather than an assumption: the script
+reports how far the sim tabletop lands from the tabletop plane measured
+independently out of the gaussians.
 """
 import argparse
 import json
@@ -106,6 +108,8 @@ def main():
     ap.add_argument("--res", type=int, default=512)
     ap.add_argument("--bg_color_json", default=f"{GS}/wall_color.json")
     ap.add_argument("--calib", default=f"{GS}/splat_frame_calib.json")
+    ap.add_argument("--ground", default=f"{GS}/ground_run2_solved.json",
+                    help="T_base_board (base <- board), 6.1 mm / 0.11 deg solve")
     ap.add_argument("--board_origin_xy", default="0.056,0.242",
                     help="a point on the ChArUco in board frame, to seed the plane fit")
     a = ap.parse_args()
@@ -117,21 +121,26 @@ def main():
 
     # ---- scene splat (board frame) ----
     xyz, sh0, rest, opa, sc, qt = load_ply_raw(a.ply, "channel")
-    print(f"[scene] {len(xyz):,} gaussians from {a.ply}")
-    n_up, c_tab, inliers = fit_table_plane(
-        xyz, [float(x) for x in a.board_origin_xy.split(",")])
+    # ACTIVATION CONVENTION: the arm template comes from util_gau.load_ply, which
+    # returns exp(scale), sigmoid(opacity) and normalised quats. load_ply_raw
+    # returns the raw ply values (log-scale, logit-opacity). Concatenating the two
+    # unactivated gives the scene gaussians NEGATIVE linear scales -> the entire
+    # scene renders as nothing, which is exactly how this failed the first time.
+    sc = np.exp(sc)
+    opa = 1.0 / (1.0 + np.exp(-opa))
+    qt = qt / np.linalg.norm(qt, axis=-1, keepdims=True)
+    print(f"[scene] {len(xyz):,} gaussians from {a.ply} "
+          f"(scale range {sc.min():.5f}-{sc.max():.3f} m, opacity median {np.median(opa):.2f})")
 
-    # in-plane axes: board x projected onto the plane (deterministic)
-    x_ax = np.array([1.0, 0.0, 0.0]) - n_up * (n_up @ np.array([1.0, 0.0, 0.0]))
-    x_ax /= np.linalg.norm(x_ax)
-    y_ax = np.cross(n_up, x_ax)
-    R_bs = np.stack([x_ax, y_ax, n_up], axis=1)      # board <- sim rotation
-    TABLE_Z = 0.8
-    p0 = c_tab                                        # sim (0,0,0.8) lands here
-    q_bs = mat2quat_wxyz(R_bs)
-
-    def sim2board_pos(p):
-        return (R_bs @ (np.asarray(p) - np.array([0.0, 0.0, TABLE_Z])).T).T + p0
+    # ---- sim -> board: anchor on the ROBOT BASE, not the table ----
+    # T_base_board is now solved to 6.1 mm / 0.11 deg (ground_run2_solved.json), and
+    # the base is what the policy's actions are relative to, so anchoring there is
+    # both more accurate and more meaningful than fitting the tabletop. robosuite
+    # places robot0_base with IDENTITY orientation, so sim-world axes are already
+    # base axes and only a translation is needed.
+    gr = json.load(open(a.ground))
+    T_base_board = np.array(gr["T_base_board"])          # base <- board
+    T_board_base = np.linalg.inv(T_base_board)           # board <- base
 
     # ---- sim ----
     cc = load_controller_config(default_controller="OSC_POSE")
@@ -143,6 +152,23 @@ def main():
     )
     e.reset()
     m, d = e.sim.model, e.sim.data
+    p_base = np.array(d.xpos[m.body_name2id("robot0_base")])
+    assert np.allclose(d.xquat[m.body_name2id("robot0_base")], [1, 0, 0, 0], atol=1e-6), \
+        "robot0_base is no longer identity-oriented; the sim->base mapping needs its rotation"
+    R_bs = T_board_base[:3, :3]
+    q_bs = mat2quat_wxyz(R_bs)
+
+    def sim2board_pos(p):
+        return (R_bs @ (np.asarray(p) - p_base).T).T + T_board_base[:3, 3]
+
+    # CROSS-CHECK the arena fix against the splat: where does the sim tabletop land
+    # relative to the REAL tabletop measured from the gaussians?
+    n_up, c_tab, _ = fit_table_plane(xyz, [float(x) for x in a.board_origin_xy.split(",")])
+    corners = np.array([[x, y, e.table_offset[2]] for x in (-0.3, 0.3) for y in (-0.5, 0.5)])
+    dev_mm = ((sim2board_pos(corners) - c_tab) @ n_up) * 1000
+    print(f"[check] sim tabletop vs measured real tabletop: "
+          f"{dev_mm.mean():+.1f} mm mean, {np.abs(dev_mm).max():.1f} mm max over corners "
+          f"(an independent test of the arena fix AND the grounding chain)")
 
     calib = json.load(open(a.calib))
     overrides = {"panda_link0": "skip"}

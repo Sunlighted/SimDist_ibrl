@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-09-13
+Last updated: 2026-09-18
 
 ---
 
@@ -16,7 +16,7 @@ Last updated: 2026-09-13
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **§48 5-seed 重做（跑中）：§44 的三项增广已实现 + `DEMO_OFFSET` 解除同一 draw 的封锁；读法与 Phase 2 已预注册** |
+| **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **★★★ §48 5-seed 重做（已完成）：ensemble 复现 +0.258（撤回 §47 的 null）、anchor 不复现 −0.068（撤回 §47 的 +0.432）；§44 三项增广已实现 + `DEMO_OFFSET`** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~1120 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要** · **★§41d 四任务 48 格复现（dynamics 12/12 正；target value 只在 Threading 崩；TPA 是反例；★`learned+V_tgt` 列被 decode 误差废掉）**。 |
 | **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）** · **§14 sim2real cell 与 real2sim 共用 arena（`arena_from_real2sim`）· §14d RealCell 全部随机化汇总**。 |
@@ -252,7 +252,29 @@ ViT@96 已退役（只作历史记录）。
 `anchor=0` 上的主效应是 **0**。**引用 encoder 收益必须同时说明 anchor 条件。**
 （本块旧版把 0.5 记成 encoder 主效应，是错的 —— 已按 §47b 更正。）
 
-⇒ **r18 上的两个梯级结论与 vit96 正好互换**（§47）：
+### ★★★ §48 撤回了 §47 的两个梯级结论（2026-09-18，5 adapt seeds，全部跑满 100k）
+§47 是 **n=1**。加了 `DEMO_OFFSET`（铁律 #25）后重跑 3×5，两个结论**双双翻转**：
+
+| delta | §47 (n=1) | §48 (n=5，配对) | 判决 |
+|---|---|---|---|
+| ensemble B−A | +0.060 窗口 / −0.084 独立 | **+0.258 ±0.184 窗口 / +0.156 ±0.136 独立** | **复现**（5/5 seed 同号，两量度同号） |
+| anchor C−B | **+0.450 / +0.432** | **−0.068 ±0.064 / −0.036 ±0.068** | **不复现，且转负**（4/5 seed 为负） |
+
+- ensemble 的 +0.258 基本**正中** published 的 +0.249，也越过去偏差后的 +0.20–0.22；
+  A/B 的窗口 SD 相近（0.053 vs 0.060）⇒ §47a 的可互换条件**成立**，两量度都能读。
+  ⇒ **「ensemble 在 pixel 上没复现」作废** —— 那是 n=1 的假象（n=1 的 SE ≈ 0.19）。
+- **「anchor 是 pixel 上的支配杠杆」也作废。** 同一个 encoder 上从 +0.45 翻到 −0.07。
+- ⚠️ **教训：§47 里 z=+15.2 的那个"最稳"结论才是牺牲品。** z 是对着 **eval 抽样噪声**
+  算的，它对 **draw / seed 方差一无所知**，而 §38 的 0.092 支配后两者。
+  ⇒ **任何 n=1 的 z-score 都不能当作"稳"的证据**，无论它多大。
+- ⚠️ §48 的臂多了 jitter/blur/prop-noise（§47 只有 shift），且 stage-1 seed 不同 ⇒
+  anchor 崩掉的归因**三重共线**，铁律 #10 ⇒ **不要归因给增广**，§48 没有隔离它的臂。
+- ★ 可疑对象换人：我们的 anchor 效应（−0.068）≈ **§47b 的 vit96 格（−0.072）**，
+  而 §47b 的 r18 格是 +0.432 ⇒ **真正脆的很可能是 §47b 那个 encoder×anchor 交互
+  (+0.504)**，也就是下面这个 PIXEL 决定块赖以成立的那一行。**重跑它需要一条
+  vit96×5seed 臂，§48 没有。** 在那之前，下面的 2×2 只能当单 seed 结果读。
+
+⇒ **r18 上的两个梯级结论与 vit96 正好互换**（§47，★ 已被 §48 撤回，保留作病历）：
 
 ```
 state (published, n=10 seeds, 窗口):  0.564 --+0.249 ens--> 0.813 --+0.081 anchor--> 0.979
@@ -260,11 +282,12 @@ vit96 (独立 n=500):                   0.218 --+0.120 ens--> 0.338 ---0.072 anc
 r18@224 (独立 n=500):                 0.418 ---0.084 ens--> 0.334 --+0.432 anchor--> 0.766
 r18@224 (窗口):                       0.365 --+0.060 ens--> 0.425 --+0.450 anchor--> 0.875
 ```
-- **ensemble 没复现**：+0.060(窗口)/−0.084(独立)，两个量度**符号相反**，且窗口效应小于
-  rung A 自己的 SD(0.099) ⇒ 单 seed 上是噪声，肯定不是 +0.249。
-- **anchor 复现且成为 pixel 上的支配杠杆**：+0.432(独立)/+0.450(窗口)，两量度一致。
-  ⚠️ §42 说 anchor 在**弱** base 上收益最大，而这里**强** base 收益远大 ⇒
-  **base 强度解释不了 pixel 的 anchor。**
+- ~~**ensemble 没复现**~~ **（§48 已撤回：5 seed 下 +0.258，与 published 等同）**：
+  §47 读到 +0.060(窗口)/−0.084(独立)，两量度符号相反 ⇒ 当时只能说"单 seed 上是噪声"。
+  真相是这个 delta 本来就存在，n=1 看不见它。
+- ~~**anchor 复现且成为 pixel 上的支配杠杆**~~ **（§48 已撤回：5 seed 下 −0.068）**：
+  §47 读到 +0.432(独立)/+0.450(窗口)，两量度一致 —— 但"两量度一致"只排除了选择偏差，
+  **排不掉 draw/seed 方差**。这是本项目最贵的一次 n=1 误判。
 
 ⚠️ **`num_dynamics_heads`/`horizon` 改不了 adapt 时（铁律 #20）** ⇒ plain_h3 臂必须自己重跑
 stage-1（`..._r18_224_plain_h3.yaml`）。

@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=ab_clean
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --time=2:59:00
+#SBATCH --output=/scratch/yifanr/gsbench/logs/ab_clean_%j.out
+#SBATCH --error=/scratch/yifanr/gsbench/logs/ab_clean_%j.out
+#
+# The first A/B was confounded twice, both AGAINST v2:
+#   (a) it evaluated at 1920x1080 = v1's training resolution, while v2 trained at
+#       1600x900, so v2 was judged on detail it was never asked to represent;
+#   (b) v2's per-image exposure compensation is factored OUT of the saved ply but
+#       not credited at eval time, while v1 fits raw pixels.
+# This job removes both: retrain v2 with v1's exact image pipeline (image_scale
+# 0.5 -> 1920x1080) and exposure comp OFF, then compare at that one resolution.
+# Only the TRAINER differs then: densification, LR schedule, iterations, SH
+# warm-up, background, world frame.
+set -uo pipefail
+cd /scratch/yifanr/gsbench
+CU=/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Core/cudacore/12.9.1
+export CUDA_HOME=$CU PATH=$CU/bin:$PATH LD_LIBRARY_PATH=$CU/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_CUDA_ARCH_LIST="8.9;9.0" MUJOCO_GL=egl
+source .venv/bin/activate
+EX="0-1044,2592-3672"; CD="sfm_scan5/sparse/1"; ID="sfm_scan5/images"
+
+echo "=== how much did the resolution mismatch cost? (existing plys, 2x2) ==="
+for LS in 1600 1920; do
+  echo "--- eval long_side $LS ---"
+  python eval_splat.py --ply sfm_scan5/scene_v2_norobot_pruned.ply --colmap_dir $CD \
+      --image_dir $ID --bg_color_json wall_color.json --exclude_idx_ranges "$EX" \
+      --world_transform scene5_world_transform.json --long_side $LS
+  python eval_splat.py --ply sfm_scan5/scene.ply --colmap_dir $CD --image_dir $ID \
+      --bg_color_json wall_color.json --exclude_idx_ranges "$EX" --sh_layout coeff \
+      --long_side $LS
+done
+
+echo; echo "=== CLEAN v2: v1's pipeline (1920), exposure OFF, only trainer differs ==="
+python train_3dgs_v2.py --colmap_dir $CD --image_dir $ID \
+    --output sfm_scan5/scene_v2_clean.ply \
+    --iterations 30000 --image_scale 0.5 --exposure 0 \
+    --bg_color_json wall_color.json --world_transform scene5_world_transform.json \
+    --exclude_idx_ranges "$EX" --eval_every 5000 \
+    --val_render_dir /scratch/yifanr/gsbench/val_pairs_clean
+echo "train rc=$?"
+python prune_unseen.py --ply sfm_scan5/scene_v2_clean.ply \
+    --out sfm_scan5/scene_v2_clean_pruned.ply --colmap_dir $CD --image_dir $ID \
+    --world_transform scene5_world_transform.json --exclude_idx_ranges "$EX" --min_views 3
+echo "--- FINAL head-to-head at 1920, identical split ---"
+python eval_splat.py --ply sfm_scan5/scene_v2_clean_pruned.ply --colmap_dir $CD \
+    --image_dir $ID --bg_color_json wall_color.json --exclude_idx_ranges "$EX" \
+    --world_transform scene5_world_transform.json --long_side 1920
+python eval_splat.py --ply sfm_scan5/scene.ply --colmap_dir $CD --image_dir $ID \
+    --bg_color_json wall_color.json --exclude_idx_ranges "$EX" --sh_layout coeff \
+    --long_side 1920
+python render_zed_pov.py --ply sfm_scan5/scene_v2_clean_pruned.ply --out pov_after_clean
+echo "rc=$?"
