@@ -940,8 +940,179 @@ $0.1$   & \ph{0.62} & \ph{---}  & \ph{0.00} \\
 \end{tabular}
 \end{table}
 
-[VAML, value ensemble, reduce value error all fail]
-[add more target demo to improve policy proposal success rate can not improve MPPI]]
+\subsection{Interventions that did not help}
+\label{app:negative}
+
+Before settling on the design of Sec.~\ref{sec:planner-adapt}, we tried five
+interventions that each target a plausible bottleneck of the planner: the loss
+the dynamics is adapted with, the value's uncertainty, the value's error, the
+amount of target demonstration data, and the planner-to-policy loop. None of them
+improves over the plain planner. We report them to document which directions do
+\emph{not} carry the adaptation, and because together they support the conclusion
+of Sec.~\ref{sec:planner-adapt}: the planner is limited by the accuracy of the
+learned dynamics, not by the value or by the proposal.
+
+\paragraph{Common protocol.}
+All five arms are one-field changes of the same baseline, \emph{plain\_h5}: the
+single-head world model ($K=1$) with horizon $H=5$, distilled on the same source
+data $\mathcal{D}^d_s$, no tether ($\lambda=0$), the $20$ target demonstrations of
+each seed, and stage-3 dynamics adaptation with the latent-consistency loss. Every
+arm uses Threading, the budget of $100$k target transitions (one round every $1$k),
+$\sigma=0.1$ initial-state noise and strict success, and is run with $5$ seeds.
+Within a seed all arms share the same demonstration draw, so deltas are paired;
+across seeds the draw changes, so the error bars include the demonstration-sampling
+variance. We report the mean success rate over the $75$--$100$k window.
+
+For reference, with $z_t = E_\theta(s_t)$ and the latent rollout
+$\hat z_{t+k+1} = f_\theta(\hat z_{t+k}, a_{t+k})$, $\hat z_t = z_t$, the planner
+ranks a candidate action sequence $a_{t:t+H}$ by
+\begin{equation}
+\hat J(a_{t:t+H}) \;=\; \sum_{k=0}^{H-1} \gamma^{k}\, \hat r_\theta(\hat z_{t+k}, a_{t+k})
+\;+\; \gamma^{H}\, \hat V_\theta(\hat z_{t+H}),
+\label{eq:app-mppi-return}
+\end{equation}
+and the baseline adapts only $f_\theta$ in stage~3, on the replay $\mathcal{R}$ of
+target transitions, with
+\begin{equation}
+\mathcal{L}_{\text{dyn}}(f_\theta) \;=\; \mathbb{E}_{\mathcal{R}}
+\Big[\tfrac{1}{\sum_k \rho^k}\sum_{k=0}^{H-1} \rho^{k}\,
+\big\Vert \hat z_{t+k+1} - \mathrm{sg}\big(E_\theta(s_{t+k+1})\big) \big\Vert_2^2\Big].
+\label{eq:app-dyn-consistency}
+\end{equation}
+
+\paragraph{(i) Value-aware model learning (VAML).}
+Since the planner only reads the dynamics through $\hat V_\theta$
+(Eq.~\ref{eq:app-mppi-return}), errors of $f_\theta$ that leave the value
+unchanged are harmless to the ranking. Value-aware model
+learning~(Farahmand et al., 2017) % TODO bib
+therefore penalizes only the part of the model error that the value can see. We
+replace Eq.~\ref{eq:app-dyn-consistency} with
+\begin{equation}
+\mathcal{L}_{\text{VAML}}(f_\theta) \;=\; \mathbb{E}_{\mathcal{R}}
+\Big[\tfrac{1}{\sum_k \rho^k}\sum_{k=0}^{H-1} \rho^{k}\,
+\big(\hat V_\theta(\hat z_{t+k+1}) - \mathrm{sg}\,\hat V_\theta\big(E_\theta(s_{t+k+1})\big)\big)^2\Big],
+\end{equation}
+with $\hat V_\theta$ frozen, so gradients reach $f_\theta$ only through the value.
+The loss has a large null space: any displacement of $\hat z$ along an iso-value
+surface of $\hat V_\theta$ costs nothing. In a diagnostic on the horizon-3 model we
+found that the model uses this freedom, and the latent geometry that the ranking
+depends on degrades (the distance between the imagined and the encoded terminal
+latent grew $10\times$ while the value error shrank). A variant that penalizes only
+the within-candidate-set variance of the value error behaves the same way.
+\emph{Result:} \ph{[plain\_h5 vs.\ VAML]}.
+
+\paragraph{(ii) Value ensemble with pessimism (MRS.Q).}
+Following MRS.Q~(Chang et al., 2026), % TODO bib
+we replace the value head by an ensemble of $N=10$ heads distilled in stage~1, each
+on an independent Bernoulli($0.5$) mask $m_i$ of every batch and with a frozen
+random prior function $p_i$ of scale $\beta=3$ to keep the members diverse:
+\begin{equation}
+\hat V_i(z) \;=\; g_i(z) + \beta\, p_i(z), \qquad
+\mathcal{L}_{V} \;=\; \tfrac{1}{N}\sum_{i=1}^{N}
+\mathbb{E}\big[m_i\, \ell\big(\hat V_i(z_{t}),\, Q^e_s(s_t, \pi^e_s(s_t))\big)\big],
+\end{equation}
+and the planner scores the terminal state pessimistically with
+$\hat V_{\min}(z) = \min_{i} \hat V_i(z)$ in place of $\hat V_\theta$ in
+Eq.~\ref{eq:app-mppi-return}. Pessimism can only help if the members disagree
+where the value is wrong. That does not happen here. The dynamics gap changes
+$p(s' \mid s,a)$ but leaves the state marginal, the only thing a value head
+observes, largely in distribution: the ensemble disagreement on target states
+($0.0083$) matches that on source states ($0.0078$), and its rank correlation
+with the dynamics error of the imagined terminal state is $-0.30$. Without the
+random priors the members collapse, and $\hat V_{\min}$ becomes a constant shift
+of the mean, to which the top-$k$ selection is invariant.
+Because the heads have to be built in stage~1, this is the only arm whose world
+model is distilled separately. It uses the baseline's source data, steps and seed,
+but its value targets are the source expert's IBRL (actor-or-prior) value rather
+than the bare actor's; since the separate distillation also changes the encoder and
+the policy head, we additionally report the planner's net gain over its own proposal. \emph{Result:} \ph{[plain\_h5 vs.\ ensemble]}.
+
+\paragraph{(iii) Reducing the value error at the imagined state.}
+The planner evaluates $\hat V_\theta$ at the imagined latent $\hat z_{t+H}$, not
+at the true one, so its effective value error is
+$\varepsilon(s_t, a_{t:t+H}) = \hat V_\theta(\hat z_{t+H}) - \hat V_\theta(z_{t+H})$.
+In an oracle probe, feeding the \emph{real} $z_{t+H}$ to the same value head solves
+the task, so it is natural to calibrate the value to the imagined latent and
+remove $\varepsilon$. Each round, after the unchanged dynamics update, we regress
+the value head on real target segments from $\mathcal{R}$:
+\begin{equation}
+\min_{\hat V_\theta}\;
+\mathbb{E}_{(s_t,\,a_{t:t+H},\,s_{t+H})\sim\mathcal{R}}
+\Big[\ell\Big(\hat V_\theta\big(f^{H}_\theta(E_\theta(s_t), a_{t:t+H})\big),\;
+\hat V^{0}_\theta\big(E_\theta(s_{t+H})\big)\Big)\Big],
+\end{equation}
+where $f^H_\theta$ is the $H$-step latent rollout (no gradient) and
+$\hat V^0_\theta$ is a frozen copy of the stage-1 value head. The
+imagined-state error does go down, but the planner does not improve. MPPI reads the
+value only through the \emph{within-set} spread of candidate returns,
+$\mathrm{std}_i\big(\gamma^H \hat V(\hat z^{(i)}_{t+H})\big)=0.0068$, about $1.4\%$
+of the value range (measured on the horizon-3 model). Any refit leaves a residual
+of the same order. That residual rewrites the elite set: across refitting variants,
+success tracks the overlap of the top-$64$ elites with those of the unmodified head
+(Spearman $+0.94$), not the value error.
+\emph{Result:} \ph{[plain\_h5 vs.\ calibrated value]}.
+
+\paragraph{(iv) More target demonstrations for the proposal.}
+If the proposal were the bottleneck, a stronger proposal should raise the planner.
+We keep the collector (the same unsaturated target policy) and all other settings
+fixed and increase the stage-2 demonstration set from $20$ to $500$ episodes:
+\begin{equation}
+\min_{\pi_\theta}\;
+\mathbb{E}_{(s,a)\sim\mathcal{D}_t^{(500)}}
+\big\Vert \pi_\theta\big(\mathrm{sg}(E_\theta(s))\big) - a \big\Vert_2^2
+\qquad\text{instead of}\qquad \mathcal{D}_t^{(20)}.
+\end{equation}
+The number of BC steps is raised from $1$k to $8$k so that the larger set is
+actually fitted, rather than seen for only a few epochs. The proposal does become
+stronger: its success rate without the planner rises. The planner's success rate
+does not. Earlier runs point the same way: with the dynamics fixed, raising the
+proposal from $0.42$ to $0.75$ moved the planner from $0.850$ to $0.847$, and a
+$500$-demonstration proposal ended $0.02$ \emph{below} a $20$-demonstration one,
+because a narrow proposal also narrows the target data on which the dynamics is
+adapted. \emph{Result:} \ph{[plain\_h5 vs.\ $N{=}500$, both for the planner and
+for the bare proposal]}.
+
+\paragraph{(v) Self-distilling the planner into the proposal.}
+The planner is a policy-improvement operator on top of $\pi_\theta$, so its
+successful rollouts could serve as new demonstrations, closing an expert-iteration
+loop. Let $\mathcal{R}^{+}\subset\mathcal{R}$ be the transitions of successful
+target episodes, whose actions are the MPPI outputs. After the first $5$k
+transitions, each round takes $500$ BC steps on
+\begin{equation}
+\min_{\pi_\theta}\;
+\tfrac12\,\mathbb{E}_{(s,a)\sim\mathcal{D}_t}\big\Vert \pi_\theta(\mathrm{sg}\,z) - a\big\Vert_2^2
+\;+\; \tfrac12\,\mathbb{E}_{(s,a)\sim\mathcal{R}^{+}}\big\Vert \pi_\theta(\mathrm{sg}\,z) - a\big\Vert_2^2 ,
+\end{equation}
+where the half of each batch drawn from $\mathcal{D}_t$ keeps the proposal from
+collapsing onto a few rollouts. The loop only clones successes, which already come
+from where the planner works well. It never sees the configurations where the
+planner fails, and those failures come from dynamics error, which this loop does
+not touch. A stronger proposal is also not what the planner is missing (iv).
+\emph{Result:} \ph{[plain\_h5 vs.\ self-distillation]}.
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Interventions on the planner that do not help} (Threading, plain\_h5 base,
+  $100$k target transitions, mean of the $75$--$100$k window, $5$ seeds,
+  $100$ episodes per evaluation point). \emph{proposal} is the policy head acting
+  alone; $\Delta$ is the paired difference to plain\_h5 in planner success.
+  [TODO: fill from \texttt{exps/simdist\_threading\_3arm/\{arm\}\_seed\{1,101,201,301,401\}}.]
+}
+\label{tab:app-negative}
+\begin{tabular}{llccc}
+\toprule
+arm & what changes & planner & proposal & $\Delta$ planner \\
+\midrule
+plain\_h5            & ---                                        & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & --- \\
+(i) VAML             & dynamics loss $\to$ value-aware            & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & \ph{+0.00} \\
+(ii) value ensemble  & $\hat V \to \min_{i\le10} \hat V_i$        & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & \ph{+0.00} \\
+(iii) value calib.   & $\hat V$ fitted at $\hat z_{t+H}$          & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & \ph{+0.00} \\
+(iv) $N{=}500$ demos & $\mathcal{D}_t^{(20)} \to \mathcal{D}_t^{(500)}$ & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & \ph{+0.00} \\
+(v) self-distill     & BC on $\mathcal{R}^{+}$ each round         & \ph{0.00}\pmsd{\ph{.00}} & \ph{0.00} & \ph{+0.00} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 \end{document}

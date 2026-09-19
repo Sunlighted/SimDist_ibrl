@@ -41,9 +41,14 @@ def main():
 
     cell = load_sim2real(args.cell)
     # matched geometry only: the demo was generated at the nominal cell, no DR
-    geo = None if args.no_cell else Sim2RealConfig(
-        enabled=1, table_above_base=cell.table_above_base,
-        workspace_offset=cell.workspace_offset)
+    # The WHOLE cell with every dr_* reset to its inert default -- not a
+    # hand-picked subset of geometry fields: the old subset (table height +
+    # workspace offset) silently dropped table_full_size/base_xy/init_qpos when
+    # they were added, and replayed every demo on the wrong arena (0/100).
+    import dataclasses
+    geo = None if args.no_cell else dataclasses.replace(cell, **{
+        f.name: f.default for f in dataclasses.fields(Sim2RealConfig)
+        if f.name.startswith("dr_")})
     strict = StrictSuccessConfig(enabled=True, dwell_steps=3, max_tripod_disp=0.04,
                                  max_needle_speed=0.0)
     env = PixelRobosuite("Threading_D0", "Panda", 400, camera_names=[], rl_cameras=[],

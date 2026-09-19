@@ -39,9 +39,9 @@ def check(name, ok, extra=""):
         FAILED.append(name)
 
 
-def make_env(s2r=None, sigma=0.0):
+def make_env(s2r=None, sigma=0.0, task="Threading_D0"):
     return PixelRobosuite(
-        "Threading_D0", "Panda", 400, image_size=224, rl_image_size=224,
+        task, "Panda", 400, image_size=224, rl_image_size=224,
         camera_names=CAMS, rl_cameras=CAMS, use_state=False, obs_stack=1,
         state_stack=1, prop_stack=1, flip_image=True, device="cpu",
         hand_init_perturb_joint_sigma=sigma, sim2real=s2r)
@@ -281,6 +281,148 @@ def test_workspace_offset():
           all(before[k]["y"] == after[k]["y"] for k in before))
 
 
+def arena(env):
+    """Everything that defines the cell, expressed RELATIVE TO THE ROBOT BASE:
+    table top height, table centre xy, collision half-sizes, base world z."""
+    m, d = env.env.sim.model, env.env.sim.data
+    b = d.body_xpos[m.body_name2id("robot0_base")].copy()
+    g = m.geom_name2id("table_collision")
+    top = float(env.env.table_offset[2])
+    return dict(top_above_base=top - b[2],
+                centre_in_base=np.array(env.env.table_offset[:2]) - b[:2],
+                half=m.geom_size[g].copy(), base_z=b[2],
+                geom_top=float(d.geom_xpos[g][2] + m.geom_size[g][2]) - b[2])
+
+
+def test_real2sim_arena():
+    print("\nI. arena matches the real2sim PegInsertion_D0 cell")
+    from env.sim2real import load_sim2real
+    ypath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "release/cfgs/sim2real/threading_real_cell.yaml")
+    # nominal cell: every base-pose DR (height/xy/yaw/tilt) would move the base
+    import dataclasses
+    cell = dataclasses.replace(load_sim2real(ypath), dr_base_height=0.0,
+                               dr_base_yaw_deg=0.0, dr_base_tilt_deg=0.0, dr_base_xy=0.0)
+    ref = make_env(None, task="PegInsertion_D0"); np.random.seed(0); ref.reset()
+    a_ref = arena(ref)
+    print(f"    real2sim: {a_ref}")
+
+    rl = make_env(cell); np.random.seed(0); rl.reset()          # RL path
+    gen = make_env(None, task="Threading_RealCell"); np.random.seed(0); gen.reset()
+    both = make_env(cell, task="Threading_RealCell"); np.random.seed(0); both.reset()
+    for tag, e in (("wrapper hook (Threading_D0 + sim2real_cell)", rl),
+                   ("Threading_RealCell (demo generation)", gen),
+                   ("Threading_RealCell + sim2real_cell", both)):
+        a = arena(e)
+        for k in a_ref:
+            check(f"{tag}: {k}", np.allclose(a[k], a_ref[k], atol=1e-6),
+                  f"{np.round(a[k], 5)} vs {np.round(a_ref[k], 5)}")
+
+    # objects keep their pose RELATIVE TO THE BASE vs the pre-arena cell
+    # (base (-0.56, 0), offset (0, 0.10)) -- the reach/occlusion checks were
+    # base-relative, so they carry over.
+    old_base, old_off = np.array([-0.56, 0.0]), np.array([0.0, 0.10])
+    b_d0 = make_env(Sim2RealConfig(enabled=1)); np.random.seed(0); b_d0.reset()
+    raw = b_d0.env._get_initial_placement_bounds()
+    for tag, e in (("wrapper", rl), ("RealCell", gen), ("RealCell+hook", both)):
+        m, d = e.env.sim.model, e.env.sim.data
+        base = d.body_xpos[m.body_name2id("robot0_base")][:2]
+        bnd = e.env._get_initial_placement_bounds()
+        ok = all(
+            np.allclose(np.array(bnd[k][ax]) - base[i],
+                        np.array(raw[k][ax]) + old_off[i] - old_base[i], atol=1e-6)
+            for k in raw for i, ax in enumerate(("x", "y")))
+        check(f"{tag}: object bounds unchanged relative to the base (no double offset)",
+              ok, str({k: (bnd[k]["x"], bnd[k]["y"]) for k in bnd}))
+
+
+def test_init_qpos():
+    print("\nJ. reset joint pose (init_qpos) bites -- on EVERY reset")
+    # robosuite re-instantiates the Robot from robot_configs on each hard reset,
+    # so an instance attribute survives exactly zero resets. Check reset #2 too.
+    from env.sim2real import load_sim2real
+    import dataclasses
+    ypath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "release/cfgs/sim2real/threading_real_cell.yaml")
+    cell = dataclasses.replace(load_sim2real(ypath), dr_base_height=0.0,
+                               dr_base_yaw_deg=0.0, dr_base_tilt_deg=0.0, dr_base_xy=0.0)
+    assert cell.init_qpos is not None, "cell yaml has no init_qpos"
+    q = np.array(cell.init_qpos)
+    for tag, e in (("wrapper hook", make_env(cell)),
+                   ("Threading_RealCell", make_env(None, task="Threading_RealCell"))):
+        r = e.env.robots
+        got = []
+        for s in range(2):
+            np.random.seed(s); e.reset()
+            got.append(e.env.sim.data.qpos[e.env.robots[0]._ref_joint_pos_indexes].copy())
+        for k, g in enumerate(got):
+            check(f"{tag}: reset #{k + 1} qpos == init_qpos (sigma=0)",
+                  np.allclose(g, q, atol=1e-6), str(np.round(g, 3)))
+    # and it is the CENTRE of the sigma>0 distribution, not replaced by it
+    e = make_env(cell, sigma=0.1)
+    qs = []
+    for s in range(40):
+        np.random.seed(s); e.reset()
+        qs.append(e.env.sim.data.qpos[e.env.robots[0]._ref_joint_pos_indexes].copy())
+    qs = np.array(qs)
+    check("sigma=0.1 noise is centred on init_qpos",
+          np.abs(qs.mean(0) - q).max() < 0.06 and qs.std(0).min() > 0.05,
+          f"mean-q {np.round(qs.mean(0) - q, 3)} std {np.round(qs.std(0), 3)}")
+
+
+def test_base_pose_dr():
+    print("\nK. base pose DR (R1 yaw / R2 tilt / R3 xy / height) bites, stays in range")
+    import dataclasses, torch
+    from env.sim2real import load_sim2real
+    ypath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "release/cfgs/sim2real/threading_real_cell.yaml")
+    cell = load_sim2real(ypath)
+    assert cell.any_base_dr(), "cell yaml has no base DR"
+    nom = make_env(dataclasses.replace(cell, dr_base_height=0.0, dr_base_yaw_deg=0.0,
+                                       dr_base_tilt_deg=0.0, dr_base_xy=0.0))
+    np.random.seed(0); nom.reset()
+    mn = nom.env.sim.model
+    b0 = nom.env.sim.data.body_xpos[mn.body_name2id("robot0_base")].copy()
+    t0 = nom.env.sim.data.geom_xpos[mn.geom_name2id("table_collision")].copy()
+    e = make_env(cell)
+    yaws, tilts, dxy, dz, drift, tabd, touch = [], [], [], [], [], [], 0
+    for sd in range(30):
+        np.random.seed(sd); e.reset()
+        m, d = e.env.sim.model, e.env.sim.data
+        bid = m.body_name2id("robot0_base")
+        R = d.body_xmat[bid].reshape(3, 3)
+        yaws.append(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
+        tilts.append(np.degrees(np.arccos(np.clip(R[2, 2], -1, 1))))
+        dxy.append(d.body_xpos[bid][:2] - b0[:2]); dz.append(d.body_xpos[bid][2] - b0[2])
+        tabd.append(np.abs(d.geom_xpos[m.geom_name2id("table_collision")] - t0).max())
+        tab = m.geom_name2id("table_collision")
+        touch += any(tab in (d.contact[i].geom1, d.contact[i].geom2) for i in range(d.ncon))
+        sid = m.site_name2id("gripper0_grip_site"); p0 = d.site_xpos[sid].copy()
+        for _ in range(5):
+            e.step(torch.zeros(e.action_dim))
+        drift.append(np.linalg.norm(e.env.sim.data.site_xpos[sid] - p0) * 1000)
+    yaws, tilts, dxy, dz = map(np.array, (yaws, tilts, dxy, dz))
+    tilt_max = np.degrees(np.arccos(np.cos(np.radians(cell.dr_base_tilt_deg)) ** 2))
+    check("yaw within +-dr_base_yaw_deg and actually varies",
+          np.abs(yaws).max() <= cell.dr_base_yaw_deg + 1e-6
+          and np.abs(yaws).max() > 0.5 * cell.dr_base_yaw_deg,
+          f"|yaw| max {np.abs(yaws).max():.3f} deg")
+    check("tilt within the +-x/+-y box and actually varies",
+          tilts.max() <= tilt_max + 1e-6 and tilts.max() > 0.5 * cell.dr_base_tilt_deg,
+          f"tilt max {tilts.max():.3f} deg (bound {tilt_max:.3f})")
+    check("base xy within +-dr_base_xy and actually varies",
+          np.abs(dxy).max() <= cell.dr_base_xy + 1e-9
+          and np.abs(dxy).max() > 0.5 * cell.dr_base_xy,
+          f"|dxy| max {np.abs(dxy).max() * 1000:.2f} mm")
+    check("base z within +-dr_base_height", np.abs(dz).max() <= cell.dr_base_height + 1e-9,
+          f"|dz| max {np.abs(dz).max() * 1000:.2f} mm")
+    check("the TABLE never moves (only the base is perturbed)", max(tabd) < 1e-9,
+          f"max {max(tabd):.2e}")
+    check("no table contact at reset under base DR", touch == 0, f"{touch}/30")
+    check("OSC re-latched: 5 zero-action steps drift < 3 mm", max(drift) < 3.0,
+          f"max drift {max(drift):.2f} mm")
+
+
 def test_dr_ranges():
     print("\nE. DR: zero-width ranges are inert, real ranges vary")
     base_cam = RealCameraConfig(name="agentview", frame="base", pos=(0.6, 0.48, 0.78),
@@ -326,6 +468,9 @@ def main():
     test_lookat_matches_known_camera()
     test_object_colour()
     test_workspace_offset()
+    test_real2sim_arena()
+    test_init_qpos()
+    test_base_pose_dr()
     test_dr_ranges()
     print("\n" + "=" * 60)
     if FAILED:

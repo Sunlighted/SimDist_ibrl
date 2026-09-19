@@ -972,6 +972,46 @@ Square/Coffee/TPA 是各自的 **source** 专家，**Threading 是 target snapsh
 （原先硬编码 `use_ibrl=True`；默认 1 = 此前所有格的行为，逐位兼容）。
 ⚠️ 该格用时 4 小时 39 分（低成功率 ⇒ episode 跑满）。
 
+★★ **同谱系的另两个 Threading target critic 也崩**（2026-09-17，`src+tgt` 行、oracle、n=100）：
+
+| target critic | 训练 | oracle+V_tgt |
+|---|---|---:|
+| 蒸馏 V̂（对照） | — | **0.970** |
+| `rlprior_prior_sig01`（表里用的） | 1M 步 | 0.420 |
+| 同上，`value_ibrl=0` | — | 0.290 |
+| `sig01_snapshots` | **200k 步** | **0.270** |
+| `target_snapshots_rlprior`（谱系祖先） | — | **0.410** |
+
+⇒ **训练长度（200k vs 1M）、prior 参不参与 max，都不是原因**；这条谱系的 critic 一律把
+0.97 打到 0.27–0.42，而这些策略自己的成功率是 0.94–1.00。
+⚠️ **边界**：Threading 上所有强的非 flow-BC target 专家**同出一支**
+（热启动 + prior 都来自 `threading_ibrl_target_snapshots_rlprior_seed1`）⇒ 这三格**不是独立重复**。
+要证"Threading 的 target critic 普遍如此"，需要一条独立谱系
+（现存唯一候选是 flow-BC 那支 `threading_ibrl_newtgt_sig01_snap_seed1`，从 source IBRL 热启动），
+或重训一个。**未做。**
+
+★★ **多重比较：12 格里唯一为正的 Square 格经不起校正**（2026-09-17）。
+四个负效应（Threading 三行 + TPA `tgt only`）在 Bonferroni（12 格，p<0.0042 ⇔ |z|>2.87）下全部存活；
+**Square `tgt only` 的 +0.080 是 p=0.0083 ⇒ 校正后不显著**（BH-FDR 下勉强压线第 5 名）。
+再叠一层：铁律 #15 记的 planner RNG 自带 **±0.06** 的复现噪声，而这个效应只有 +0.08。
+⇒ **"target value 在 Square 上是正的"不可引用**；诚实的表述是
+**「四任务 12 格中，target critic 在 4 格显著有害、8 格测不出，没有一格可信地有益」**。
+
+★ **一致性核查（回应"其他任务是不是和 Square 一致"）**：逐项对过 target 配方 / σ / init_dist：
+
+| 任务 | critic 训练 target == 评测 target | 评测 σ | critic 训练 σ | init_dist | prior 来源 |
+|---|---|---:|---:|---|---|
+| Square | ✅ | 0.1 | 0.1 | 匹配 | **source** 专家 |
+| Coffee | ✅ | 0.1 | 0.1 | 匹配 | **source** 专家 |
+| Threading | ✅ | 0.1 | 0.1 | 匹配 | ⚠️ **target** snapshots |
+| TPA | ✅ | 0.1 | ⚠️ **None** | 匹配 | **source** 专家 |
+
+⇒ **没有任何配置差异指向 Square**（它四项全对）。查出的两处不一致都在别的任务上，且都不解释
+Square 的正号：① **TPA 的 critic 训练在无扰动（σ=None）下、却在 σ=0.1 上打分**
+（`eval_oracle_dyn_mppi.py:464` 硬编码评测 σ=0.1）—— 这会让 TPA 的 −0.280 有一部分是
+start-distribution 错配，需要注明；② Threading 的 prior 来自 target snapshots 而非 source 专家 ——
+但上面 `value_ibrl=0` 的格已经证明 prior 不是崩塌的原因。
+
 #### ★★ 结论 3：「完美 dynamics 让 planner 与 proposal 无关」**有一个反例**
 列内跨行极差（proposal 敏感度）：
 

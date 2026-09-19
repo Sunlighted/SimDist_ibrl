@@ -577,3 +577,103 @@ critic `10×512` 无 layer-norm / actor `512` dropout 0.5（**全仓库其他 IB
 critic 5×1024 + ln、actor 1024 dropout 0**）。三者都不报错。
 现在有两道防线：`train_rl.py` 在 `bc_policy` 非空且 `act_method=="rl"` 时抛错；
 `load_pretrained_agent` 形状不匹配且 PE 关闭时抛错并指出该对齐哪些旋钮。
+
+## 14. sim2real cell（Threading_RealCell）↔ real2sim arena 对齐（2026-09-18）
+
+**同一个真机 DROID cell，两条线必须共享同一个 arena。** 唯一真源 = `env/peg_insertion.py`
+的 `MEASURED_*` 常量（real2sim.md §2e）。`threading_real_cell.yaml` 里写 `arena_from_real2sim: 1`
+⇒ `load_sim2real()` 从那里取 `table_above_base`(+0.0207) / `table_full_size`(0.739×1.240×0.03，
+碰撞+视觉) / `base_xy`(−0.489,−0.034 相对桌心)；yaml 里再写这三个 key 会被拒。
+
+两条路径都接上了（都读同一 yaml）：
+- RL：`Threading_D0` + `sim2real_cell` → wrapper 的 `apply_cell_arena`（包 `_load_model`：先设桌尺寸，
+  后覆盖 base xy —— Threading 在内部按 `table_full_size[0]` 推 base x，只改桌子会让机器人倒退）。
+- demo 生成 / BC eval：注册类 `Threading_RealCell`（hdf5 里存的 env_name）。它把
+  `_s2r_offset_applied/_s2r_arena_applied` 置真，所以再叠 `sim2real_cell` 不会二次偏移。
+
+`workspace_offset` 从 (0, 0.10) 改成 **(0.071, 0.066)** = 旧值 + base 位移 ⇒ 物体**相对机器人**的
+位置不变（旧的可达/遮挡检查都是 base 相对的，仍有效）。
+相机：zed2i 换成 §2d-x 独立复解（`ground_run2_solved.json`，6-DOF，roll 占位消失），
+内参 HD2K 原生 fy=1057.6@1242 ⇒ fovy 60.84°。⚠️ real2sim 的 `render_camera_pov.py` 仍读 §2d 的
+`ground_transforms.json`（差 ~30 mm），两边要约定一个解。腕相机 / 桌面倾角 1° 待定。
+
+Gate：`scripts/test_sim2real.py` §I 逐项比对三条路径与 `PegInsertion_D0`（桌面相对 base 高度、
+桌心相对 base、碰撞半尺寸、base z）+ 物体相对 base 不变。⚠️ 比对要关 `dr_base_height`（±5 mm）。
+preview：`--no_dr` 以前把乘性 DR 置 0 ⇒ 全黑图，已修。
+
+⚠️ **2026-09-17 生成的全部 RealCell 产物属于旧 arena（0.8×0.8 桌、base (−0.56,0)），已作废**：
+`release/data/mimicgen/generated/threading_realcell`、`exps/mimicgen/threading_realcell_{flow_bc,mlp_bc,ibrl}_seed1`。
+
+### 14a. sim ↔ 真机的残余差距（2026-09-18 记录，后续 DR 的候选清单）
+
+§14 只保证 **RealCell ≡ PegInsertion_D0**（gate 1e-6）。两者都继承 real2sim 的建模近似，
+与**真机**之间仍有下表差距。state 臂的量级是 mm–cm，而 Threading 容错窗口 ~1.8 mm ⇒ 不可忽略。
+
+| # | 项 | sim 现值 | 真机/另一次解 | 量级 | 处理建议 |
+|---|---|---|---|---|---|
+| R1 | base yaw 取整 | 90° | 91.2°（§2e） | 1.2°，远角 ~13 mm | 可直接建模（不取整）；或 DR ±1.5° |
+| R2 | 桌面倾斜 | 水平 | 相对 base z 倾 0.99°（`cell_layout_base.json`） | 桌面范围内 ≤~10 mm 高差 | 可直接建模；或 DR 倾角 ±1° |
+| R3 | 两次接地解的分歧 | base xy (−0.489,−0.034)、桌高 20.7 mm、桌 1.240×0.739（§2e） | 独立复算 (−0.493,−0.028)、21.4 mm、1.260×0.737（§2d-x） | 位置 ~7 mm、高度 0.7 mm、尺寸 20 mm | 先与 real2sim 约定一个解；残差作为 base xy / 桌高 DR 的宽度依据 |
+| R4 | 绝对尺度未闭合 | 全链米制来自 ChArUco 的 ZED-depth 融合 | 方格 42.43 mm 未经尺子核对 | 若真值 40 mm ⇒ 全链偏大 **6%** | **量，不要 DR**（尺子量一次方格即可闭合） |
+| R5 | zed2i 外参两套解 | §2d-x `ground_run2_solved.json` | real2sim 渲染仍用 §2d `ground_transforms.json` | 30 mm / 1.0° | 约定一个；现有 `dr_cam_pos 0.011` / `dr_cam_rot_deg 1.0` 小于这个分歧 |
+| R6 | zed2i 内参 | fy 1057.6（抄自 real2sim.md） | 原始 `intrinsics.json` 不在本机；cx/cy 未核 | — | 拿到文件后核对；`dr_cam_fovy_deg 1.0` 已在 |
+| R7 | 腕相机 zedm | sim 默认挂载 | `T_ee_zedm` 已解，但 "ee" 的坐标系定义未对齐 | ~150 mm 挂点差 | 先对齐 EE 定义（flange / O_T_EE vs `gripper0_grip_site`），再决定 DR |
+| R8 | 视觉外观 | 桌面平涂、放大 5 m；默认 robosuite mount 外形 | 垫子外是光学面包板；底座外形不同 | 仅像素 | 已有 `dr_background_gray` / 桌色 DR；DR 版桌面亮度偶尔接近全白（`figs/sim2real/agentview.png` 第 2 格），可收窄 |
+| R10 | reset 关节姿态 | Franka 标准 ready `[0,−π/4,0,−3π/4,0,π/2,π/4]`（`init_qpos`，2026-09-18） | 真机实际 home 未核对 | — | 拿到真机 home 后替换；σ=0.1 的关节噪声以它为中心 |
+| R9 | 桌厚 0.03 m | 取自 real2sim | 未测 | 物理无关（只有顶面起作用） | 不处理 |
+
+原则（沿用 `env/sim2real.py` 开头的说明）：**能测的先测准，只对测不准或会漂的量做 DR**；
+DR 的宽度取自上表的实测分歧，不要拍脑袋定。R4 属于"能测"，不该用 DR 去吸收
+——在 ~1.8 mm 的窗口下，宽到能盖住 6% 尺度误差的 DR 也会把信号淹掉。
+现有已接好的几何 DR 只有 `dr_base_height 0.005`（±5 mm）；R1/R2/R3 需要新的旋钮
+（base yaw、桌面倾斜、base xy），`env/sim2real.py` 里还没有。
+
+### 14b. reset 姿态改为 Franka ready（2026-09-18）
+
+robosuite 默认 `init_qpos` 是为"桌面在 base 下 112 mm"设计的；在实测 cell（桌面在 base **上** 20.7 mm）
+上 grip site 离桌面只剩 **78 mm**，σ=0.1 下 **12/100 次 reset 手指已触桌、最低穿进桌面 44 mm**。
+改为 Franka ready 后（同一新 arena，100 次 reset，σ=0.1）：
+
+| | 默认 | ready |
+|---|---:|---:|
+| grip 离桌面（均值 / 最低） | 78 / **−44** mm | **466 / 343** mm |
+| reset 时触桌 | 12/100 | **0/100** |
+| 最小关节限位余量（中位 / 最小） | 0.43 / 0.19 rad | **0.69 / 0.45** rad |
+| Jacobian 条件数（中位 / 最大） | 12.7 / 39.9 | **8.2 / 8.8** |
+| 夹爪朝向 | 偏离竖直 7.3° | 正竖直向下（yaw 相同） |
+| P 控制器开到 needle / tripod 上方 10 cm 的步数（中位） | 26 / 16 | 31 / 32 |
+
+⚠️ **实现坑**：`robosuite` 的 `_load_robots()` 每次 hard reset 都从 `robot_configs` **重新实例化** Robot
+⇒ 写 `env.robots[0].init_qpos` 只活到下一次 reset（第一版就这么静默失效，统计与默认逐位相同）。
+正确入口是 `env.robot_configs[0]["initial_qpos"]`（`apply_init_qpos` / `Threading_RealCell` 都走这里）；
+gate §J 检查**第 2 次** reset 的 qpos 以及 σ 噪声以它为中心。
+
+MimicGen 生成成功率 A/B（同一新 arena、同 seed 1000、各 200 次尝试）：**ready 53.0% vs 默认 52.5%**，
+平均长度 218 vs 218 步（逐条相同：MimicGen 从起点到第一段的过渡是**固定步数**插值，与距离无关）。
+已核对 ready 组生成的 demo 首帧 qpos 确为 ready（不是没生效）。
+对照旧记录：旧 arena + 默认姿态是 60%（n=50，SE ±7 点）⇒ 与新 arena 的 ~53% 差异不显著，
+arena 改动对生成成功率的影响测不出来。
+
+⚠️ **`scripts/check_demos_strict.py` 曾手工挑字段**构造几何（只抄 table_above_base + workspace_offset）
+⇒ 新增 `table_full_size/base_xy/init_qpos` 后，它在旧 arena 上回放新 arena 的 demo，审计给出
+**0/100（lenient 也 0）**。已改为「整个 cell + 所有 dr_* 复位」。修后新数据：lenient 100/100、
+STRICT 85/100、均长 215（旧 arena 99/83/216）。**任何脚本都别再手工复制 cell 字段。**
+
+### 14c. base 位姿 DR（R1–R3）+ stage-1 数据采集（2026-09-19）
+
+**新旋钮**（`env/sim2real.py`，cell yaml 已开）：`dr_base_yaw_deg 1.5` / `dr_base_tilt_deg 1.0`（绕世界 x、y）/
+`dr_base_xy 0.007`，与既有 `dr_base_height 0.005` 一起作为**机器人 base 位姿**的扰动 —— 桌子始终水平不动
+（物理上起作用的是二者相对位姿；倾斜桌子会让已放好的物体悬空/穿透）。`any_base_dr()` 触发 OSC 重新锁定。
+抽样顺序先 height 后其他 ⇒ 只开 height 的旧配置逐 seed 复现。gate §K：范围内且真在变、桌子不动、reset 不触桌、
+零动作 5 步漂移 < 3 mm。⚠️ **IBRL 专家（09-18）训练时没有 R1–R3**，只有 height。
+
+**`generate_simdist_data.py` 以前完全不读 `sim2real_cell`** ⇒ 对 RealCell 专家采集会**静默落在原版 arena**
+（0.8 m 桌、base (−0.56,0)、robosuite reset 姿态）。已修：`build_source_env` 从 expert cfg 读 cell（采集时读
+**当前** yaml，含当前 DR），`env_cfg.json` 记录 `sim2real_cell.{path, sha256, resolved}`。
+冒烟验证：首帧 eef z 均值 1.402（= 新 arena + ready；旧 arena ≈1.01）。
+
+专家独立重评（`indep_eval/`，n=300，strict，σ=0.1）：训练 cell（只有 height DR）**0.957**。
+
+采集：`scripts/collect_threading_realcell_batches.sh`（TPA 批处理脚本的通用版），8 批 × 25k = **20 万条**，
+两条链分跑 GPU 2/3，落 `/user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_source_diverse_v1/part{b}.hdf5`；
+开跑前快照 cell yaml + 专家 sha + git diff，每批后比对 yaml，变了就停。

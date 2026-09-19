@@ -358,6 +358,12 @@ class AdaptConfig(common_utils.RunConfig):
     # dynamics adapt loss: "mse"(latent 一致性, 原样) | "vaml"(只惩罚影响 value 评估的误差,
     # ||V(next(z,a))-sg V(encode(s'))||^2)。只在 adapt_value=0 时生效。用于"只改 loss"对照。
     dyn_loss: str = "mse"
+    # VALUE CALIBRATION (findings §27 #3, online form): after each round's
+    # dynamics update, fit the value head on the IMAGINED terminal latent
+    # f^H(encode(s_0), a) to V_stage1(encode(s_H^real)) from the adapt buffer
+    # (agent.update_value_calib). 0 = off, byte-identical to before.
+    value_calib: int = 0
+    value_calib_steps: int = 1000
     value_coef: float = 1.0
     adapt_batch_size: int = 256
     adapt_buffer_max_episode: int = 100000   # "large enough"
@@ -1336,6 +1342,19 @@ class AdaptWorkspace:
                         wm_obs, actions, lr=self.cfg.dyn_lr,
                         anchor_z=az, anchor_a=aa, anchor_tgt=at,
                         anchor_coef=self.cfg.dyn_anchor_coef))
+        if self.cfg.value_calib:
+            assert not self._img_keys, "value_calib is state-only"
+            if getattr(self, "_vcal_teacher", None) is None:
+                import copy
+                self._vcal_teacher = copy.deepcopy(self.agent.model).eval()
+                for p in self._vcal_teacher.parameters():
+                    p.requires_grad_(False)
+            for _ in range(self.cfg.value_calib_steps):
+                _sv = self.adapt_replay.sample(
+                    self.cfg.adapt_batch_size, self.H, "cuda",
+                    recency_alpha=self.cfg.recency_alpha)
+                self.stat.append(self.agent.update_value_calib(
+                    _sv[0], _sv[1], self._vcal_teacher, lr=self.cfg.dyn_lr))
         # self-distill the policy on the planner's SUCCESSFUL rollouts, ANCHORED to
         # the clean stage-2 demos (demo_frac of each batch) and only AFTER dynamics
         # has warmed up (else we clone a handful of disrupted-MPPI successes).

@@ -1049,6 +1049,45 @@ class SimDistAgent(nn.Module):
             "adapt/grad_norm": float(gnorm),
         }
 
+    def update_value_calib(self, states, actions, teacher, lr: float = 3e-4
+                           ) -> dict[str, float]:
+        """VALUE CALIBRATION onto the IMAGINED terminal latent (findings §27 #3,
+        the online form of train_value_calibration.py): regress the value head at
+        the latent the planner actually scores,
+            z_H^img = f^H(encode(s_0), a_{0:H})            (dynamics, no grad)
+        onto what the FROZEN stage-1 value says about the REAL terminal state,
+            y = V_teacher(encode(s_H^real)),
+        i.e. drive the value error eps = V(z_H^img) - V_teacher(z_H^real) to 0.
+        Only the value head(s) are in the optimizer; encoder / dynamics / policy
+        are untouched. `teacher` is a frozen copy of the model taken before adapt,
+        so the label does not chase the head being trained."""
+        vparams = [p for hd in self.model.value_heads() for p in hd.parameters()]
+        if getattr(self, "_vcal_opt", None) is None:
+            self._vcal_opt = torch.optim.Adam(vparams, lr=lr)
+        cfg = self.cfg.world_model
+        H = self._obs_len(states) - 1
+        with torch.no_grad():
+            z = self.model.encode(self._obs_at(states, 0))
+            for t in range(H):
+                z = self.model.next(z, actions[:, t])
+            v_tgt = teacher.predict_value(
+                teacher.encode(self._obs_at(states, H)), target=False).reshape(-1)
+        val_l = self._value_head_loss(z, v_tgt, cfg.discrete_heads,
+                                      cfg.num_bins, cfg.vmin, cfg.vmax)
+        self._vcal_opt.zero_grad()
+        val_l.backward()
+        gnorm = nn.utils.clip_grad_norm_(vparams, cfg.grad_clip)
+        self._vcal_opt.step()
+        with torch.no_grad():
+            for src, tgt in zip(self.model.value_heads(), self.model.value_target_heads()):
+                tgt.load_state_dict(src.state_dict())
+            eps = self.model.predict_value(z, target=False).reshape(-1) - v_tgt
+        return {
+            "vcalib/loss": float(val_l.item()),
+            "vcalib/abs_eps": float(eps.abs().mean()),
+            "vcalib/grad_norm": float(gnorm),
+        }
+
     def update_dynamics_vaml(self, states, actions, lr: float = 3e-4) -> dict[str, float]:
         """与 update_dynamics_only 逐行相同, 唯一区别: loss 从 latent 一致性 MSE
         ||next(z,a) - sg(encode(s'))||^2 换成 VALUE-aware(VAML)

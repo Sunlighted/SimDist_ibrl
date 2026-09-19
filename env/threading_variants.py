@@ -91,7 +91,26 @@ class Threading_RealCell(Threading_D0):
         self.table_offset = np.array(self.table_offset)
         self._cell_offset = tuple(float(v) for v in cfg.workspace_offset)
         self._assumed_base_z = base_z
+        # Measured arena (real2sim, docs/real2sim.md §2e): collision table size
+        # and base xy. The size must be set BEFORE super() builds the arena; the
+        # base xy AFTER, because super() derives it from table_full_size[0].
+        if cfg.table_full_size is not None:
+            assert cfg.base_xy is not None, "table_full_size needs base_xy"
+            self.table_full_size = tuple(float(v) for v in cfg.table_full_size)
+        # Everything the wrapper's sim2real hook would install is already baked
+        # in here; mark it so a wrapper built on this env does not stack a
+        # second workspace offset / arena patch on top.
+        self._s2r_offset_applied = True
+        self._s2r_arena_applied = True
+        if cfg.init_qpos is not None:
+            # Via robot_configs, NOT robots[0].init_qpos: super()._load_model()
+            # re-instantiates the Robot from robot_configs on every hard reset.
+            # robosuite adds the joint init noise around this value.
+            self.robot_configs[0]["initial_qpos"] = np.array(cfg.init_qpos, dtype=np.float64)
         super()._load_model()
+        if cfg.base_xy is not None:
+            bx, by = (float(v) for v in cfg.base_xy)
+            self.robots[0].robot_model.set_base_xpos((bx, by, 0.0))
 
     def _reset_internal(self):
         super()._reset_internal()

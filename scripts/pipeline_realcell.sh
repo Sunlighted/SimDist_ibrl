@@ -24,11 +24,42 @@ RL_DIR=exps/mimicgen/threading_realcell_ibrl_seed1
 BC_CFG=release/cfgs/sim2real/threading_realcell_state_mlp_bc.yaml
 RL_CFG=release/cfgs/sim2real/threading_realcell_state_ibrl.yaml
 
+# IBRL snapshot cadence (train_rl.py --snapshot_period): a quality spectrum of
+# policies for SimDist data generation. 0 disables.
+SNAP=${SNAP:-25000}
+CELL=release/cfgs/sim2real/threading_real_cell.yaml
+NSHARD=${NSHARD:-10}
+PER_SHARD=${PER_SHARD:-100}
+
 stamp() { echo "[pipeline $(date '+%F %T')] $*"; }
 pick_gpu() {
   nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
     | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' '
 }
+
+# ------------------------------------------------------------- 0. generate
+# The cell yaml is re-read by Threading_RealCell on EVERY reset, so it must not
+# be edited while this pipeline runs. Pin what the data was generated on.
+if [ ! -f "$DEMO" ]; then
+  mkdir -p "$GEN"
+  cp "$CELL" "$GEN/cell_snapshot.yaml"
+  sha256sum "$CELL" > "$GEN/cell_snapshot.sha256"
+  git rev-parse HEAD > "$GEN/git_head.txt"; git diff > "$GEN/git_diff.patch"
+  stamp "generating $NSHARD shards x $PER_SHARD successes on Threading_RealCell"
+  pids=()
+  for i in $(seq 0 $((NSHARD - 1))); do
+    $PY -u scripts/gen_realcell_demos.py --num "$PER_SHARD" --shard "$i" \
+      > "$GEN/shard_$(printf %02d $i).log" 2>&1 &
+    pids+=($!)
+  done
+  for p in "${pids[@]}"; do wait "$p" || { stamp "ERROR: a generation shard failed"; exit 1; }; done
+  $PY scripts/merge_mimicgen_shards.py --root "$GEN" --out "$DEMO"
+  cmp -s "$CELL" "$GEN/cell_snapshot.yaml" \
+    || { stamp "ERROR: $CELL changed during generation"; exit 1; }
+fi
+N=$($PY -c "import h5py;print(len(h5py.File('$DEMO','r')['data']))")
+[ "$N" -ge $((NSHARD * PER_SHARD)) ] || { stamp "ERROR: $DEMO has $N demos"; exit 1; }
+stamp "generated: $N demos -> $DEMO"
 
 # ---------------------------------------------------------------- 1. convert
 if [ -f "$PROC" ]; then
@@ -67,5 +98,5 @@ sha256sum "$BC_DIR/model0.pt" | tee "$BC_DIR/model0.sha256"
 # ------------------------------------------------------------------ 4. IBRL
 GPU=$(pick_gpu); stamp "training IBRL on GPU $GPU -> $RL_DIR"
 CUDA_VISIBLE_DEVICES=$GPU $PY -u train_rl.py \
-  --config_path "$RL_CFG" --save_dir "$RL_DIR"
+  --config_path "$RL_CFG" --save_dir "$RL_DIR" --snapshot_period "$SNAP"
 stamp "IBRL finished"

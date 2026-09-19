@@ -26,7 +26,15 @@ enabled: 1
 # keep in mind: the nominal initial eef drops from 211 mm to 78 mm above the
 # table, i.e. the whole task geometry changes and the source expert, the stage-1
 # replay and the target demos all have to be regenerated.
-table_above_base: 0.0208
+#
+# 2026-09-18: the arena is now taken from the real2sim task's MEASURED constants
+# (env/peg_insertion.py MEASURED_*, docs/real2sim.md §2e), so this cell and
+# PegInsertion_D0 share one arena by construction. This supplies:
+#   table_above_base = +0.0207   (was 0.0208 here -- same measurement, 0.1 mm)
+#   table_full_size  = 0.739 x 1.240 x 0.03 (collision + visual; was sim 0.8x0.8)
+#   base_xy          = (-0.489, -0.034) wrt the table centre (was sim (-0.56, 0))
+# Do NOT restate those three keys here -- load_sim2real() refuses.
+arena_from_real2sim: 1
 
 # Visual-only enlargement (half-sizes, metres). The real bench is wide enough
 # that no edge is visible from either camera; 2.5 x 2.5 pushes every edge out of
@@ -77,7 +85,21 @@ object_rgb: [0.4667, 0.2627, 0.2706]
 # needle's sampling box (RandomizationError) and gains nothing.
 # Reach re-verified on the LIFTED table by driving the OSC to each object:
 # residual <1 mm at every dy tested.
-workspace_offset: [0.0, 0.10]
+#
+# 2026-09-18: re-expressed for the measured arena. The base moved from (-0.56, 0)
+# to (-0.489, -0.034) in the table frame, i.e. by (+0.071, -0.034). The offset is
+# shifted by that same vector so every object keeps its position RELATIVE TO THE
+# ROBOT (and hence the reach/occlusion checks above, which are base-relative):
+# old (0.0, 0.10) + (0.071, -0.034) = (0.071, 0.066).
+workspace_offset: [0.071, 0.066]
+
+# Robot reset pose (7 arm joints, rad) = Franka's standard "ready" pose
+# [0, -pi/4, 0, -3pi/4, 0, pi/2, pi/4]. robosuite's default (grip site 78 mm over
+# THIS table) put the fingers into the table on ~5% of sigma=0.1 resets; ready
+# puts it ~0.47 m over the table. The sigma=0.1 joint init noise is centred here,
+# so this must match the real robot's home pose -- replace it if the real cell
+# resets somewhere else (docs/infra.md §14a R10).
+init_qpos: [0.0, -0.7853981634, 0.0, -2.3561944902, 0.0, 1.5707963268, 0.7853981634]
 
 # ------------------------------------------------------------------- CAMERAS
 cameras:
@@ -98,11 +120,18 @@ cameras:
   # (base depth 0.977 > tripod 0.90):
   #     pos: [0.60, 0.48, 0.78]     # RECOMMENDED
   # Decide this BEFORE regenerating data; it is baked into every frame.
+  #
+  # 2026-09-18: pose REPLACED with the independent re-solve (docs/real2sim.md
+  # §2d-x; ground_run2_solved.json: T_base_board @ T_board_zed2i, 2D PnP over
+  # scan_run2's 14 poses, zed2i spread 0.41 deg / 20 mm). Full 6-DOF, so the
+  # roll placeholder is gone. The old values (0.141, 0.479, 0.778) + look_dir
+  # came from ground_transforms.json (§2d chain) and differ by ~30 mm.
+  # ⚠️ real2sim/scan_pipeline/render_camera_pov.py still reads the §2d
+  # ground_transforms.json -- agree on one solve with the real2sim side.
   - name: agentview
     frame: base
-    pos: [0.141, 0.479, 0.778]
-    look_dir: [0.57, -0.43, -0.70]      # PLACEHOLDER for `quat`
-    up: [0.0, 0.0, 1.0]
+    pos: [0.1222, 0.5014, 0.7721]
+    quat: [0.14313, -0.48176, 0.78211, -0.36841]   # OpenCV optical, wxyz
     # ⚠️ THE RING OPENING IS 20 mm. Measured with scripts/preview_sim2real.py:
     #     fovy 70 -> 4.1 x 3.4 px   UNRESOLVABLE
     #     fovy 45 -> 6.9 x 5.8 px   marginal
@@ -120,7 +149,15 @@ cameras:
     # image and rescaling. The crop window must be CENTRED ON THE OPTICAL AXIS:
     # MuJoCo's camera is a symmetric pinhole with no principal-point offset, so an
     # off-centre crop cannot be represented here and would desync sim from real.
-    fovy: 70.0                          # PLACEHOLDER for fy/res
+    # 2026-09-18: real intrinsics. HD2K native calibration fy = 1057.6 px at
+    # 1242 px height (docs/real2sim.md §2d; ZED intrinsics are per resolution
+    # MODE -- never rescale across modes, that was a 17% error) =>
+    # fovy = 2*atan(1242 / (2*1057.6)) = 60.84 deg. The real stream must be
+    # centre-cropped to square at native HD2K (preserves this vertical FOV).
+    # ⚠️ fy is quoted from the doc; the raw intrinsics.json (scan_run2) is not on
+    # this machine -- re-check fy and that cx,cy are ~centred when it is.
+    fy: 1057.6
+    res: 1242
 
   # --- zedm, wrist --- DELIBERATELY NOT APPLIED YET ------------------------
   # The hand-eye result is  pos: [0.036, -0.076, 0.014]  in "the EE frame".
@@ -171,3 +208,14 @@ dr_cam_fovy_deg: 1.0
 # way to absorb a mis-measured table height -- that must be matched exactly
 # (the task's tolerance window is ~1.8 mm).
 dr_base_height: 0.005
+
+# 2026-09-19: base<->table misregistration residuals (docs/infra.md §14a R1-R3),
+# applied as a perturbation of the ROBOT BASE pose (the table stays level so the
+# objects on it are never unseated). Widths from the measured disagreements:
+#   R1 yaw: real base yaw 91.2 deg snapped to 90         -> +-1.5 deg
+#   R2 tilt: table plane 0.99 deg off base z             -> +-1.0 deg about x and y
+#   R3 xy: two independent grounding solves ~7 mm apart  -> +-7 mm per axis
+# The IBRL source expert (2026-09-18) was trained WITHOUT these three.
+dr_base_yaw_deg: 1.5
+dr_base_tilt_deg: 1.0
+dr_base_xy: 0.007

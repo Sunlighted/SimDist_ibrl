@@ -221,8 +221,34 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=()):
         # renders nothing). Must be OFF for the pixel arm.
         state_only_no_render=not rl_cameras,
     )
+    # SIM-TO-REAL cell (env/sim2real.py), exactly as train_rl.Workspace applies
+    # it. Without this the rollouts silently happen on the ORIGINAL arena (0.8 m
+    # table, base at (-0.56,0), robosuite reset pose) instead of the cell the
+    # expert was trained on -- no error, just the wrong data.
+    env_params["sim2real"] = load_cell(cfg)
     env = PixelRobosuite(**env_params)  # type: ignore
     return env, env_params
+
+
+def load_cell(cfg):
+    """The expert cfg's sim2real cell (None if it has none). Read from the yaml
+    at collection time, so the cell's DR ranges are the CURRENT file's."""
+    path = getattr(cfg, "sim2real_cell", "") or ""
+    if not path:
+        return None
+    from env.sim2real import load_sim2real
+    return load_sim2real(path)
+
+
+def cell_record(cfg):
+    """Provenance for env_cfg.json: path + sha256 + the resolved config."""
+    path = getattr(cfg, "sim2real_cell", "") or ""
+    if not path:
+        return None
+    import hashlib
+    with open(path, "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    return {"path": path, "sha256": sha, "resolved": dataclasses.asdict(load_cell(cfg))}
 
 
 @contextlib.contextmanager
@@ -476,6 +502,9 @@ def write_env_cfg(out_dir, env_params, args):
             dataclasses.asdict(env_params["init_distribution"])
             if env_params.get("init_distribution") is not None else None),
         "use_state": env_params.get("use_state"),
+        "sim2real_cell": cell_record(pyrallis.load(  # type: ignore
+            train_rl.MainConfig,
+            open(os.path.join(os.path.dirname(args.expert), "cfg.yaml"), "r"))),
         "expert_weight": args.expert,
         "expert_hybrid": args.expert_hybrid,
         "snapshot_hybrid": args.snapshot_hybrid,

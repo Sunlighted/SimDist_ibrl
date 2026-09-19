@@ -178,6 +178,30 @@ class Sim2RealConfig:
     # base origin. A robot bolted to the bench usually has it ABOVE. Getting the
     # sign wrong moves the whole task by >0.1 m.
     table_above_base: Optional[float] = None
+    # MEASURED ARENA (collision table + robot base placement). None = leave the
+    # task's own arena alone. Both are measured by the real2sim pipeline
+    # (docs/real2sim.md §2e) and live as constants in env/peg_insertion.py; set
+    # `arena_from_real2sim: 1` in a cell YAML to pull them (and table_above_base)
+    # from there instead of restating the numbers -- one source, so this cell and
+    # PegInsertion_D0 cannot drift apart.
+    #   table_full_size: full (x, y, z) of the table, metres -- COLLISION and
+    #       visual alike (unlike table_visual_half). Real work surface: 0.739 x
+    #       1.240, long axis along the robot's y.
+    #   base_xy: robot base (x, y) relative to the table centre. REQUIRED
+    #       whenever table_full_size is set: robosuite derives the base x from
+    #       table_full_size[0] (threading.py:244), so resizing the table alone
+    #       would silently walk the robot.
+    arena_from_real2sim: int = 0
+    table_full_size: Optional[tuple] = None
+    base_xy: Optional[tuple] = None
+    # Robot reset joint configuration (7 arm joints, rad). None = robosuite's
+    # default, which was designed for a table 112 mm BELOW the base: on the
+    # measured cell (table 20.7 mm ABOVE) it leaves the grip site only 78 mm over
+    # the table, and sigma=0.1 joint noise puts the fingers INTO the table on
+    # ~5% of resets. The joint-space init noise (hand_init_perturb_joint_sigma)
+    # is centred on this value, so it also sets the centre of the init
+    # distribution -- it must equal the real robot's home pose.
+    init_qpos: Optional[tuple] = None
     # Visual-only enlargement of the table, as HALF-sizes (x, y) in metres.
     # (0,0) = leave alone. This writes `table_visual`'s geom_size, which is
     # contype=conaffinity=0, so the collision box and -- critically -- the robot
@@ -241,6 +265,13 @@ class Sim2RealConfig:
     dr_light_dir: float = 0.0           # +- per-axis perturbation of the light dir
     dr_light_pos: float = 0.0           # +- per-axis, metres
     dr_base_height: float = 0.0         # +- metres on the robot base z
+    # Residual base<->table misregistration (docs/infra.md §14a R1-R3). All of
+    # them perturb the ROBOT BASE pose, never the table: what matters physically
+    # is the relative pose, and tilting the table would unseat objects already
+    # placed on it (gaps/penetration of up to size*tilt at the edges).
+    dr_base_yaw_deg: float = 0.0        # +- deg about world z      (R1: yaw snap 1.2 deg)
+    dr_base_tilt_deg: float = 0.0       # +- deg about world x AND y (R2: table tilt 0.99 deg)
+    dr_base_xy: float = 0.0             # +- metres per axis in x,y (R3: two solves ~7 mm apart)
     # Camera mounting error, applied ON TOP of the measured extrinsics. This is
     # the residual a calibration cannot remove; your PARK solve quoted
     # 1.0 deg / 11.4 mm, which is the right order for these.
@@ -256,7 +287,13 @@ class Sim2RealConfig:
             self.dr_light_diffuse != (1.0, 1.0), self.dr_light_ambient != (0.0, 0.0),
             self.dr_light_specular != (1.0, 1.0), self.dr_light_dir, self.dr_light_pos,
             self.dr_base_height, self.dr_cam_pos, self.dr_cam_rot_deg,
-            self.dr_cam_fovy_deg])
+            self.dr_cam_fovy_deg, self.any_base_dr()])
+
+    def any_base_dr(self) -> bool:
+        """True when the robot base pose is randomised (the OSC must re-latch)."""
+        return bool(self.enabled) and any([
+            self.dr_base_height, self.dr_base_yaw_deg, self.dr_base_tilt_deg,
+            self.dr_base_xy])
 
 
 # ---------------------------------------------------------------- application
@@ -275,6 +312,53 @@ def table_offset_for(cfg: Sim2RealConfig, base_world_z: float) -> Optional[np.nd
     if not cfg.enabled or cfg.table_above_base is None:
         return None
     return np.array([0.0, 0.0, float(base_world_z) + float(cfg.table_above_base)])
+
+
+def apply_cell_arena(env, cfg: Sim2RealConfig) -> None:
+    """Install the measured table size + robot base xy on a MimicGen table env.
+
+    Wraps the instance's `_load_model`, because hard_reset=True rebuilds the
+    arena and the robot model every episode: the table size is set before the
+    original runs, the base xy is overwritten after it (the task's own
+    `set_base_xpos(f(table_full_size[0]))` runs inside). The robot's root body
+    element is shared with the merged task model, and the XML is only generated
+    later in `_initialize_sim`, so the post-hoc write lands. Takes effect on the
+    NEXT reset. Idempotent, like apply_workspace_offset.
+    """
+    if not cfg.enabled or cfg.table_full_size is None:
+        return
+    assert cfg.base_xy is not None, (
+        "sim2real: table_full_size without base_xy would move the robot "
+        "(the base x is derived from table_full_size[0])")
+    if getattr(env, "_s2r_arena_applied", False):
+        return
+    size = tuple(float(v) for v in cfg.table_full_size)
+    bx, by = (float(v) for v in cfg.base_xy)
+    inner = env._load_model
+
+    def load_model():
+        env.table_full_size = size
+        inner()
+        env.robots[0].robot_model.set_base_xpos((bx, by, 0.0))
+
+    env._load_model = load_model
+    env._s2r_arena_applied = True
+
+
+def apply_init_qpos(env, cfg: Sim2RealConfig) -> None:
+    """Set the robot's reset joint configuration via robosuite's own
+    `initial_qpos` robot config. NOT `env.robots[0].init_qpos`: `_load_robots`
+    RE-INSTANTIATES every Robot from `robot_configs` on each hard reset, so an
+    attribute written on the instance is silently gone one reset later (this
+    exact bug shipped once -- the gate now checks the reset qpos). robosuite's
+    joint init noise is added on top, so this moves the centre of the init
+    distribution. Takes effect on the next reset."""
+    if not cfg.enabled or cfg.init_qpos is None:
+        return
+    q = np.asarray(cfg.init_qpos, dtype=np.float64)
+    n = len(env.robots[0].init_qpos)
+    assert q.shape == (n,), f"sim2real.init_qpos has {q.shape[0]} joints, robot has {n}"
+    env.robot_configs[0]["initial_qpos"] = q
 
 
 def apply_workspace_offset(env, cfg: Sim2RealConfig) -> None:
@@ -413,11 +497,30 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
     # Physics-affecting (it moves the whole kinematic chain), so keep the range
     # small and treat it as mounting tolerance, not as a way to paper over a
     # mis-measured table height.
-    if cfg.dr_base_height and nominal is not None:
+    if cfg.any_base_dr() and nominal is not None:
         bid = _body_id(m, "robot0_base")
         if bid is not None:
-            m.body_pos[bid] = nominal["base_pos"] + np.array(
-                [0.0, 0.0, rng.uniform(-cfg.dr_base_height, cfg.dr_base_height)])
+            # Draw order: height first, exactly as before, so a config that only
+            # sets dr_base_height reproduces its old per-seed samples.
+            dz = rng.uniform(-cfg.dr_base_height, cfg.dr_base_height) \
+                if cfg.dr_base_height else 0.0
+            dxy = rng.uniform(-cfg.dr_base_xy, cfg.dr_base_xy, 2) \
+                if cfg.dr_base_xy else np.zeros(2)
+            m.body_pos[bid] = nominal["base_pos"] + np.array([dxy[0], dxy[1], dz])
+            if cfg.dr_base_yaw_deg or cfg.dr_base_tilt_deg:
+                yaw = np.radians(rng.uniform(-cfg.dr_base_yaw_deg, cfg.dr_base_yaw_deg)) \
+                    if cfg.dr_base_yaw_deg else 0.0
+                rx, ry = (np.radians(rng.uniform(-cfg.dr_base_tilt_deg,
+                                                  cfg.dr_base_tilt_deg, 2))
+                          if cfg.dr_base_tilt_deg else (0.0, 0.0))
+                cz, sz, cx, sx, cy, sy = (np.cos(yaw), np.sin(yaw), np.cos(rx),
+                                          np.sin(rx), np.cos(ry), np.sin(ry))
+                Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+                Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+                Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+                # delta applied in the WORLD frame about the base origin
+                m.body_quat[bid] = mat2quat_wxyz(
+                    Rz @ Ry @ Rx @ quat_wxyz2mat(nominal["base_quat"]))
 
     # ---- cameras -----------------------------------------------------------
     for cam in cfg.cameras:
@@ -489,6 +592,7 @@ def snapshot_visual_nominal(env) -> dict:
         "light_dir": m.light_dir.copy(),
         "light_pos": m.light_pos.copy(),
         "base_pos": m.body_pos[bid].copy() if bid is not None else None,
+        "base_quat": m.body_quat[bid].copy() if bid is not None else None,
     }
 
 
@@ -526,6 +630,18 @@ def _cam_id(m, name):
 
 
 # ------------------------------------------------------------------- yaml I/O
+def real2sim_arena() -> dict:
+    """The measured arena, read from the real2sim task's constants (the single
+    source of truth, docs/real2sim.md §2e). Imported lazily: env.peg_insertion
+    pulls in mimicgen."""
+    from env import peg_insertion as pi
+    return {
+        "table_above_base": float(pi.BASE_BELOW_SURFACE),  # surface ABOVE base
+        "table_full_size": tuple(float(v) for v in pi.MEASURED_TABLE_SIZE),
+        "base_xy": tuple(float(v) for v in pi.MEASURED_BASE_XY),
+    }
+
+
 def load_sim2real(path) -> Sim2RealConfig:
     """Read a cell YAML into a Sim2RealConfig.
 
@@ -548,6 +664,12 @@ def load_sim2real(path) -> Sim2RealConfig:
     unknown = set(raw) - set(Sim2RealConfig.__dataclass_fields__)
     assert not unknown, f"{path}: unknown keys {sorted(unknown)}"
     kw = {k: (tuple(v) if isinstance(v, list) else v) for k, v in raw.items()}
+    if kw.get("arena_from_real2sim"):
+        restated = {"table_above_base", "table_full_size", "base_xy"} & set(kw)
+        assert not restated, (
+            f"{path}: arena_from_real2sim=1 takes {sorted(restated)} from "
+            "env/peg_insertion.py; do not restate them here")
+        kw.update(real2sim_arena())
     cfg = Sim2RealConfig(cameras=tuple(cams), **kw)
     for c in cfg.cameras:
         c.rotation_opencv()        # validate now, not mid-dataset-generation

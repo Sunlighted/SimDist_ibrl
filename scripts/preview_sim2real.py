@@ -186,11 +186,15 @@ def main():
                 c.fy = 0.0
                 print(f"[override] agentview fovy -> {c.fovy}")
     if args.no_dr:
-        for k in list(vars(cfg)):
-            if k.startswith("dr_"):
-                v = getattr(cfg, k)
-                setattr(cfg, k, (1.0, 1.0) if isinstance(v, tuple) and v == (1.0, 1.0)
-                        else (0.0, 0.0) if isinstance(v, tuple) else 0.0)
+        # Reset every dr_* to its dataclass default, which is the INERT value.
+        # (The old rule mapped any non-(1,1) tuple to (0,0), which turned the
+        # MULTIPLICATIVE ranges -- light diffuse, rgb gain -- into x0: a black
+        # frame.)
+        import dataclasses
+        from env.sim2real import Sim2RealConfig
+        for f in dataclasses.fields(Sim2RealConfig):
+            if f.name.startswith("dr_"):
+                setattr(cfg, f.name, f.default)
 
     env = PixelRobosuite(
         "Threading_D0", "Panda", 400, image_size=args.res, rl_image_size=args.res,
