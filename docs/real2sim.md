@@ -378,6 +378,31 @@ sim 坐标 `[-0.354, 0.480, 1.691]`（桌面上方 758 mm）。
 | `scan_pipeline/ground_transforms.json` | (35.5, −75.8, 14.3) mm | depth-Kabsch + PARK，散布 11.4 mm / 1.04° |
 | **两者之差** | **2.1 mm / 0.22°** | ⇒ 可信 |
 
+⚠️ **本节只核对了「位置」，而位置看不见绕自身原点的旋转 —— 见 §2d-z，那里差了 45°。**
+
+### §2d-z 腕相机的独立复核：一个 45° 的坑 + 两个互证的量（2026-09-20，`viz/wrist_handeye/`）
+
+1. **★★ `robot0_right_hand` ≠ polymetis 的法兰系，差一个绕 z 的 `45.03°`**（14 pose 上
+   **恒定到 0.000°**）。`robot0_link7` 则是旋转 0.00° / 平移 107.0 mm（link7→法兰的 d），
+   互证。§2d-y 的 0.5 mm 是**位置**核对，对这种旋转结构性失明。
+   ⇒ **sim 里摆腕相机必须 `T_sw_hand @ Rz(45.03°) @ T_ee_zedm`**；不修则夹爪占 23.8%
+   画面（真值 4.6%）。⚠️ 现有代码没踩到它，只因 `render_camera_pov.py` 压根不用
+   `T_ee_zedm` —— **stage D 接腕相机的人是第一个会踩的**。
+2. **hand-eye 精度：LOO 留一 2.2 mm 中位 / 3.7 mm 最大 / 0.34°**（三种 handeye 解法一致
+   到 0.1 mm ⇒ 非过拟合）。全程在真实域，不经 robosuite ⇒ 不受第 1 条影响。
+3. **夹爪剪影是第二个独立观测**（夹爪与相机同为法兰刚体 ⇒ 剪影与手臂关节无关，是
+   `T_ee_zedm` 的纯检验）。全开下拟合修正 `(-2.10, +0.33, -5.34) mm`，逐轴 SD
+   `(0.12, 2.15, 2.01)` ⇒ **只有 x 定得住**。tip 对 tip Δy=0 px、IoU 0.440→0.752。
+   与第 2 条同量级 ⇒ 互证；但 **别用它覆盖 `T_ee_zedm`**（y/z 不确定度 = 修正量）。
+
+⚠️ **`viz/pov_shots/` 那组腕相机对比图不能当 hand-eye 检验**：`T_world_zedm_per_pose`
+（`ground_scan_run2.py:255`，原注释 "no hand-eye needed"）是**逐 pose 对着板子解**出来的，
+再把板子渲染回去 ⇒ 循环。它检验 board model + 内参。
+⚠️ **splat 里没有夹爪的原因**：`splat_frame_calib.json` 的 7 个夹爪 token 全是 Robotiq
+2F-85，而 `PegInsertion_D0` 用默认 `PandaGripper` ⇒ 自动 skip 全丢；且该脚本让手臂停在
+`e.reset()` 构型而非 scan pose 的 joints。**scan_run2 的真机装的是 Panda 手**（外置 ZED
+可见，指尖投影吻合），不是 Robotiq。
+
 ★ **标定用的真实 ZED 图像已入库**：`real2sim/zed_capture/`（14 pose × 腕/外 左目 PNG +
 `state.json` + 原生内参 + Explorer 静态图，**无损、与原件逐字节相同**）。
 ⚠️ JPEG 不行：q95 会把外置相机的 PnP 解移动 **2.3 mm 均值 / 4.3 mm 最大**，与整条链的

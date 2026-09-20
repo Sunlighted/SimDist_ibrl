@@ -72,4 +72,11 @@ real2sim/splats
 !viz/splat_before_after/*.png
 !viz/peg_on_real_table/*.png
 !viz/zedview_check/*.png
+!viz/wrist_handeye/*.png
 viz/splat_before_after/superseded_*
+# wrist hand-eye: superseded_* were made with the WRONG sim gripper (Robotiq85,
+# while scan_run2 has a Panda hand) or are the circular per-pose-PnP splat check
+# that tests the board model rather than T_ee_zedm.  DISPUTED_* assert the robot
+# had no gripper in scan_run2, which is false (see 11_PROOF_...).  None quotable.
+viz/wrist_handeye/superseded_*
+viz/wrist_handeye/DISPUTED_*
