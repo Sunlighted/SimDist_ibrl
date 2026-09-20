@@ -54,3 +54,4 @@ cluster/ibrl.sif
 .pylibs/
 plots/
 release/data
+real2sim/splats
