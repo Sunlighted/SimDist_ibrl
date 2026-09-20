@@ -205,19 +205,6 @@ class DomainShiftConfig:
     # Ring precision dims (also "blind gap" by default → no-op (1.0, 1.0)).
     dr_ring_size_range: tuple = (1.0, 1.0)
     dr_ring_friction_range: tuple = (1.0, 1.0)
-    # Task-specific gap dims for Square / ThreePieceAssembly / Coffee. Without
-    # these, a DR baseline on those tasks can only randomise gripper_kp, because
-    # the knobs their targets are actually defined by (peg_*, base_*, lid_*,
-    # pod_holder_*) had no dr_ counterpart -- so "DR failed" could not be
-    # separated from "DR never varied the thing that differs".
-    # All default to (1.0, 1.0) => the sampler's `!= 1.0` guards keep every
-    # existing config bit-identical.
-    dr_peg_size_range: tuple = (1.0, 1.0)
-    dr_peg_friction_range: tuple = (1.0, 1.0)
-    dr_base_hole_size_range: tuple = (1.0, 1.0)
-    dr_base_friction_range: tuple = (1.0, 1.0)
-    dr_pod_holder_friction_range: tuple = (1.0, 1.0)
-    dr_lid_damping_range: tuple = (1.0, 1.0)
     dr_seed: int = 0
 
 
@@ -1309,14 +1296,6 @@ class DRSampler:
         hole_y = float(self.rng.uniform(*c.dr_hole_offset_range))
         ring_size = float(self.rng.uniform(*c.dr_ring_size_range))
         ring_fric = float(self.rng.uniform(*c.dr_ring_friction_range))
-        # Task-specific dims; each applier is task-dispatched and no-ops on the
-        # tasks it does not own, so sampling them unconditionally is safe.
-        peg_size = float(self.rng.uniform(*c.dr_peg_size_range))
-        peg_fric = float(self.rng.uniform(*c.dr_peg_friction_range))
-        base_hole = float(self.rng.uniform(*c.dr_base_hole_size_range))
-        base_fric = float(self.rng.uniform(*c.dr_base_friction_range))
-        pod_fric = float(self.rng.uniform(*c.dr_pod_holder_friction_range))
-        lid_damp = float(self.rng.uniform(*c.dr_lid_damping_range))
 
         # Object-side contact shift (includes gripper_kp for oracle DR).
         apply_contact_shift(
@@ -1337,19 +1316,6 @@ class DRSampler:
                 ring_size_scale=ring_size, ring_friction_scale=ring_fric,
             )
 
-        # Square peg, TPA base, Coffee pod holder / lid (all no-op at 1.0).
-        if peg_size != 1.0 or peg_fric != 1.0:
-            apply_square_peg_shift(env, bindings, peg_size_scale=peg_size,
-                                   peg_friction_scale=peg_fric)
-        if base_hole != 1.0 or base_fric != 1.0:
-            apply_three_piece_shift(env, bindings,
-                                    base_hole_size_scale=base_hole,
-                                    base_friction_scale=base_fric)
-        if pod_fric != 1.0 or lid_damp != 1.0:
-            apply_coffee_shift(env, bindings,
-                               pod_holder_friction_scale=pod_fric,
-                               lid_damping_scale=lid_damp)
-
         # Nuisance: arm/hand link mass (uniform scalar across arm bodies).
         m = env.sim.model
         if arm_m != 1.0:
@@ -1367,9 +1333,6 @@ class DRSampler:
             arm_mass=arm_m, damping=damp,
             gripper_kp=gripper_kp, hole_offset=(hole_x, hole_y, 0.0),
             ring_size=ring_size, ring_friction=ring_fric,
-            peg_size=peg_size, peg_friction=peg_fric,
-            base_hole_size=base_hole, base_friction=base_fric,
-            pod_holder_friction=pod_fric, lid_damping=lid_damp,
         )
 
 

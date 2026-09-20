@@ -1,0 +1,21 @@
+{
+  "pos": [
+    -0.3535610190810947,
+    0.48025287462638677,
+    1.6911315800400644
+  ],
+  "quat_wxyz": [
+    -0.4788797123994104,
+    -0.13004316924497145,
+    0.36614458326760885,
+    0.787210987809984
+  ],
+  "fovy_deg": 60.843276879063545,
+  "resolution": [
+    2208,
+    1242
+  ],
+  "fx": 1057.5535888671875,
+  "fy": 1057.5535888671875,
+  "note": "external ZED2i expressed in robosuite SIM world coords; T_base_board (6.1mm/0.11deg) o T_board_zed (correct-K PnP, 1.33px), then + the measured base xpos. MuJoCo camera convention (-z fwd, +y up)."
+}

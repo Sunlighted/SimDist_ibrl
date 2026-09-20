@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --partition=gpubase_interac
+#SBATCH --job-name=peg_eval
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
+#SBATCH --time=1:29:00
+#SBATCH --output=logs/peg_eval_%j.out
+#SBATCH --error=logs/peg_eval_%j.out
+#
+# HONEST headline for the peg source expert. The in-training evals are 50 games
+# and model0.pt is their MAX, which CLAUDE.md iron rule #14 measures as 0.06-0.19
+# optimistic -- so the 0.98-1.00 in the log is not the number to quote. 500 games,
+# independent, at the training sigma.
+# num_eval_proc must divide num_game (iron rule #12): 10 | 500.
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+for CKPT in model0 latest; do
+  echo "=== $CKPT ==="
+  python evaluate/eval.py \
+      --weight exps/mimicgen/peg_ibrl_source_v2_seed1/$CKPT.pt \
+      --mode rl --num_game 500 --mp 10 \
+      --hand_init_perturb_joint_sigma 0.1
+done
+echo "rc=$?"

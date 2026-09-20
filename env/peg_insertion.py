@@ -70,6 +70,18 @@ MEASURED_BASE_XY = (-0.489, -0.034)   # base wrt work-surface centre
 # with the gripper under the object. Ready starts 473 mm up with the approach axis
 # exactly vertical ([0,0,-1] vs 7.3 deg off), and matching the real robot's reset
 # means sim and real episodes start from the same configuration.
+# The REAL external ZED2i, expressed in sim world coordinates
+# (real2sim/scan_pipeline/zed_sim_camera.json): T_base_board (6.1 mm / 0.11 deg)
+# composed with T_board_zed (correct-K PnP, 1.33 px), plus the measured base xpos.
+# This is the viewpoint the deployed system actually sees, so it is the camera the
+# pixel stage should consume -- robosuite's `agentview` clips the board out of
+# frame in 100% of resets, while this one sees both objects whole.
+# MuJoCo camera convention: looks down -z with +y up (the PnP pose is OpenCV, so
+# the rotation carries a diag(1,-1,-1) flip).
+ZEDVIEW_POS = (-0.3536, 0.4803, 1.6911)
+ZEDVIEW_QUAT = (-0.47888, -0.13004, 0.36614, 0.78721)   # wxyz
+ZEDVIEW_FOVY = 60.843                                    # fy=1057.6 @ 2208x1242
+
 FRANKA_READY_QPOS = np.array(
     [0.0, -np.pi / 4.0, 0.0, -3.0 * np.pi / 4.0, 0.0, np.pi / 2.0, np.pi / 4.0]
 )
@@ -231,6 +243,13 @@ class PegInsertion(SingleArmEnv_MG):
         )
         mujoco_arena.set_origin([0, 0, 0])
         self._add_agentview_full_camera(mujoco_arena)
+        # a camera at the real external ZED's pose (see ZEDVIEW_* above)
+        mujoco_arena.set_camera(
+            camera_name="zedview",
+            pos=np.array(ZEDVIEW_POS),
+            quat=np.array(ZEDVIEW_QUAT),
+            camera_attribs={"fovy": str(ZEDVIEW_FOVY)},
+        )
 
         self.board = ScannedBoardObject(name="board_obj")
         # static fixture: no joint, so the pose is baked into the model here

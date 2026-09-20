@@ -26,8 +26,6 @@ import env.peg_insertion  # noqa: F401,E402
 
 from env.sim2real import (
     Sim2RealConfig,
-    apply_cell_arena,
-    apply_init_qpos,
     apply_sim2real,
     apply_workspace_offset,
     snapshot_visual_nominal,
@@ -341,10 +339,6 @@ class PixelRobosuite:
             # the first reset AND after any InitDistConfig override, so that the
             # offset composes on top of whatever bounds are in force.
             apply_workspace_offset(self.env, self.sim2real)
-            # Measured table size + base xy (real2sim arena); lands on the next
-            # hard reset, same as the table height below.
-            apply_cell_arena(self.env, self.sim2real)
-            apply_init_qpos(self.env, self.sim2real)
             if off is not None:
                 assert hasattr(self.env, "table_offset"), (
                     f"{env_name} has no `table_offset`; sim2real.table_above_base "
@@ -634,7 +628,7 @@ class PixelRobosuite:
             # trap restore_nominal exists to avoid on the physics side).
             self._s2r_nominal = snapshot_visual_nominal(self.env)
             apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
-            if self.sim2real.any_base_dr():
+            if self.sim2real.dr_base_height:
                 # Moving the base translates the whole chain, so the OSC
                 # controller must re-latch or it drives toward the pre-move goal.
                 ctrl = self.env.robots[0].controller
