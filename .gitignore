@@ -55,3 +55,21 @@ cluster/ibrl.sif
 plots/
 release/data
 real2sim/splats
+
+# The real ZED captures used for the real2sim calibration are committed as
+# LOSSLESS PNG (byte-identical copies of the originals) -- *.png above is a
+# plotting-bloat rule, and these are calibration INPUTS, not plots. JPEG was
+# measured to move the external-camera PnP solution by 2.3 mm mean / 4.3 mm max,
+# which is the same order as the whole grounding chain's 6.1 mm, so lossy copies
+# would not reproduce the published numbers.
+!real2sim/zed_capture/**/*.png
+!real2sim/zed_capture/*.png
+
+# real2sim render comparisons (PNG, and PNG on purpose -- these are evidence for
+# measured claims in docs/real2sim.md, not plots). `superseded_*` stays ignored:
+# those were made with the wrong ZED intrinsics / the exposure-comp splat and
+# must not be quoted.
+!viz/splat_before_after/*.png
+!viz/peg_on_real_table/*.png
+!viz/zedview_check/*.png
+viz/splat_before_after/superseded_*

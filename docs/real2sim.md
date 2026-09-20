@@ -357,6 +357,34 @@ sim 坐标 `[-0.354, 0.480, 1.691]`（桌面上方 758 mm）。
 已移到 `release/data/peg_insertion/demos_n1000_OLDARENA_donotuse/`。
 新链（2026-09-19）：collect 5550284 → BC 5550285 → IBRL 5550286，数据在 `demos_n1000_v2/`。
 
+### §2d-y 腕相机标定在换夹爪后**仍然有效**（2026-09-20，owner 已换成 Panda 手）
+
+**结论：`T_ee_zedm` 不用重标。** 因为 polymetis 报的是**法兰（flange / link8）**，不是 TCP ——
+换夹爪不动法兰系。实测（用 scan_run2 的 14 组 `joints` 跑 FK，与同一份 `ee_pos` 比）：
+
+| sim 里的候选系 | 与 `ee_pos` 的差 |
+|---|---:|
+| `robot0_right_hand`（法兰） | **0.5 mm ± 0.0** |
+| `robot0_link7` | 107.0 mm（= link7→法兰的 d=0.107，自洽）|
+| `grip_site`（TCP） | 96.5 mm |
+
+⚠️ 唯一会失效的情形：**相机支架本身长在夹爪上**（而不是臂/法兰侧）—— 那换夹爪会物理移动相机。
+换完手请目视确认支架没动；动了就重采 14 pose（流程已验证可收敛）。
+
+**两条独立解互证**（都在仓库里，可直接引用）：
+| | `T_ee_zedm` 平移 | 来源 |
+|---|---|---|
+| `scan_pipeline/ground_run2_solved.json` | (33.8, −75.4, 15.5) mm | 2D PnP + TSAI，`T_base_board` 散布 **6.1 mm / 0.11°** |
+| `scan_pipeline/ground_transforms.json` | (35.5, −75.8, 14.3) mm | depth-Kabsch + PARK，散布 11.4 mm / 1.04° |
+| **两者之差** | **2.1 mm / 0.22°** | ⇒ 可信 |
+
+★ **标定用的真实 ZED 图像已入库**：`real2sim/zed_capture/`（14 pose × 腕/外 左目 PNG +
+`state.json` + 原生内参 + Explorer 静态图，**无损、与原件逐字节相同**）。
+⚠️ JPEG 不行：q95 会把外置相机的 PnP 解移动 **2.3 mm 均值 / 4.3 mm 最大**，与整条链的
+6.1 mm 同量级 ⇒ 有损副本复现不出已发表的数字。深度/置信度 `.npy`（586 MB）**不入库**，
+因为标定已全改成纯 2D PnP（depth 拟合只到 18/33 mm，是链条里最弱的一环）。
+⚠️ `zed2i_left.png` **每张都有机器人**（14 个不同姿态）⇒ **只能当标定输入，绝不能喂 3DGS**。
+
 ## §3 任务：peg-in-hole（方形）
 
 - **间隙 = 天花板的分母**（findings §27/§39）：地板 ~1.3 mm/边（oracle 也过不去）；
