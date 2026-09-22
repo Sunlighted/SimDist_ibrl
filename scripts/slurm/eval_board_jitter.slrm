@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=board_jitter
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=1:29:00
+#SBATCH --output=logs/board_jitter_%j.out
+#SBATCH --error=logs/board_jitter_%j.out
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+python scripts/eval_board_jitter.py --n 200
+echo "rc=$?"

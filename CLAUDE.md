@@ -39,6 +39,7 @@ Last updated: 2026-09-18
 | **Threading_D0** | IBRL 0.98 | model-free IBRL **0.9815**(n=2000) | **dynens 0.962**(n=2000) / plain 0.879 | findings §31 |
 | **Square_D0 (rotw1)** | 0.98 | **0.98–1.00** | anchor **0.837**(10seed) / 0.886(d600) | tasks §41 · **§41b 拆账** |
 | **Coffee_D0** | 0.998 (σ.02) / **0.938** (σ.1) | **0.982** (C50) / 0.96 (C75) / 0.93 (G5x) | **0.907**(G5x, 2seed) = oracle 0.94 | tasks §40–40e |
+| **PegInsertion_D0** (sim2real) | IBRL **0.95** (n=500, `--mode rl`) | 真机，未测 | stage-1 跑中 | real2sim §2d-z/§2d-w |
 
 Threading target 的参考线阶梯（同一 harness，n≥300）：
 `policy 头裸跑 0.37–0.42` < `plain SimDist MPPI 0.88` < `dynens MPPI 0.962`
@@ -128,6 +129,57 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     critic `10×512`（全仓库其他 IBRL run 都是 `5×1024`+ln）。三者都不报错，已各咬一次。
 19. `evaluate/eval.py` 每次打印 `[EVAL ENV] task= shift= nut_z_rot= sigma= strict= ep_len=`
     —— **两个数只有这行一致才可比**。
+27. **位置吻合不代表姿态吻合。** `robot0_right_hand` 与 polymetis 法兰位置差 **0.5 mm**，
+    姿态却差 **绕 z 的 45.03°**（14 pose 上恒定到 0.000°）。§2d-y 只核对了位置就下结论
+    「同一个系」。⇒ 在 sim 里放腕相机必须 `T_sw_hand @ Rz(45.03°) @ T_ee_zedm`；漏掉它
+    夹爪占 23.8% 画面（真值 4.6%）。**核对坐标系必须同时给平移和旋转。**
+28. **材质 albedo 不能直接对着「观测到的亮度」标定** —— 我连续错了两次（先写下这条
+    caveat，然后照样犯）。唯一有效的回路是 **渲染 → 量 → 修**：板子 albedo 两轮收敛到
+    `0.186 0.202 0.536`，peg 的 `0.95 0.95 0.90` 本来就是对的（渲染 209 vs 视频 212）。
+    ⚠️ 「MuJoCo 里物体偏暗」先查**光照**再改材质：robosuite 默认单盏近垂直平行光，
+    竖直面 N·L≈0.27 ⇒ 0.95 的 albedo 渲出中灰。真实 cell 是桌子左缘上方一条灯带
+    （`env/peg_insertion.py` STRIP_*，5 盏点光）。
+29. **两个候选解释共用同一个判据时，那个判据是瞎的**（铁律 #10 的几何版）。
+    「aspect 比例」分不开**平板 board** 和**一片平的桌面** —— 两者都是 [1,1,0.18]，
+    所以 aspect 测试放行了一个纯桌面的 crop，ICP 还给了 3.61 mm 的漂亮残差。
+    破局的是**颜色**（与形状近乎正交）。⇒ 造判据时先问「它能不能把我怕的那两种情况分开」。
+30. **ICP rms 不是充分统计量。** trimmed ICP 丢掉最差 20%，所以一坨**过胖**的点云可以把
+    薄薄的 mesh 埋进去，拿到 **1.06 mm** 的残差。verdict 必须同时要求一个**尺度无关**的
+    形状检验（aspect）通过。另：**mesh 要采样表面**，不能用三角形顶点 —— 一个 box 只有
+    8 个唯一顶点，ICP 根本约束不住（改成 40k 表面采样后 13 mm → 3.6 mm）。
+31. **`scene_scan5_norobot_v2.ply` 已经是米制 board 系，别再套 `scene5_world_transform.json`。**
+    那个 similarity 属于旧的 raw-COLMAP `sfm_scan5/scene.ply`，而两者就放在同一个目录里。
+    套上去房间缩小 0.1023× ⇒ 渲出一团黑底白刺。判据：v2 不做任何变换时最密 z 桶在
+    **0.73 m**、xy 跨度 1.83×1.58 m（= 桌面）。**我为此编了一小时的错误理论**（「v2 在
+    归一化系」「需要重新配准」），真正解决问题的是 `md5sum` 对上了 `pov_correctK`。
+    ⇒ **有人说「这个东西我见过它正常工作」，先去找那次能跑的调用，别继续分析工件本身。**
+32. **`expert_hybrid=0` 是 Threading 的选择，不是普适的。** peg 上 2×2 实测：
+    σ_max 0.2 时 hybrid 0/1 = **14.8% / 62.5%**；σ_max 0.1 时 = **10.0% / 68.2%**。
+    **BC prior 是全部效应，噪声幅度几乎无关**（去掉 prior 后降噪反而更差）。
+    不带 prior 的 expert 从 0.95 崩到 **0.108**。铁律 #8 的第五次。
+33. **PHOTOREAL obs 的成本要重新量，别沿用 state 臂的数。** 3DGS 合成帧
+    **37,049 B/transition**（state 臂 22,943，×1.66 —— 真实纹理不好压）、
+    **~130 transitions/s**（×2.9 慢）。⇒ buffer 从 5.5M 降到 3.3M 才是 126 GB。
+    ⚠️ `source_replay_num_data` 必须从**真 shard** 的 mean length 反推，不能用 smoke：
+    15 条轨迹给 131.9，30400 条给 **153.7**，按前者会超 cap 14%，而
+    `_evict_for_transitions` 从**前面**弹 ⇒ 静默丢掉最早的 shard，8 个生成 seed 塌成 7。
+34. **gsplat 在每个进程 JIT 编译，多 worker 会抢同一个半成品缓存目录。** 2 worker 实测
+    一个成功、另一个 `ImportError: cannot import name 'csrc'`。⇒ fork 之前先串行 pre-build
+    （`gen_source_replay.slrm` 已加）。
+35. **别往「有作业正在用」的 venv 里 pip install。** 装 `plyfile` 把 numpy 拉到 2.2.2，
+    与所有按 numpy 1.x 编译的模块（cv2 / numba / `rela`）ABI 不兼容。在跑的 5 个 job 因为
+    早就 import 完了而幸存，但它们排着 5 个 eval 依赖作业 —— 任何一个在那 3 分钟里启动都会崩。
+    ⇒ **先 `squeue`，再装；能用 `--no-deps` 就用**（triton 那次就没出事）。
+36. **monitor 的过滤条件必须能区分「做完了」和「链断了」。** 我按 job name 盯 stage-1 的
+    chunk 链，但续跑的 chunk 继承的是脚本头里的 `#SBATCH --job-name`，不是我在首次提交时
+    传的那个 ⇒ chunk 1 一结束就报 `[chain-done]`，而这**和铁律 #22 真断链时的输出一模一样**。
+    ⇒ 盯**状态**（`resume_state.pt` 的 global_step + 还有没有 chunk 在队列里），别盯名字。
+37. ⚠️ **ZED HD2K 只有 15 fps，而我们按 20 Hz 训练。** HD2K/HD1080/HD720 的 FOV 相同
+    （宽高比例都是均匀缩放，只有 VGA 不是），但**帧率**不同。世界模型学的是 50 ms 的
+    `p(s'|s,a)`，15 Hz 部署就是 66.7 ms，**33% 的持久动力学误差**，而 stage 3 只修 dynamics
+    头 ⇒ 正好撞在 findings §27 的天花板律上。**未决**：HD1080@30fps 抽到 20 Hz（要按该模式
+    重读内参、crop 变 1078 px），还是按 15 Hz 重生成。
+
 16b. **别假定 `aip-rhinehar` 更快 —— 每次都要量。** real2sim 那条「job 提交用
     `aip-rhinehar`（FairShare 远好于 aip-gigor）」只在写下它的那一刻成立。
     2026-09-15 实测同一个 200G/23:59 的 stage-1 chunk：**gigor 19:46 vs rhinehar 次日

@@ -1,0 +1,66 @@
+{
+ "peg_obj": {
+  "mj_body": "peg_obj_main",
+  "R": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "t": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "rms_m": 0.0009636791381529392,
+  "aspect_log_err": 0.31562090656350805,
+  "scale_spread": 0.45028920807598904,
+  "scale": 0.027128733146618234,
+  "n_splat": 1005,
+  "verdict": "POOR",
+  "note": "similarity BAKED INTO the ply; calib R,t are identity; CROP FAILED the scale-free aspect test -- the low rms is ICP hiding a fat blob, do not trust this"
+ },
+ "board_obj": {
+  "mj_body": "board_obj_main",
+  "R": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "t": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "rms_m": 0.001578436159590294,
+  "aspect_log_err": 0.05520185942079741,
+  "scale_spread": 0.10956982784812891,
+  "scale": 0.0644836306441588,
+  "n_splat": 25400,
+  "verdict": "OK",
+  "note": "similarity BAKED INTO the ply; calib R,t are identity"
+ }
+}

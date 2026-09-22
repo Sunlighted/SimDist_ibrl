@@ -140,6 +140,11 @@ def parse_args():
     # Needs a GPU per worker: gsplat JIT-compiles on first use and each worker
     # holds its own copy of the gaussians (~570k => ~150 MB of VRAM each).
     p.add_argument("--splat", type=int, default=0)
+    # BOARD RESET JITTER (peg env). The real board is hand-placed and will not
+    # land identically twice; a fixed board teaches a constant the cell cannot
+    # honour. 0.0 = the original fixed board, byte-identical.
+    p.add_argument("--board_pos_noise", type=float, default=0.0)   # metres, uniform +-
+    p.add_argument("--board_yaw_noise", type=float, default=0.0)   # degrees, uniform +-
     p.add_argument("--splat_calib", type=str,
                    default="/scratch/yifanr/gsbench/objsplats/obj_calib.json")
     p.add_argument("--splat_seg_dir", type=str,
@@ -192,7 +197,7 @@ _JPEG_Q = [0]   # list so worker processes can mutate it after argparse
 
 
 def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=(),
-                     splat_obs=None):
+                     splat_obs=None, env_kwargs=None):
     """Build a NO-RENDER state env directly from cfg.
 
     Two reasons this does NOT go through train_rl.load_model (the old path):
@@ -223,6 +228,7 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=(),
         camera_names=list(rl_cameras),   # [] => state-only (legacy)
         rl_cameras=list(rl_cameras),
         splat_obs=splat_obs,
+        env_kwargs=env_kwargs,
         use_state=cfg.use_state,
         obs_stack=cfg.obs_stack,
         state_stack=cfg.state_stack,
@@ -578,10 +584,15 @@ def _load_all(args, ckpts):
         splat_cfg = dict(calib_path=args.splat_calib, seg_dir=args.splat_seg_dir,
                          scene_ply=args.splat_scene_ply, ground_json=args.splat_ground)
         print(f"[splat] photoreal obs ON: {splat_cfg}", flush=True)
+    ek = None
+    if float(getattr(args, "board_pos_noise", 0)) or float(getattr(args, "board_yaw_noise", 0)):
+        ek = dict(board_pos_noise=float(args.board_pos_noise),
+                  board_yaw_noise=float(args.board_yaw_noise))
+        print(f"[board-jitter] {ek}", flush=True)
     env, env_params = build_source_env(cfg, args.hand_init_sigma,
                                        resolve_domain_shift(args, cfg),
                                        rl_cameras=_cams(args),
-                                       splat_obs=splat_cfg)
+                                       splat_obs=splat_cfg, env_kwargs=ek)
     expert_agent = train_rl.load_frozen_agent(args.expert, env, cfg, "cuda")
     subopt_agents = [train_rl.load_frozen_agent(c, env, cfg, "cuda") for c in ckpts]
     if args.expert_hybrid:

@@ -15,7 +15,11 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, "/scratch/yifanr/realsim_survey/_GaussianRenderer/src")
+# vendored as a submodule (deps/GaussianRenderer, MIT, pinned 577efdb) so the
+# repo is self-contained -- this used to point at /scratch and did not port.
+_RR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   "..", "deps", "GaussianRenderer", "src")
+sys.path.insert(0, os.path.abspath(_RR))
 from gaussian_renderer.core.util_gau import load_ply
 from gaussian_renderer.core.gaussiandata import GaussianData
 from gaussian_renderer.core.batch_rasterization import (

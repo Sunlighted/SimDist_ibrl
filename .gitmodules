@@ -13,3 +13,6 @@
 	path = deps/mimicgen
 	url = https://github.com/NVlabs/mimicgen.git
 	branch = main
+[submodule "deps/GaussianRenderer"]
+	path = deps/GaussianRenderer
+	url = https://github.com/discoverse-dev/GaussianRenderer.git

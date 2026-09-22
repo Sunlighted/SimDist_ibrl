@@ -27,12 +27,29 @@ composite is flipped once on the way back into the obs dict. Checked against a
 known-good render rather than reasoned about -- see scripts/check_splat_obs.py.
 """
 import json
+import os
+import sys
 import numpy as np
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.abspath(os.path.join(_HERE, ".."))
+sys.path.insert(0, _HERE)                      # real2sim/gs_mujoco.py
+sys.path.insert(0, os.path.join(_REPO, "deps", "GaussianRenderer", "src"))
+
+# Repo-relative defaults so another machine needs only the repo + submodules.
+DEFAULT_SEG_DIR = os.path.join(_REPO, "real2sim", "splats", "objsplats")
+DEFAULT_CALIB = os.path.join(DEFAULT_SEG_DIR, "obj_calib.json")
+DEFAULT_SCENE_PLY = os.path.join(_REPO, "real2sim", "splats",
+                                 "scene_scan5_norobot_v2.ply")
+DEFAULT_GROUND = os.path.join(_REPO, "real2sim", "scan_pipeline",
+                              "ground_transforms.json")
 
 
 class SplatCompositor:
-    def __init__(self, mj_model, mj_data, calib_path, seg_dir, scene_ply,
-                 ground_json, skip_tokens=("peg_obj",), device="cuda"):
+    def __init__(self, mj_model, mj_data, calib_path=DEFAULT_CALIB,
+                 seg_dir=DEFAULT_SEG_DIR, scene_ply=DEFAULT_SCENE_PLY,
+                 ground_json=DEFAULT_GROUND,
+                 skip_tokens=("peg_obj",), device="cuda"):
         import torch
         from scipy.spatial.transform import Rotation
         from gs_mujoco import MjSplatRenderer

@@ -410,6 +410,49 @@ sim 坐标 `[-0.354, 0.480, 1.691]`（桌面上方 758 mm）。
 因为标定已全改成纯 2D PnP（depth 拟合只到 18/33 mm，是链条里最弱的一环）。
 ⚠️ `zed2i_left.png` **每张都有机器人**（14 个不同姿态）⇒ **只能当标定输入，绝不能喂 3DGS**。
 
+### §2d-w PHOTOREAL stage-1：物体/场景 splat 进生成管线（2026-09-22）
+
+**做了什么**：stage-1 的相机观测不再是纯 MuJoCo，而是 **splat 场景 + splat board +
+MuJoCo 手臂/peg** 的合成（`real2sim/splat_obs.py`，挂在
+`PixelRobosuite._extract_images`；`splat_obs=None` 时逐字节等于旧路径）。
+
+| 部件 | 来源 | 理由 |
+|---|---|---|
+| 场景（poster 桌面、墙） | **splat** v2 | 占画面大头，材质值模仿不了 |
+| board | **splat**（aspect log-err 0.053，ICP **1.58 mm**，25400 gaussians） | 模具凹槽/阴影/印刷细节 |
+| peg | **MuJoCo** | splat 判 POOR（aspect 0.316）；它就是个白盒子，材质本来就对（渲染 209 vs 视频 212）|
+| 手臂 | **MuJoCo** | PolaRiS 臂 splat 只有 Robotiq，Panda 手根本没扫（§4 A 残留④）|
+
+**物体 splat 配准**（`real2sim/scan_pipeline/register_object_splats.py`）。尺度来自物体
+**自己的扫描 STL**（两段 MOV 都没拍到 ChArUco 板）。四个坑都已写进脚本，每个都是踩出来的：
+① ICP 要**采样表面**不能用顶点（box 只有 8 个唯一顶点）⇒ 13 mm→3.6 mm；
+② verdict **不能只看 ICP rms**（trimmed ICP 把胖点云埋进薄 mesh，给 1.06 mm）；
+③ 几何分不开「平板」和「一片平桌面」⇒ 必须加**颜色**门（board 蓝度 p90 +0.435 vs 桌面棕色）；
+④ **去平面是逐物体的**：peg 站着要去，board 本身就是一块平板，去了就把它删光（59085→865）。
+
+**门禁**（`scripts/check_splat_obs.py`）：竖直翻转的数据集照样能训练、但绝对迁移不了，
+所以用数字判而不是看图。两台相机都 PASS：`|wrapper−expected|` 0.49/0.46 vs
+`|flipped|` 66.9/76.4 vs `|mujoco-only|` 100.0/100.9。
+
+**相机**（§2d-z 的延续）：`zedview` fovy **60.763°**、`robot0_zedm_wrist` fovy **45.028°**，
+都是**以主点为中心的正方形 crop** 的竖直 FOV（zed2i 1240 px @(1083.7,621.6)；
+zedm 1223 px @(1144.6,611.6)）。sim 直接渲 224×224 正方形，所以策略看到的就是这个 crop；
+**真机管线必须同样裁**，否则把主点偏移（Mini 的 cx 偏 40.6 px）又塞回每一帧。
+⚠️ crop 丢掉水平 ±15.9°（44% 宽度）。查过了：丢掉的边缘**没有**机器人残影，只是没扫到的
+糊区；但 **ChArUco 标定板在 crop 内**（scan5 时留在桌上），会出现在每一帧训练图里 ——
+真机若不摆这块板，就是一处恒定的外观差，而 encoder 之后永远冻结。**未决**。
+
+**成本与配方**（都是量出来的，别沿用 state 臂）：
+`37,049 B/transition`（×1.66）、`~130 transitions/s`（×2.9）⇒ buffer 3.3M = 126 GB；
+生成 8 shard × 3800 traj ≈ 1.2 h 每片。噪声配方 2×2 见铁律 #32。
+board 抖动容忍度（source expert, n=200/格）：fixed **0.925** · ±5 mm/±2° 0.955 ·
+**±10 mm/±5° 0.925（免费）** · ±20 mm/±10° 0.815 ⇒ 随机化臂用 ±10 mm/±5°。
+随机化臂的代价：mean length 153.7→160.6，success 66.3%→~64%。
+
+**可移植性**：`deps/GaussianRenderer`（MIT，pin 577efdb）已加为 submodule，
+`real2sim/gs_mujoco.py` 改成仓库相对路径，board/scene splat 走 **git-lfs**
+（scene ply 225 MB，超 GitHub 100 MB 硬限）。换机器只要 clone + submodule + venv。
+
 ## §3 任务：peg-in-hole（方形）
 
 - **间隙 = 天花板的分母**（findings §27/§39）：地板 ~1.3 mm/边（oracle 也过不去）；

@@ -83,10 +83,15 @@ seq_replay_max_transitions: 3300000
 source_replay_path: /scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_*/dataset.hdf5+/scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_*/_shard_*.hdf5
 ### ★ MUST be a fixed slice PER SHARD, never -1: _evict_for_transitions pops from
 ### the FRONT, so -1 + a cap keeps only the last shards and collapses 8 generation
-### seeds to 2.  3100 traj x 8 shards x 131.9 steps = 3.27M = the cap.
-### ⚠️ mean length is 131.9 for the PHOTOREAL arm (job 5588308), not the 163.5 the
-### state-only sweep measured -- same recipe, but only 15 trajectories, so treat
-### it as approximate and re-derive from the real shards before trusting it.
+### seeds to 2.  2680 traj x 8 shards x 153.7 steps = 3.29M = the cap.
+### ★ 151.9 is MEASURED on a real shard (job 5588705, 3800 trajectories), which
+### replaced the 131.9 the 15-trajectory smoke suggested. At the smoke's figure
+### num_data would have been 3100, i.e. 3.77M against a 3.3M cap -- over by 14%,
+### and the eviction pops from the FRONT, so the earliest shards would have been
+### silently dropped and 8 generation seeds collapsed to ~7. Re-derive this from
+### the shards, never from a smoke: num_data = cap / mean_len / n_shards.
+### Same shard also measured 67.1% success (state-only sweep said 62.5%) and
+### 37,123 B/transition => 122 GB resident at the cap.
 ###
 ### ★★ GENERATE WITH  EXPERT_HYBRID=1  (SIGMA_MAX stays 0.2). Measured 2x2 on
 ### PegInsertion_D0, 400 traj/arm, state-only (jobs 5581127/437/438/439):
@@ -108,7 +113,7 @@ source_replay_path: /scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_*/dat
 ### ⚠️ num_data = cap / mean_len / n_shards, and mean_len moves with the recipe
 ### (280 -> 163 once the prior is restored, because successes end early). Re-derive
 ### it if you change SIGMA_MAX/EXPERT_HYBRID/P_EXPERT.
-source_replay_num_data: 3100
+source_replay_num_data: 2680
 expert_demo_path: ''
 expert_demo_num_data: -1
 policy_replay_path: ''

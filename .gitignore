@@ -54,7 +54,12 @@ cluster/ibrl.sif
 .pylibs/
 plots/
 release/data
-real2sim/splats
+# real2sim/splats: the 225 MB scene splat and the registered board splat are
+# tracked via git-lfs (see .gitattributes) so another machine gets them with a
+# clone. GitHub's hard per-file limit is 100 MB, so plain git cannot carry the
+# scene ply. Intermediates stay out.
+real2sim/splats/scene_v2_*
+real2sim/splats/*_pruned*.ply
 
 # The real ZED captures used for the real2sim calibration are committed as
 # LOSSLESS PNG (byte-identical copies of the originals) -- *.png above is a

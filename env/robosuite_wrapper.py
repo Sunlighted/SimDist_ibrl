@@ -179,6 +179,9 @@ class PixelRobosuite:
         # (splat scene + splat board; MuJoCo arm + peg). See real2sim/splat_obs.py
         # for what is splatted and why. Default None = byte-identical MuJoCo path.
         splat_obs: Optional[dict] = None,
+        # extra kwargs forwarded verbatim to robosuite.make (e.g. the peg env's
+        # board_pos_noise / board_yaw_noise). Empty = unchanged.
+        env_kwargs: Optional[dict] = None,
         # ---- domain-shift / strict-success / init-perturb extensions ----
         domain_shift: Optional[DomainShiftConfig] = None,
         # SIM-TO-REAL cell config (env/sim2real.py): matched table height/colour,
@@ -266,6 +269,7 @@ class PixelRobosuite:
             camera_widths=image_size,
             horizon=episode_length,
             initialization_noise=init_noise,
+            **(env_kwargs or {}),
         )
         self.env_name = env_name
         self.rl_cameras = rl_cameras if isinstance(rl_cameras, list) else [rl_cameras]

@@ -82,6 +82,8 @@ EXPERT_HYBRID="${EXPERT_HYBRID:-0}"
 # composites (splat scene + splat board; MuJoCo arm + peg). Costs 2.9x the time
 # per transition and 1.66x the bytes (38,053 vs 22,943 B/transition measured).
 SPLAT="${SPLAT:-0}"
+BOARD_POS_NOISE="${BOARD_POS_NOISE:-0.0}"   # metres, uniform +-
+BOARD_YAW_NOISE="${BOARD_YAW_NOISE:-0.0}"   # degrees, uniform +-
 
 if [ "$SPLAT" = "1" ]; then
   # the renderer lives outside the repo
@@ -116,6 +118,8 @@ python scripts/generate_simdist_data.py \
     --domain source \
     --expert_hybrid "$EXPERT_HYBRID" \
     --splat "$SPLAT" \
+    --board_pos_noise "$BOARD_POS_NOISE" \
+    --board_yaw_noise "$BOARD_YAW_NOISE" \
     --snapshot_hybrid 1 \
     --save_values 1 \
     --rl_cameras "$RL_CAMERAS" \

@@ -205,6 +205,8 @@ class PegInsertion(SingleArmEnv_MG):
         env_configuration="default",
         controller_configs=None,
         gripper_types="default",
+        board_pos_noise=0.0,
+        board_yaw_noise=0.0,
         initialization_noise="default",
         table_full_size=MEASURED_TABLE_SIZE,
         table_friction=(1.0, 5e-3, 1e-4),
@@ -240,6 +242,16 @@ class PegInsertion(SingleArmEnv_MG):
 
         # board pose on the table (hole center in table-frame xy)
         self.board_xy = (0.0, -0.15)
+        # BOARD RESET JITTER. The real board is placed by hand and will not land
+        # in the same spot twice, so a fixed board teaches the policy a constant
+        # it cannot rely on in the cell. Default 0.0 keeps every existing run
+        # byte-identical. Applied in _load_model, which hard_reset=True re-runs
+        # every reset -- so this is a no-op if anyone sets hard_reset=False.
+        # The board pose IS observable (object-state carries board_pos/quat and
+        # board_to_robot0_eef_*), so this does not make the task partially
+        # observed for the state-based expert.
+        self.board_pos_noise = float(board_pos_noise)   # metres, uniform +-
+        self.board_yaw_noise = float(board_yaw_noise)   # degrees, uniform +-
         # success = tip this far below the board top surface
         self.insert_depth = 0.015
 
@@ -373,10 +385,18 @@ class PegInsertion(SingleArmEnv_MG):
         self.board = ScannedBoardObject(name="board_obj")
         # static fixture: no joint, so the pose is baked into the model here
         # (hard_reset=True rebuilds the model every reset, so this stays exact)
+        dxy = np.zeros(2)
+        if self.board_pos_noise > 0:
+            dxy = np.random.uniform(-self.board_pos_noise, self.board_pos_noise, 2)
         board_pos = self.table_offset + np.array(
-            [self.board_xy[0], self.board_xy[1], self.board.half_z]
+            [self.board_xy[0] + dxy[0], self.board_xy[1] + dxy[1], self.board.half_z]
         )
         self.board.get_obj().set("pos", array_to_string(board_pos))
+        if self.board_yaw_noise > 0:
+            yaw = np.radians(np.random.uniform(-self.board_yaw_noise, self.board_yaw_noise))
+            self.board.get_obj().set(
+                "quat", array_to_string(np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]))
+            )
 
         self.peg = ScannedPegObject(name="peg_obj")
 
