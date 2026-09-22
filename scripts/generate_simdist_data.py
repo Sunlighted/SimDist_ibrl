@@ -135,6 +135,20 @@ def parse_args():
     p.add_argument("--rl_image_size", type=int, default=0,
                    help="0 = use expert cfg.rl_image_size (STORED frame size). "
                         "Set 224 for the ResNet-18 arm.")
+    # PHOTOREAL obs: replace the MuJoCo camera frames with 3DGS composites
+    # (splat scene + splat board; MuJoCo arm + peg -- real2sim/splat_obs.py).
+    # Needs a GPU per worker: gsplat JIT-compiles on first use and each worker
+    # holds its own copy of the gaussians (~570k => ~150 MB of VRAM each).
+    p.add_argument("--splat", type=int, default=0)
+    p.add_argument("--splat_calib", type=str,
+                   default="/scratch/yifanr/gsbench/objsplats/obj_calib.json")
+    p.add_argument("--splat_seg_dir", type=str,
+                   default="/scratch/yifanr/gsbench/objsplats")
+    p.add_argument("--splat_scene_ply", type=str,
+                   default="/project/6101830/yifanr/SimDist_ibrl/real2sim/splats/"
+                           "scene_scan5_norobot_v2.ply")
+    p.add_argument("--splat_ground", type=str,
+                   default="/scratch/yifanr/gsbench/ground_transforms.json")
     p.add_argument("--jpeg_quality", type=int, default=0,
                    help="0 = store raw uint8 arrays (legacy). 1-100 = JPEG-encode each "
                         "frame and store variable-length bytes; the loader decodes. "
@@ -177,7 +191,8 @@ _RES_OVERRIDE: dict = {}
 _JPEG_Q = [0]   # list so worker processes can mutate it after argparse
 
 
-def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=()):
+def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=(),
+                     splat_obs=None):
     """Build a NO-RENDER state env directly from cfg.
 
     Two reasons this does NOT go through train_rl.load_model (the old path):
@@ -207,6 +222,7 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=()):
         rl_image_size=_RES_OVERRIDE.get("rl_image_size") or cfg.rl_image_size,
         camera_names=list(rl_cameras),   # [] => state-only (legacy)
         rl_cameras=list(rl_cameras),
+        splat_obs=splat_obs,
         use_state=cfg.use_state,
         obs_stack=cfg.obs_stack,
         state_stack=cfg.state_stack,
@@ -556,9 +572,16 @@ def _load_all(args, ckpts):
     if _RES_OVERRIDE:
         print(f"[res] override {_RES_OVERRIDE} (cfg had image_size={cfg.image_size}, "
               f"rl_image_size={cfg.rl_image_size})", flush=True)
+    splat_cfg = None
+    if int(getattr(args, "splat", 0) or 0):
+        # one compositor PER WORKER (each has its own env + CUDA context)
+        splat_cfg = dict(calib_path=args.splat_calib, seg_dir=args.splat_seg_dir,
+                         scene_ply=args.splat_scene_ply, ground_json=args.splat_ground)
+        print(f"[splat] photoreal obs ON: {splat_cfg}", flush=True)
     env, env_params = build_source_env(cfg, args.hand_init_sigma,
                                        resolve_domain_shift(args, cfg),
-                                       rl_cameras=_cams(args))
+                                       rl_cameras=_cams(args),
+                                       splat_obs=splat_cfg)
     expert_agent = train_rl.load_frozen_agent(args.expert, env, cfg, "cuda")
     subopt_agents = [train_rl.load_frozen_agent(c, env, cfg, "cuda") for c in ckpts]
     if args.expert_hybrid:

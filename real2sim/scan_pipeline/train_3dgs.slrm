@@ -17,12 +17,25 @@ export TORCH_CUDA_ARCH_LIST="8.9;9.0"
 source .venv/bin/activate
 echo "=== $(hostname) ==="; nvidia-smi --query-gpu=name --format=csv,noheader
 
+# Parameterised so object scans (board/peg) reuse the scene recipe unchanged.
+# Defaults are the scene-scan values, so existing use is byte-identical.
+# ⚠️ COLMAP writes several models; sparse/0 can be a degenerate 2-image model
+# (peg scan: sparse/0 had 2 images, sparse/1 had all 280 at 0.66 px). Always
+# point at the model that registered the frames, not blindly at sparse/0.
+SCAN="${SCAN:-sfm_scan4}"
+COLMAP_DIR="${COLMAP_DIR:-$SCAN/sparse/1}"
+IMAGE_DIR="${IMAGE_DIR:-$SCAN/images}"
+OUTPLY="${OUTPLY:-$SCAN/scene.ply}"
+ITERS="${ITERS:-7000}"
+MAXG="${MAXG:-500000}"
+IMG_SCALE="${IMG_SCALE:-0.5}"
+echo "3dgs: $COLMAP_DIR + $IMAGE_DIR -> $OUTPLY (${ITERS} it, max ${MAXG})"
 python train_3dgs.py \
-    --colmap_dir sfm_scan4/sparse/1 \
-    --image_dir sfm_scan4/images \
-    --output sfm_scan4/scene.ply \
-    --iterations 7000 \
+    --colmap_dir "$COLMAP_DIR" \
+    --image_dir "$IMAGE_DIR" \
+    --output "$OUTPLY" \
+    --iterations "$ITERS" \
     --sh_degree 3 \
-    --image_scale 0.5 \
-    --max_gaussians 500000
+    --image_scale "$IMG_SCALE" \
+    --max_gaussians "$MAXG"
 echo "rc=$?"

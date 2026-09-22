@@ -1,0 +1,200 @@
+# PIXEL SimDist stage 1 on PegInsertion_D0 -- the sim2real arm.
+#
+# Derived from threading_d0_pixel_simdist_r18_224_aug.yaml (the 5-seed §48 ladder
+# rung B/C stage-1). Everything about the world model, planner, encoder and
+# augmentation is UNCHANGED from that file; the deltas are the task, the camera
+# pair, and the fact that THE TARGET IS THE REAL ROBOT.
+#
+# ### SIM2REAL deltas vs the Threading recipe, all marked below:
+#   1. cameras = the two REAL cameras, at their CALIBRATED poses
+#   2. no in-sim target: eval_domain_shift none, target_demo_path empty
+#   3. task/episode length, and the transition budget rescaled for 89-step episodes
+#
+# ★ num_dynamics_heads 5 / horizon 5 are baked at stage 1 and load_state_dict is
+# strict (CLAUDE.md iron rule #20) -- getting these wrong means rerunning the whole
+# ~20 h distill, not just the adapt.
+#
+# Run (source replay must exist first -- scripts/slurm/gen_source_replay.slrm):
+#   python train_simdist.py \
+#     --config_path release/cfgs/mimicgen/peg_d0_pixel_simdist_r18_224_dynens.yaml \
+#     --source_agent exps/mimicgen/peg_ibrl_source_v2_seed1/model0.pt \
+#     --save_dir exps/mimicgen/peg_pixel_stage1_seed1
+
+task_name: PegInsertion_D0
+episode_length: 300
+end_on_success: 1
+env_reward_scale: 1
+discount: 0.99
+seed: 1
+
+### SIM2REAL 1: observation space = the real camera pair -------------------
+use_state: 0
+### `zedview` = external ZED2i; `robot0_zedm_wrist` = wrist ZED Mini, both at
+### their CALIBRATED real poses (env/peg_insertion.py ZEDVIEW_* / ZEDM_WRIST_*,
+### docs/real2sim.md §2d-z). NOT robosuite's `agentview` (clips the board out of
+### frame in 100% of resets) and NOT `robot0_eye_in_hand` (pos (0.05,0,0), fovy
+### 75, vs the real Mini's 77 mm offset and fovy 45.0 -- a viewpoint the robot
+### cannot produce).
+rl_camera: zedview+robot0_zedm_wrist
+image_size: 224
+rl_image_size: 224
+### ⚠️ Both sim FOVs are the vertical FOV of a square crop centred on the
+### camera's PRINCIPAL POINT. The DEPLOYED pipeline must crop identically --
+### zed2i 1240x1240 at (1083.7, 621.6), zedm 1223x1223 at (1144.6, 611.6) -- then
+### resize to 224. Cropping about the image centre instead reintroduces the
+### principal-point offset (the Mini's cx is 40.6 px off) into every frame.
+obs_stack: 1
+state_stack: 1
+prop_stack: 1
+### ------------------------------------------------------------------------
+
+batch_size: 256
+### 50k not 150k: 50k x 256 / 5.5M = 2.33 epochs, i.e. the reference recipe's 2
+### (docs/simdist.md §45 -- over-training on source is what produced the old
+### pixel arm's source 0.98 / target 0.01). Also 13 h instead of 40, which fits
+### one chunk instead of four.
+distill_steps: 50000
+log_per_step: 10000
+num_warm_up_episode: 20
+num_eval_episode: 50
+mp_eval: 1
+eval_source: 1
+seq_replay_max_episode: 40000
+### ⚠️ MEASURED on peg, not inherited (calibration job 5581127, 400 traj):
+###   mean GENERATED episode length 280.4 steps -- NOT the demos' 89. Generated
+###   rollouts mostly fail and run to the 300-step cap, so an estimate taken from
+###   the expert's own demo lengths is ~3x too short. My first draft said 89.
+###   22,943 B/transition for 2 cams at 224 JPEG q95 (zedview 12,481 B/frame,
+###   wrist 7,359 B/frame) -- above Threading's 18,935, so the same transition
+###   count costs 21% more RAM.
+### ★ RE-SIZED for PHOTOREAL obs. Measured on the splat smoke (job 5588308):
+###   38,053 B/transition  (zedview 22,202 + wrist 19,157 B/frame, JPEG q95)
+### vs the MuJoCo state arm's 22,943 -- photoreal texture is 1.66x less
+### compressible than flat MuJoCo surfaces. So the SAME transition count costs
+### 1.66x the RAM, and the old 5.5M would be 209 GB, over the --mem=200G ask with
+### no headroom.
+### 3.3M x 38,053 B = 126 GB resident, the margin Threading's arm proved under
+### --mem=200G. 50k steps x batch 256 / 3.3M = 3.88 epochs -- above the reference
+### recipe's 2 but well inside the validated range (Threading's ladder ran 5.9;
+### the pathology in docs/simdist.md §45 was 461).
+seq_replay_max_transitions: 3300000
+
+### 8 independent b1 shards, never merged (a 160 GB merge buys nothing).
+source_replay_path: /scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_*/dataset.hdf5+/scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_*/_shard_*.hdf5
+### ★ MUST be a fixed slice PER SHARD, never -1: _evict_for_transitions pops from
+### the FRONT, so -1 + a cap keeps only the last shards and collapses 8 generation
+### seeds to 2.  3100 traj x 8 shards x 131.9 steps = 3.27M = the cap.
+### ⚠️ mean length is 131.9 for the PHOTOREAL arm (job 5588308), not the 163.5 the
+### state-only sweep measured -- same recipe, but only 15 trajectories, so treat
+### it as approximate and re-derive from the real shards before trusting it.
+###
+### ★★ GENERATE WITH  EXPERT_HYBRID=1  (SIGMA_MAX stays 0.2). Measured 2x2 on
+### PegInsertion_D0, 400 traj/arm, state-only (jobs 5581127/437/438/439):
+###
+###            sigma_max   hybrid=0        hybrid=1
+###              0.2       14.8% (280)     62.5% (163)   <-- USE THIS
+###              0.1       10.0% (286)     68.2% (146)
+###            (success rate, mean episode length; Threading reference 63.7%)
+###
+### The BC prior is the whole effect (+48 to +58 points); the noise level is
+### nearly irrelevant without it (14.8 -> 10.0 is within noise, and the WRONG
+### direction). `expert_hybrid=0` is a Threading-specific choice that the docs
+### state as if universal -- on peg it strips the prior and the expert, which
+### scores 0.95 unperturbed, collapses to 0.108. Iron rule #8.
+### sigma_max stays at the validated 0.2: arm C scores higher but the POINT of the
+### noise is off-expert state coverage for the dynamics head, so more success at
+### less coverage is not an improvement. 62.5% also lands on the reference regime.
+###
+### ⚠️ num_data = cap / mean_len / n_shards, and mean_len moves with the recipe
+### (280 -> 163 once the prior is restored, because successes end early). Re-derive
+### it if you change SIGMA_MAX/EXPERT_HYBRID/P_EXPERT.
+source_replay_num_data: 3100
+expert_demo_path: ''
+expert_demo_num_data: -1
+policy_replay_path: ''
+policy_replay_num_data: -1
+expert_collect_steps: 0
+bc_expert_only: 1
+stddev_max: 0.0
+stddev_min: 0.0
+stddev_step: 200000
+
+# privileged STATE teacher: 0.95 over 500 independent games (logs/peg_eval_5558531.out)
+source_agent: exps/mimicgen/peg_ibrl_source_v2_seed1/model0.pt
+
+### SIM2REAL 2: there is NO in-sim target. The target is the real robot, so
+### stage 2 (GELLO demos) and stage 3 (online dynamics) both live outside this
+### config. An in-sim eval target would be measuring a domain we do not care
+### about. train_simdist.py:555 handles the empty demo path by skipping the
+### target buffer; keep finetune_steps 0 so stage 2 is not attempted here.
+target_demo_path: ''
+target_num_data: 20
+
+simdist:
+  finetune_steps: 0
+  finetune_dynamics: 1
+  finetune_policy: 1
+  finetune_lr: 0.0003
+  use_planner: 0
+  planner:
+    horizon: 5
+    discount: 0.99
+    num_samples: 512
+    num_elites: 64
+    iterations: 6
+    mixture_coef: 0.8
+    temperature: 0.5
+    momentum: 0.1
+    ### ⚠️ init_std/base_policy_std are NOT portable across tasks (iron rule #9;
+    ### docs/tasks.md §40c: one knob moved Coffee 40 points). This is Threading's
+    ### value. Re-sweep at adapt time and print std_i(gamma^H V)/V_level against
+    ### Threading's 0.0068 before trusting any planner number on this task.
+    init_std: 0.5
+    min_std: 0.05
+    warm_start: 0
+    seed_mean_from_policy: 0
+  world_model:
+    encoder_type: pixel
+    decoder_coef: 0.0
+    shared_encoder: 1
+    detach_pi: 1
+    pi_grad_t0: 1
+    pixel:
+      enc_type: resnet18_pretrained
+      feat_dim: 256
+      use_prop: 1
+      pool: flatten
+    aug_shift_pad: 8
+    aug_prop_noise: 0.002
+    aug_color_jitter: 0.3
+    aug_blur_sigma_max: 2.0
+    horizon: 5
+    num_dynamics_heads: 5
+    latent_dim: 512
+    mlp_hidden_dim: 512
+    num_layer: 2
+    layer_norm: 1
+    simnorm_dim: 8
+    activation: mish
+    discrete_heads: 1
+    num_bins: 101
+    vmin: -10.0
+    vmax: 10.0
+    consistency_coef: 20.0
+    reward_coef: 0.1
+    value_coef: 0.1
+    policy_coef: 10.0
+    rho: 0.5
+    lr: 0.0003
+    enc_lr_scale: 0.3
+    tau: 0.01
+    grad_clip: 20.0
+
+# SOURCE (train, offline): nominal -- the measured real cell geometry IS the
+# nominal sim here (env/peg_insertion.py MEASURED_*), so there is no shift to undo.
+train_domain_shift:
+  mode: none
+
+### SIM2REAL 2 (cont.): no in-sim target domain.
+eval_domain_shift:
+  mode: none

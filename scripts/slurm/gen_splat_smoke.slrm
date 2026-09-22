@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --account=aip-rhinehar
+#SBATCH --job-name=gen_splat_smoke
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=96G
+#SBATCH --time=0:44:00
+#SBATCH --output=logs/gen_splat_smoke_%j.out
+#SBATCH --error=logs/gen_splat_smoke_%j.out
+# Smoke the PHOTOREAL generation path. Small (30 traj, 2 workers) because the
+# question is "does the splat composite land in the hdf5 correctly and what does
+# it cost per step", not "is the dataset big enough".
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+# the renderer lives outside the repo; gs_mujoco is imported by real2sim/splat_obs
+export PYTHONPATH=$PYTHONPATH:/scratch/yifanr/realsim_survey/_GaussianRenderer/src:/scratch/yifanr/gsbench
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+# ★ PRE-BUILD gsplat's CUDA extension BEFORE forking workers. It JIT-compiles into
+# ~/.cache/torch_extensions/py310_cu122/gsplat_cuda on first use, and concurrent
+# workers race on the half-built directory: measured with 2 workers, one won and
+# the other died with FileNotFoundError on the cache dir then
+# "ImportError: cannot import name 'csrc' from 'gsplat'". Serialise it here.
+python - <<'WARM'
+import gsplat
+from gsplat.cuda._backend import _C   # forces the build
+print("[warm] gsplat CUDA extension ready", flush=True)
+WARM
+rc=$?; [ "$rc" -ne 0 ] && { echo "FATAL: gsplat JIT build failed rc=$rc"; exit $rc; }
+t0=$SECONDS
+python scripts/generate_simdist_data.py \
+    --expert exps/mimicgen/peg_ibrl_source_v2_seed1/model0.pt \
+    --checkpoints_glob "exps/mimicgen/peg_ibrl_source_v2_seed1/snapshot_*.pt" \
+    --out_dir /scratch/yifanr/simdist/data/peg_splat_smoke \
+    --num_traj 30 --num_proc 2 \
+    --p_expert 0.5 --sigma_min 0.05 --sigma_max 0.2 \
+    --hand_init_sigma 0.1 --domain source \
+    --expert_hybrid 1 --snapshot_hybrid 1 --save_values 1 \
+    --rl_cameras "zedview+robot0_zedm_wrist" \
+    --rl_image_size 224 --jpeg_quality 95 \
+    --splat 1 \
+    --flush_mb 600 --flush_every 20 --seed 1
+echo "rc=$?  elapsed=$((SECONDS-t0))s"

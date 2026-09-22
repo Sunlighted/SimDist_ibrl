@@ -80,3 +80,8 @@ viz/splat_before_after/superseded_*
 # had no gripper in scan_run2, which is false (see 11_PROOF_...).  None quotable.
 viz/wrist_handeye/superseded_*
 viz/wrist_handeye/DISPUTED_*
+# peg object/scene splats. superseded_* = made before the crop used colour (which
+# is what separates a flat board from a flat patch of table) or before the scene
+# double-transform was found. Not quotable.
+!viz/objsplats/*.png
+viz/objsplats/superseded_*

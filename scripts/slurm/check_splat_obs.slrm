@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=check_splat_obs
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=0:29:00
+#SBATCH --output=logs/check_splat_obs_%j.out
+#SBATCH --error=logs/check_splat_obs_%j.out
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+export PYTHONPATH=$PYTHONPATH:/scratch/yifanr/realsim_survey/_GaussianRenderer/src:/scratch/yifanr/gsbench
+python - <<'WARM'
+import gsplat
+from gsplat.cuda._backend import _C
+print("[warm] gsplat CUDA extension ready", flush=True)
+WARM
+for CAM in zedview robot0_zedm_wrist; do
+  echo "=== $CAM ==="
+  python scripts/check_splat_obs.py \
+      --cam $CAM --steps 3
+  echo "  exit=$?"
+done

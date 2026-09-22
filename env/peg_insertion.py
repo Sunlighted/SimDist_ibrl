@@ -21,6 +21,7 @@ Importing this module registers PegInsertion / PegInsertion_D0 with robosuite
 """
 
 import os
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -28,7 +29,7 @@ import robosuite.utils.transform_utils as T
 from robosuite.models.arenas import TableArena
 from robosuite.models.objects import MujocoXMLObject
 from robosuite.models.tasks import ManipulationTask
-from robosuite.utils.mjcf_utils import array_to_string
+from robosuite.utils.mjcf_utils import array_to_string, find_elements
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import (
     SequentialCompositeSampler,
@@ -80,7 +81,65 @@ MEASURED_BASE_XY = (-0.489, -0.034)   # base wrt work-surface centre
 # the rotation carries a diag(1,-1,-1) flip).
 ZEDVIEW_POS = (-0.3536, 0.4803, 1.6911)
 ZEDVIEW_QUAT = (-0.47888, -0.13004, 0.36614, 0.78721)   # wxyz
-ZEDVIEW_FOVY = 60.843                                    # fy=1057.6 @ 2208x1242
+ZEDVIEW_FOVY = 60.763            # fy=1057.6, 1240-px principal-point-centred crop
+
+# The REAL wrist ZED Mini, expressed in robosuite's `robot0_right_hand` frame.
+#
+# ★ WHY THIS IS NOT JUST T_ee_zedm (docs/real2sim.md §2d-z): polymetis reports the
+# FLANGE, and robosuite's right_hand frame is that flange rotated +45.03 deg about
+# z -- constant to 0.000 deg over all 14 scan poses. §2d-y verified only POSITION
+# (0.5 mm), which is blind to rotation about the frame origin. So the hand-frame
+# pose is Rz(45.03) @ T_ee_zedm, NOT T_ee_zedm. Skipping the Rz swings the
+# camera 45 deg around the flange and the gripper covers 23.8% of the frame
+# instead of 4.6% -- see viz/wrist_handeye/.
+#
+# This REPLACES robosuite's stock `eye_in_hand` for sim2real work: that camera is
+# at pos (0.05, 0, 0) with fovy 75, against the real Mini's (-29.4, -77.2, 15.5) mm
+# and 45.0 deg. Training on eye_in_hand teaches a viewpoint the robot cannot
+# produce. (The 77 mm offset is why one finger sits in the frame corner.)
+#
+# Derivation, since the sign is easy to get backwards (I did, first pass):
+# frame_check.py measures R_hand^T @ R_ee = Rz(+45.03), so T_sw_ee = T_sw_hand @ Rz,
+# and a camera parented to right_hand needs T_hand_cam = Rz @ T_ee_zedm.
+# inv(Rz) @ T_ee_zedm puts the gripper across 29% of the frame -- verified wrong
+# against the real finger mask, which is the regression test below.
+#
+# Quat is MuJoCo convention (-z fwd, +y up); T_ee_zedm is OpenCV, hence the
+# diag(1,-1,-1) flip baked into the value below.
+ZEDM_WRIST_POS = (0.077238, -0.029357, 0.015518)
+ZEDM_WRIST_QUAT = (0.092666, 0.671783, 0.723946, 0.126582)   # wxyz
+ZEDM_WRIST_FOVY = 45.028         # fy=1475.3, 1223-px principal-point-centred crop
+
+# Both FOVs are the VERTICAL fov of a square crop centred on the camera's
+# PRINCIPAL POINT, not on the image centre. MuJoCo renders a centred pinhole and
+# cannot represent an off-centre cx/cy (the Mini's cx is 40.6 px off), so cropping
+# about (cx, cy) is what makes the sim camera exactly right instead of ~24 px off
+# at 1280 width. The deployed pipeline MUST use the same crop:
+#   zed2i: 1240x1240 at (1083.7, 621.6)    zedm: 1223x1223 at (1144.6, 611.6)
+# then resize to rl_image_size. A crop about the image centre instead silently
+# reintroduces the principal-point error into every training frame.
+
+# LIGHTING: the real cell is lit by a STRIP fixture above the setup, running
+# along the LEFT edge of the table from the robot's perspective (owner, measured
+# setup). The robot faces +x, so its left is +y, i.e. the strip runs along x at
+# y ~ +0.62 (the table's +y edge, half of MEASURED_TABLE_SIZE[1]=1.240).
+#
+# Why this matters and is not cosmetic: robosuite's default is ONE directional
+# light pointing almost straight down (dir z = -0.96). The peg is a tall thin
+# box, so its VERTICAL faces get N.L ~ 0.27 and render mid-grey despite an
+# albedo of 0.95 -- which is exactly the "MuJoCo peg looks dark" artefact. A
+# side-running strip lights those faces the way the real one does.
+#
+# MuJoCo has no area lights, so the strip is N point lights in a row. Default
+# attenuation is (1,0,0) = no distance falloff, so STRIP_Z sets the DIRECTION of
+# the lighting but not its intensity -- the height is therefore the least
+# critical number here.
+STRIP_N = 5
+STRIP_Y = 0.62                    # table +y edge = robot's left
+STRIP_Z = 2.30                    # ceiling fixture; ~1.37 m above the work surface
+STRIP_X = (-0.37, 0.37)           # spans the table's x extent (0.739 full)
+STRIP_DIFFUSE = 0.55              # per-lamp; N lamps sum to roughly the old 0.7
+STRIP_AMBIENT = 0.22              # room bounce -- a real room is not ambient-0
 
 FRANKA_READY_QPOS = np.array(
     [0.0, -np.pi / 4.0, 0.0, -3.0 * np.pi / 4.0, 0.0, np.pi / 2.0, np.pi / 4.0]
@@ -218,6 +277,61 @@ class PegInsertion(SingleArmEnv_MG):
             reward *= self.reward_scale
         return reward
 
+    def _add_strip_light(self, mujoco_arena):
+        """Replace the arena's default overhead light with the real cell's strip.
+
+        See the STRIP_* block above. Removes robosuite's single near-vertical
+        directional light first -- leaving it in would double-light the scene and
+        keep the top faces blown out relative to the sides.
+        """
+        wb = mujoco_arena.worldbody
+        for lt in list(wb.findall("light")):
+            wb.remove(lt)
+        x0, x1 = STRIP_X
+        for i in range(STRIP_N):
+            x = x0 + (x1 - x0) * (i / max(STRIP_N - 1, 1))
+            ET.SubElement(wb, "light", attrib={
+                "name": f"striplight{i}",
+                "pos": f"{x} {STRIP_Y} {STRIP_Z}",
+                "dir": "0 -0.35 -0.94",          # angled inward across the table
+                "directional": "false",
+                "diffuse": " ".join([str(STRIP_DIFFUSE)] * 3),
+                "specular": "0.12 0.12 0.12",
+                # one lamp carries the room-bounce ambient; N copies would stack
+                "ambient": " ".join([str(STRIP_AMBIENT if i == 0 else 0.0)] * 3),
+                "castshadow": "true" if i == STRIP_N // 2 else "false",
+            })
+
+    def _add_zedm_wrist_camera(self):
+        """Attach a camera at the calibrated wrist ZED Mini pose to the hand body.
+
+        `mujoco_arena.set_camera` only makes world-fixed cameras, so a wrist camera
+        must be a child of `right_hand` in the robot's own MJCF. Idempotent:
+        `_load_model` re-runs on every hard reset and the model is rebuilt, but
+        `robot_model` is not, so a second append would duplicate the camera name
+        and MuJoCo would refuse to compile ("repeated name in camera array").
+        """
+        model = self.robots[0].robot_model
+        hand = find_elements(
+            root=model.root, tags="body", attribs={"name": model.correct_naming("right_hand")}
+        )
+        if hand is None:                      # non-Panda arm: nothing to attach to
+            return
+        name = model.correct_naming("zedm_wrist")
+        if find_elements(root=model.root, tags="camera", attribs={"name": name}) is not None:
+            return                            # already added on an earlier reset
+        ET.SubElement(
+            hand,
+            "camera",
+            attrib={
+                "mode": "fixed",
+                "name": name,
+                "pos": array_to_string(ZEDM_WRIST_POS),
+                "quat": array_to_string(ZEDM_WRIST_QUAT),
+                "fovy": str(ZEDM_WRIST_FOVY),
+            },
+        )
+
     def _load_model(self):
         super()._load_model()
 
@@ -250,6 +364,11 @@ class PegInsertion(SingleArmEnv_MG):
             quat=np.array(ZEDVIEW_QUAT),
             camera_attribs={"fovy": str(ZEDVIEW_FOVY)},
         )
+        # a camera at the real WRIST ZED Mini's pose (see ZEDM_WRIST_* above).
+        # Arena cameras are world-fixed, so this one has to be parented to the
+        # hand body instead -- appended to the robot's MJCF before compilation.
+        self._add_zedm_wrist_camera()
+        self._add_strip_light(mujoco_arena)
 
         self.board = ScannedBoardObject(name="board_obj")
         # static fixture: no joint, so the pose is baked into the model here

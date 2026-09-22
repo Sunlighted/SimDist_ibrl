@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=32G
+#SBATCH --mem=96G   # 32G OOM-kills pixel runs: workers buffer RAW frames pre-JPEG
 #SBATCH --time=2:59:00
 #SBATCH --output=logs/gen_src_replay_%j.out
 #SBATCH --error=logs/gen_src_replay_%j.out
@@ -67,8 +67,37 @@ RL_IMAGE_SIZE="${RL_IMAGE_SIZE:-0}"
 JPEG_Q="${JPEG_Q:-0}"
 FLUSH_MB="${FLUSH_MB:-2000}"
 FLUSH_EVERY="${FLUSH_EVERY:-500}"
+# NOISE RECIPE. Defaults are the Threading-tuned values, which are NOT portable:
+# measured on PegInsertion_D0 they drop the expert from 0.95 (no noise) to 0.108,
+# i.e. the replay ends up with almost no successful episodes (14.8% overall vs
+# Threading's 63.7% reference). Peg's ~3 mm tolerance window does not survive
+# sigma up to 0.2. Sweep these per task before a full generation run.
+SIGMA_MIN="${SIGMA_MIN:-0.05}"
+SIGMA_MAX="${SIGMA_MAX:-0.2}"
+# EXPERT_HYBRID=1 gives the expert its BC prior back (iron rule #8). Threading's
+# docs stress 0; on peg the prior-less expert (10.8%) is WORSE than the hybrid
+# snapshots (18.2%), so 0 is a Threading-specific choice, not a universal one.
+EXPERT_HYBRID="${EXPERT_HYBRID:-0}"
+# PHOTOREAL obs (real2sim/splat_obs.py): 1 = replace MuJoCo frames with 3DGS
+# composites (splat scene + splat board; MuJoCo arm + peg). Costs 2.9x the time
+# per transition and 1.66x the bytes (38,053 vs 22,943 B/transition measured).
+SPLAT="${SPLAT:-0}"
 
-echo "=== node $(hostname) | traj=$NUM_TRAJ proc=$NUM_PROC out=$OUT ==="
+if [ "$SPLAT" = "1" ]; then
+  # the renderer lives outside the repo
+  export PYTHONPATH=$PYTHONPATH:/scratch/yifanr/realsim_survey/_GaussianRenderer/src:/scratch/yifanr/gsbench
+  # ★ PRE-BUILD gsplat's CUDA extension BEFORE forking workers: it JIT-compiles
+  # into ~/.cache/torch_extensions and concurrent workers race on the half-built
+  # directory (measured at 2 workers: one died with ImportError on gsplat.csrc).
+  python - <<'WARM'
+import gsplat
+from gsplat.cuda._backend import _C
+print("[warm] gsplat CUDA extension ready", flush=True)
+WARM
+  rc=$?; [ "$rc" -ne 0 ] && { echo "FATAL: gsplat JIT build failed rc=$rc"; exit $rc; }
+fi
+
+echo "=== node $(hostname) | traj=$NUM_TRAJ proc=$NUM_PROC out=$OUT splat=$SPLAT ==="
 echo "expert    = $SRC/model0.pt"
 echo "snapshots = $(ls "$SRC"/snapshot_*.pt 2>/dev/null | wc -l)"
 [ -s "$SRC/model0.pt" ] || { echo "FATAL: missing $SRC/model0.pt"; exit 1; }
@@ -80,10 +109,13 @@ python scripts/generate_simdist_data.py \
     --out_dir "$OUT" \
     --num_traj "$NUM_TRAJ" \
     --num_proc "$NUM_PROC" \
-    --p_expert 0.5 \
+    --p_expert "${P_EXPERT:-0.5}" \
+    --sigma_min "$SIGMA_MIN" \
+    --sigma_max "$SIGMA_MAX" \
     --hand_init_sigma 0.1 \
     --domain source \
-    --expert_hybrid 0 \
+    --expert_hybrid "$EXPERT_HYBRID" \
+    --splat "$SPLAT" \
     --snapshot_hybrid 1 \
     --save_values 1 \
     --rl_cameras "$RL_CAMERAS" \

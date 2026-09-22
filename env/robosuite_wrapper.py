@@ -175,6 +175,10 @@ class PixelRobosuite:
         flip_image=True,  # only false if using with eval_with_init_state
         ctrl_delta=True,
         record_sim_state: bool = False,
+        # PHOTOREAL obs: when set, camera images are replaced by 3DGS composites
+        # (splat scene + splat board; MuJoCo arm + peg). See real2sim/splat_obs.py
+        # for what is splatted and why. Default None = byte-identical MuJoCo path.
+        splat_obs: Optional[dict] = None,
         # ---- domain-shift / strict-success / init-perturb extensions ----
         domain_shift: Optional[DomainShiftConfig] = None,
         # SIM-TO-REAL cell config (env/sim2real.py): matched table height/colour,
@@ -245,6 +249,11 @@ class PixelRobosuite:
             init_noise = "default"
 
         _render = not self.state_only_no_render
+        # set before robosuite.make: anything that runs during construction and
+        # reaches _extract_images must find these attributes present.
+        self._splat_cfg = splat_obs
+        self._splat = None
+
         self.env = robosuite.make(
             env_name=env_name,
             robots=robots,
@@ -540,6 +549,21 @@ class PixelRobosuite:
             and "obj_state_slices" in self._bindings  # Threading-only; Square has none
         ):
             mask_hole_offset_from_obs(obs, self._bindings, self.domain_shift.hole_offset)
+
+        # PHOTOREAL: overwrite the raw MuJoCo frames before anything downstream
+        # touches them, so resize / stacking / storage are all unchanged. Built
+        # lazily: the renderer needs a CUDA context and the env's compiled model,
+        # neither of which exists at __init__ time in a forked worker.
+        if self._splat_cfg is not None:
+            if self._splat is None:
+                from real2sim.splat_obs import SplatCompositor
+                self._splat = SplatCompositor(self.env.sim.model, self.env.sim.data,
+                                              **self._splat_cfg)
+            for cam in self.rl_cameras:
+                key = f"{cam}_image"
+                if key in obs:
+                    h, w = obs[key].shape[:2]
+                    obs[key] = self._splat.composite(self.env.sim, cam, h, w)
 
         high_res_images = {}
         rl_obs = {}
