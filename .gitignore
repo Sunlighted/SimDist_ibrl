@@ -70,29 +70,13 @@ real2sim/splats/*_pruned*.ply
 !real2sim/zed_capture/**/*.png
 !real2sim/zed_capture/*.png
 
-# real2sim render comparisons (PNG, and PNG on purpose -- these are evidence for
-# measured claims in docs/real2sim.md, not plots). `superseded_*` stays ignored:
-# those were made with the wrong ZED intrinsics / the exposure-comp splat and
-# must not be quoted.
-!viz/splat_before_after/*.png
-!viz/peg_on_real_table/*.png
-!viz/zedview_check/*.png
-!viz/wrist_handeye/*.png
-viz/splat_before_after/superseded_*
-# wrist hand-eye: superseded_* were made with the WRONG sim gripper (Robotiq85,
-# while scan_run2 has a Panda hand) or are the circular per-pose-PnP splat check
-# that tests the board model rather than T_ee_zedm.  DISPUTED_* assert the robot
-# had no gripper in scan_run2, which is false (see 11_PROOF_...).  None quotable.
-viz/wrist_handeye/superseded_*
-viz/wrist_handeye/DISPUTED_*
-# peg object/scene splats. superseded_* = made before the crop used colour (which
-# is what separates a flat board from a flat patch of table) or before the scene
-# double-transform was found. Not quotable.
-!viz/objsplats/*.png
-!viz/peg_reset/*.png
-!viz/scene_diag/*.png
-viz/objsplats/superseded_*
-# real GELLO demos vs sim (scripts/compare_real_sim_demos.py): same-joint replay
-# stills/videos, phase grids, trajectory stats -- meant to be pulled and viewed.
-!viz/real_vs_sim/*.png
-!viz/real_vs_sim/*.mp4
+# viz/ media (PNG/MP4) are NOT tracked any more: they were ~117 MB of the
+# repo's ~260 MB history and were stripped from ALL history on 2026-09-23
+# (git filter-repo + force-push) so clones stay fast. Keep them locally; share
+# via external storage. Same for the raw SfM cloud and a stray photo:
+viz/**/*.png
+viz/**/*.jpg
+viz/**/*.mp4
+viz/**/*.gif
+real2sim/scan_pipeline/scene.ply
+objects.jpg
