@@ -7,6 +7,22 @@ from common_utils import ibrl_utils as utils
 from env.robosuite_wrapper import PixelRobosuite
 
 
+def _env_cls_for(env_name):
+    """The registered robosuite class behind an env_name, or None.
+
+    Used only so the [EVAL ENV] banner can report the reset distribution
+    honestly (see its call site). Never raises -- a missing class must degrade
+    the PRINT, not the eval.
+    """
+    try:
+        import env.threading_variants  # noqa: F401
+        import env.square_variants  # noqa: F401
+        from robosuite.environments.base import REGISTERED_ENVS
+        return REGISTERED_ENVS.get(env_name)
+    except Exception:
+        return None
+
+
 def _policy_act_chunk_single(agent, obs, eval_mode):
     """Call agent.act_chunk for a single env if available; else wrap act() as len-1."""
     if hasattr(agent, "act_chunk"):
@@ -221,6 +237,11 @@ if __name__ == "__main__":
     parser.add_argument("--strict_max_needle_speed", type=float, default=None,
                         help="Optional needle linear-speed gate, m/s "
                              "(default 0 = disabled).")
+    parser.add_argument("--sim2real_cell", type=str, default=None,
+                        help="Force this sim2real cell yaml instead of the one stored in the "
+                             "checkpoint. REQUIRED when comparing checkpoints trained on "
+                             "DIFFERENT cells: env_params come from the ckpt (iron law #17), so "
+                             "without this each arm is silently scored on its own distribution.")
     parser.add_argument("--no_render", type=int, default=0,
                         help="1 = state-based eval with ALL camera rendering "
                              "disabled (no offscreen GL context, no per-step "
@@ -475,6 +496,20 @@ if __name__ == "__main__":
         for k, v in env_overrides.items():
             env_params[k] = v
 
+        # Force one cell across checkpoints. Without it, `train_rl.load_model`
+        # hands back the env_params stored in EACH checkpoint's cfg, so an A/B
+        # over two cells scores each arm on its own reset distribution and the
+        # comparison is meaningless (iron law #17 -- this exact trap voided a
+        # whole 2x2 once).
+        if args.sim2real_cell is not None:
+            from env.sim2real import load_sim2real
+            _cell = load_sim2real(args.sim2real_cell)
+            _old = env_params.get("sim2real")
+            env_params["sim2real"] = _cell
+            print(f"[eval override] sim2real cell -> {args.sim2real_cell}  "
+                  f"(layout_tripod_z_rot_deg {getattr(_old, 'layout_tripod_z_rot_deg', None)} "
+                  f"-> {_cell.layout_tripod_z_rot_deg})")
+
         # Optional: disable all camera rendering for state-based eval (big
         # speedup + no EGL deadlock under --mp). Guarded against recording.
         if args.no_render:
@@ -505,8 +540,17 @@ if __name__ == "__main__":
         # mismatch is otherwise undetectable after the fact.
         _idc = env_params.get("init_distribution")
         _nz = getattr(_idc, "nut_z_rot", None)
-        _nzd = (f"{math.degrees(_nz[0]):.0f}-{math.degrees(_nz[1]):.0f}deg"
-                if (_nz is not None and getattr(_idc, "enabled", False)) else "FULL(0-360)")
+        if _nz is not None and getattr(_idc, "enabled", False):
+            _nzd = f"{math.degrees(_nz[0]):.0f}-{math.degrees(_nz[1]):.0f}deg"
+        else:
+            # ⚠️ init_dist DISABLED does NOT mean the full 360 deg: a registered
+            # env class can carry the window itself. Square_RealCell_RotW1 does,
+            # precisely so MimicGen generation and train_rl.py cannot disagree
+            # about it (docs/infra.md §15d) -- and reading the knob alone
+            # printed "FULL(0-360)" for a run that was actually 120-180.
+            _cls_nz = getattr(_env_cls_for(env_params["env_name"]), "NUT_Z_ROT", None)
+            _nzd = (f"{math.degrees(_cls_nz[0]):.0f}-{math.degrees(_cls_nz[1]):.0f}deg(class)"
+                    if _cls_nz is not None else "FULL(0-360)")
         _ds = env_params.get("domain_shift")
         print(f"[EVAL ENV] task={env_params['env_name']} "
               f"shift={getattr(_ds, 'mode', None)} "

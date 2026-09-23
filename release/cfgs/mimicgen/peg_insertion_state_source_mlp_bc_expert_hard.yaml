@@ -1,0 +1,42 @@
+# _expert_hard: demos from the CLOSED-LOOP scripted expert (scripts/collect_peg_demos.py,
+# board jitter +-10 mm / +-5 deg) instead of MimicGen, whose open-loop insertion gave BC ~0.03.
+# Physics/success = env/peg_insertion.py 2026-09-23 defaults (stiff walls, 30 mm, tilt <= 5 deg).
+
+seed: 1
+
+dataset:
+  path: release/data/peg_insertion/demos_expert_n1000_board_hard/dataset.hdf5
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  # STRICTLY greater than the longest demo (dataset.py asserts len < eval_len)
+  eval_episode_len: 350
+  val_ratio: 0.0
+  hand_init_perturb_joint_sigma: 0.1
+  board_pos_noise: 0.01
+  board_yaw_noise: 5.0
+
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+use_wb: 0
+save_dir: exps/mimicgen/peg_source_mlp_bc_expert_n1000_board_hard_seed1

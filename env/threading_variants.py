@@ -48,7 +48,10 @@ import os as _os
 
 from mimicgen.envs.robosuite.threading import Threading_D0
 
-REAL_CELL_YAML = _os.path.join(
+# THREADING_REAL_CELL_YAML lets a diagnostic run (e.g. a layout sweep) point the
+# registered class at a candidate cell file WITHOUT editing the live yaml that
+# running jobs re-read on every reset. Unset => byte-identical to before.
+REAL_CELL_YAML = _os.environ.get("THREADING_REAL_CELL_YAML") or _os.path.join(
     _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
     "release/cfgs/sim2real/threading_real_cell.yaml")
 
@@ -124,6 +127,20 @@ class Threading_RealCell(Threading_D0):
 
     def _get_initial_placement_bounds(self):
         b = super()._get_initial_placement_bounds()
+        # the cell's explicit layout wins over the rigid workspace offset
+        from env.sim2real import cell_layout_bounds
+        cfg = self._cell()
+        # table centre in BASE frame = -base_xy (the cell states the base wrt the table)
+        tc = -np.asarray(cfg.base_xy if cfg.base_xy is not None else (-0.489, -0.034))
+        spec = cell_layout_bounds(cfg, tc)
+        if spec is not None:
+            for name, s_ in spec.items():
+                if name in b:
+                    b[name] = dict(b[name])
+                    for k in ("x", "y", "z_rot"):
+                        if s_[k] is not None:
+                            b[name][k] = s_[k]
+            return b
         dx, dy = getattr(self, "_cell_offset", (0.0, 0.0))
         for k in b:
             b[k] = dict(b[k])

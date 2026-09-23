@@ -1,6 +1,6 @@
 #!/bin/bash
-# Real-cell Threading pipeline, from merged MimicGen demos to IBRL:
-#   convert -> strict-replay audit -> MLP BC prior -> IBRL (sim2real_cell)
+# Real-cell pipeline, from MimicGen generation to IBRL:
+#   generate -> convert -> (strict audit) -> MLP BC prior -> IBRL (sim2real_cell)
 #
 # Every stage checks its own output before the next starts, because each
 # downstream stage fails SILENTLY on a bad input (an empty processed hdf5 loads 0
@@ -8,6 +8,7 @@
 #
 # Launch detached (iron law #11):
 #   setsid bash scripts/pipeline_realcell.sh > exps/mimicgen/pipeline_realcell.log 2>&1 < /dev/null & disown
+#   TASK=square setsid bash scripts/pipeline_realcell.sh > exps/mimicgen/pipeline_realcell_square.log 2>&1 < /dev/null & disown
 set -euo pipefail
 cd /home/Chenyang/ibrl
 source set_env.sh >/dev/null 2>&1
@@ -16,18 +17,36 @@ PY=/home/Chenyang/.conda/envs/ibrl/bin/python
 # (memory: gotcha-wandb-online-deadlock). Sync afterwards with `wandb sync`.
 export MUJOCO_GL=egl PYTHONUNBUFFERED=1 WANDB_MODE=offline
 
-GEN=release/data/mimicgen/generated/threading_realcell
+# ---- task selection ---------------------------------------------------------
+# TASK picks the whole column below. Everything downstream of `generate` is
+# task-agnostic; only the strict-replay audit is not (strict success is a
+# Threading/Coffee gate, docs/infra.md §5c, and the Square line runs without it
+# -- auditing Square against it would report a meaningless 0/100).
+TASK=${TASK:-threading}
+case "$TASK" in
+  threading)
+    GEN=release/data/mimicgen/generated/threading_realcell
+    NAME=threading_realcell
+    STRICT_AUDIT=1 ;;
+  square)
+    # rotw1 (120-180 deg nut window); the env class Square_RealCell_RotW1
+    # carries it, so it is not repeated in any config.
+    GEN=release/data/mimicgen/generated/square_realcell_rotw1
+    NAME=square_realcell
+    STRICT_AUDIT=0 ;;
+  *) echo "unknown TASK=$TASK (threading|square)"; exit 1 ;;
+esac
 DEMO=$GEN/demo.hdf5
 PROC=$GEN/processed_data96.hdf5
-BC_DIR=exps/mimicgen/threading_realcell_mlp_bc_seed1
-RL_DIR=exps/mimicgen/threading_realcell_ibrl_seed1
-BC_CFG=release/cfgs/sim2real/threading_realcell_state_mlp_bc.yaml
-RL_CFG=release/cfgs/sim2real/threading_realcell_state_ibrl.yaml
+BC_DIR=exps/mimicgen/${NAME}_mlp_bc_seed1
+RL_DIR=exps/mimicgen/${NAME}_ibrl_seed1
+BC_CFG=release/cfgs/sim2real/${NAME}_state_mlp_bc.yaml
+RL_CFG=release/cfgs/sim2real/${NAME}_state_ibrl.yaml
 
 # IBRL snapshot cadence (train_rl.py --snapshot_period): a quality spectrum of
 # policies for SimDist data generation. 0 disables.
 SNAP=${SNAP:-25000}
-CELL=release/cfgs/sim2real/threading_real_cell.yaml
+CELL=release/cfgs/sim2real/${TASK}_real_cell.yaml
 NSHARD=${NSHARD:-10}
 PER_SHARD=${PER_SHARD:-100}
 
@@ -42,20 +61,31 @@ pick_gpu() {
 # be edited while this pipeline runs. Pin what the data was generated on.
 if [ ! -f "$DEMO" ]; then
   mkdir -p "$GEN"
-  cp "$CELL" "$GEN/cell_snapshot.yaml"
-  sha256sum "$CELL" > "$GEN/cell_snapshot.sha256"
+  # Snapshot the cell AND any file it `inherit`s -- square_real_cell.yaml is a
+  # 2-line override of threading_real_cell.yaml, so hashing only the child
+  # would let a camera re-calibration land mid-generation unrecorded.
+  cell_files() { $PY -c "
+import os, sys, yaml
+p = os.path.abspath(sys.argv[1])
+while p:
+    print(p)
+    par = (yaml.safe_load(open(p)) or {}).get('inherit')
+    p = os.path.join(os.path.dirname(p), par) if par else None
+" "$1"; }
+  cell_files "$CELL" | xargs sha256sum > "$GEN/cell_snapshot.sha256"
+  for f in $(cell_files "$CELL"); do cp "$f" "$GEN/$(basename "$f").snapshot"; done
   git rev-parse HEAD > "$GEN/git_head.txt"; git diff > "$GEN/git_diff.patch"
-  stamp "generating $NSHARD shards x $PER_SHARD successes on Threading_RealCell"
+  stamp "generating $NSHARD shards x $PER_SHARD successes for TASK=$TASK"
   pids=()
   for i in $(seq 0 $((NSHARD - 1))); do
-    $PY -u scripts/gen_realcell_demos.py --num "$PER_SHARD" --shard "$i" \
+    $PY -u scripts/gen_realcell_demos.py --task "$TASK" --num "$PER_SHARD" --shard "$i" \
       > "$GEN/shard_$(printf %02d $i).log" 2>&1 &
     pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p" || { stamp "ERROR: a generation shard failed"; exit 1; }; done
   $PY scripts/merge_mimicgen_shards.py --root "$GEN" --out "$DEMO"
-  cmp -s "$CELL" "$GEN/cell_snapshot.yaml" \
-    || { stamp "ERROR: $CELL changed during generation"; exit 1; }
+  sha256sum -c --status "$GEN/cell_snapshot.sha256" \
+    || { stamp "ERROR: the cell (or a file it inherits) changed during generation"; exit 1; }
 fi
 N=$($PY -c "import h5py;print(len(h5py.File('$DEMO','r')['data']))")
 [ "$N" -ge $((NSHARD * PER_SHARD)) ] || { stamp "ERROR: $DEMO has $N demos"; exit 1; }
@@ -77,8 +107,12 @@ N=$($PY -c "import h5py;print(len(h5py.File('$PROC','r')['data']))")
 stamp "converted: $N demos -> $PROC"
 
 # ---------------------------------------------------------- 2. strict audit
-stamp "strict-success replay audit (first 100 demos)"
-$PY scripts/check_demos_strict.py --demo "$DEMO" --n 100 2>&1 | grep -E "^demos="
+if [ "$STRICT_AUDIT" = "1" ]; then
+  stamp "strict-success replay audit (first 100 demos)"
+  $PY scripts/check_demos_strict.py --demo "$DEMO" --n 100 2>&1 | grep -E "^demos="
+else
+  stamp "skipping strict audit (not defined for TASK=$TASK)"
+fi
 
 # ------------------------------------------------------------- 3. flow BC
 if [ ! -f "$BC_DIR/.done" ]; then

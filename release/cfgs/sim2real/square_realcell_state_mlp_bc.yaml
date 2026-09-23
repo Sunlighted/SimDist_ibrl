@@ -1,0 +1,58 @@
+# ============================================================================
+# REAL-CELL single-step MLP BC prior for Square (rotw1).
+#
+# Mirrors release/cfgs/sim2real/threading_realcell_state_mlp_bc.yaml. Two
+# Square-specific differences, marked ### SQUARE:
+#   1. NO strict_success. It is a Threading/Coffee anti-reward-hack gate
+#      (docs/infra.md §5c, env/strict_success.py); the whole Square line runs
+#      with it false (CLAUDE.md, tasks §41b), and turning it on here would make
+#      this prior incomparable with every published Square number.
+#   2. No eval_domain_shift beyond `none` -- Square's sim2sim shift knobs
+#      (peg_size_scale etc.) are not part of the sim2real line.
+#
+# The geometry AND the 120-180 deg nut window reach the eval env through the
+# dataset: its env_name is Square_RealCell_RotW1, which train_bc rebuilds the
+# eval env from. That is why there is no `init_dist` block here -- the class
+# carries the window (env/square_variants.py), so there is exactly one
+# definition of it across generation, BC and RL.
+#
+#   python train_bc.py --config_path release/cfgs/sim2real/square_realcell_state_mlp_bc.yaml \
+#       --save_dir exps/mimicgen/square_realcell_mlp_bc_seed1
+# ⚠️ train_bc.py ends with `assert False` and exits 1 even on success -- judge
+# it by model0.pt + "final eval | source" in train.log, never by the rc.
+# ============================================================================
+seed: 1
+
+dataset:
+  path: release/data/mimicgen/generated/square_realcell_rotw1/processed_data96.hdf5   ### REAL-CELL
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  eval_episode_len: 400
+  val_ratio: 0.0
+
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_hand_init_perturb_joint_sigma: 0.1   ### REAL-CELL: = IBRL's train/eval sigma
+eval_domain_shift:
+  mode: none
+
+use_wb: 1
+save_dir: exps/mimicgen/square_realcell_mlp_bc_seed1

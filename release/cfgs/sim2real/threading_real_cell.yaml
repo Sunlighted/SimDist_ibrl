@@ -41,21 +41,62 @@ arena_from_real2sim: 1
 # frame. Writes `table_visual` (contype=conaffinity=0) ONLY -- the collision box
 # and the robot base placement are untouched. Never widen via table_full_size:
 # threading.py:244 derives the base xpos from table_full_size[0].
-table_visual_half: [2.50, 2.50]
+# 2026-09-23 RE-DERIVED with the corrected camera. The previous value (half
+# 0.31/0.33, offset 0.036/0.076) was back-projected with the WRONG intrinsics
+# (HD2K 60.84 deg about the image centre), so it was both too small and offset:
+# the board covered 34.9% of the 224 input in sim against 45.9% on the real one.
+# Method: back-project EVERY board pixel of the undistorted t=0 frame onto the
+# table plane and take the extent of the cloud -- occlusion only removes points,
+# so this is tight wherever the board is unoccluded, unlike the 4-corner fit that
+# died on the corner the arm covers. Three episodes agree:
+#   min-area rect centre (0.493, 0.116) size 0.74 x 0.75 m, yaw -87.4 deg
+#   axis-aligned x[0.117, 0.880]  y[-0.254, 0.497]  (base frame)
+# ★ 2026-09-23 the SIZE is now tape-measured: the board is a 0.753 x 0.753 m
+#   SQUARE. That is an independent check on the whole camera chain -- the
+#   back-projection had said 0.748 x 0.747, i.e. 5 mm / 0.7% off. With the size
+#   pinned, the best-covering square holds 99.80% of the cloud at centre
+#   (0.4940, 0.1200) => x[0.118, 0.871] y[-0.257, 0.496].
+# Predictions to confirm with the tape (bench = real2sim's measured work surface,
+#   x[0.119, 0.859] y[-0.586, 0.654] in base frame):
+#   near edge   2 mm INSIDE the bench near edge (essentially flush)
+#   far  edge  12 mm OVERHANGING the bench far edge -> TAPE SAYS 18 mm (2026-09-23)
+#              => x centre 0.5000, board x[0.1235, 0.8765]; the near edge then sits
+#              4 mm inside the bench near edge, self-consistent (a 753 mm board on a
+#              739 mm deep bench MUST overhang ~14 mm somewhere).
+#              BOTH axes are now tape-measured; nothing here is back-projected.
+#   left edge  158 mm from the bench left edge -> TAPE SAYS 168 mm (2026-09-23)
+#              => y shifted -10.5 mm to centre 0.1095; x is still the fit, unmeasured
+#   right edge 329 mm from the bench right edge
+# ⚠️ the board is yawed ~2.6 deg wrt the base axes; `table_visual` is an
+#   axis-aligned box, so that tilt is NOT represented.
+table_visual_half: [0.3765, 0.3765]
+table_visual_offset: [0.0110, 0.0755]
+dr_background_image: /user_data/Chenyang/bg_textures/val_256
+dr_background_floor: 1
 
-# Sampled from table.jpg, tabletop region: median (226, 220, 206)/255, with an
-# interquartile spread of only 2-3/255 => a uniform matte warm white. Setting
-# this also drops the ceramic texture.
-table_rgb: [0.8863, 0.8627, 0.8078]
-
-# Task objects (needle + tripod), from objects.jpg. The parts are 3D-printed in
-# one burgundy PLA; sampled by colour mask (R > G+35 and R > B+35), then taking
-# the LIT faces (top 40% by luminance) because a shaded face is the albedo times
-# the lighting, and MuJoCo applies the lighting itself: median (119, 67, 69).
-# Replaces the MJCF's wood-grain texture -- grain is a cue the policy can learn
-# that does not exist on the bench. Contrast against the white table is also what
-# the ~1.8 mm alignment has to resolve, so this has to match, not merely look ok.
-object_rgb: [0.4667, 0.2627, 0.2706]
+# ---- COLOURS: fitted to the ZED at t=0, not eyeballed (2026-09-22) ----------
+# t=0 is the frame to use: the arm is still out of shot, so both red parts are
+# fully lit and the board is unshadowed. A mid-episode frame puts the object in
+# the gripper's shadow and fits an albedo far too dark (that mistake shipped once).
+# Superseded values, kept as a warning: the old table_rgb came from a photo of a
+# DIFFERENT table (a warm 226,220,206 cream) and the old object_rgb (119,67,69)
+# from a shaded face -- the pair rendered a cream board with a grey-maroon object
+# where the real cell has a neutral white board and a saturated red one.
+# Measured on realdata/episode_0001/0002/0004 frame 0 -- all three agree to +-1:
+#   object (114, 1, 1)   board (219, 220, 218)
+# Two different criteria on purpose: the BOARD is matched in ABSOLUTE pixels (it
+# is the brightest diffuse surface, so it anchors the scene's exposure), the
+# OBJECT is matched on the object/board RATIO (absolute would bake the exposure
+# into its albedo twice). Fit reproduces board (219,219,218), object (114,1,1).
+# Setting these also drops the MJCF's ceramic / wood-grain textures -- grain is a
+# cue the policy can learn that does not exist on the bench.
+# ⚠️ The real red is at the sensor floor in G and B, so object_rgb's G/B are
+# ~0.01 and dr_object_rgb_tint (absolute 0.025) clips half its draws at 0.
+# ⚠️ table_rgb 0.97 is high for a real whiteboard (~0.85): the strip is a little
+# dimmer than the real fixture and the albedo absorbs it. Consequence is that
+# dr_table_rgb_gain would CLIP at 1.0, so its upper bound is 1.03, not 1.10.
+table_rgb: [0.85, 0.8507, 0.8403]
+object_rgb: [0.438, 0.0086, 0.0089]
 
 # Rigid translation of the WHOLE reset distribution, in the table frame (m).
 # Moves needle and tripod together, so their relative geometry -- the task -- is
@@ -156,8 +197,31 @@ cameras:
     # centre-cropped to square at native HD2K (preserves this vertical FOV).
     # ⚠️ fy is quoted from the doc; the raw intrinsics.json (scan_run2) is not on
     # this machine -- re-check fy and that cx,cy are ~centred when it is.
-    fy: 1057.6
-    res: 1242
+    # ---- FOV: chosen 2026-09-23, NOT inherited from HD2K -------------------
+    # What the policy sees is a 224x224 square, so the only lever on how many
+    # pixels land on the 20 mm ring hole is how tightly we crop. The camera's
+    # own numbers give the UPPER BOUND and nothing else: hd720 native vFOV is
+    # 68.13 deg (fy 532.470), and the largest square centred on the PRINCIPAL
+    # POINT is 2*352.755 = 705.5 px = 67.05 deg (cy, not H/2, is the binding
+    # constraint). Everything below that is a task trade-off the intrinsics
+    # cannot answer, so it was measured (200 resets each, full DR):
+    #   fovy | crop of 720 | ring px | hole short axis | worst framing margin
+    #  60.85 |   625 |  34.5 |  3.8 |  39.1 px = 149 mm on the table  <- old
+    #  50.00 |   497 |  53.4 |  4.8 |  20.4 px =  62 mm               <- chosen
+    #  45.00 |   441 |  66.2 |  5.4 |   9.1 px =  24 mm
+    #  40.00 |   388 |  84.3 |  6.1 |  -5.0 px = already out of frame
+    # 50 deg is the knee: 1.55x the ring pixels of the old setting while keeping
+    # 62 mm of physical slack for the errors the sim's DR does NOT model (operator
+    # placement beyond the stated box, camera mount drift, base-pose residuals
+    # R1-R9). 45 deg buys another 24% of ring pixels for 24 mm of slack, which is
+    # inside the plausible real-world error -- do not take it without measuring
+    # the bench's actual placement spread first.
+    # ⚠️ Changing this number invalidates every collected pixel episode.
+    # On the real side: centre-crop 2*532.470*tan(25 deg) = 497 px AROUND THE
+    # PRINCIPAL POINT (622.555, 352.755), NOT the image centre, then resize to
+    # 224. Undistort first -- the recorded stream is the UNRECTIFIED left eye.
+    # Factory intrinsics: release/cfgs/sim2real/zed_factory_intrinsics.json
+    fovy: 50.0
 
   # --- zedm, wrist --- DELIBERATELY NOT APPLIED YET ------------------------
   # The hand-eye result is  pos: [0.036, -0.076, 0.014]  in "the EE frame".
@@ -187,17 +251,34 @@ cameras:
 # Rule: MEASURED quantities are matched, not randomised. These cover what is
 # genuinely uncontrolled or drifts. Ranges chosen from the preview renders --
 # the previous, wider set produced visible green tints and blown-out tabletops.
+
+# ⚠️ 2026-09-23: workspace_offset / init_qpos / cameras were restored from git
+# after a scripted comment insertion sliced them out. The `layout_*` block below
+# OVERRIDES workspace_offset for the objects it names (apply_cell_layout wins),
+# so workspace_offset now only documents the pre-layout recipe.
+
 dr_table_rgb_tint: 0.02        # +- per channel; the table is a KNOWN white, so narrow
-dr_table_rgb_gain: [0.85, 1.10]
+# ⚠️ 2026-09-23: the albedo/diffuse SPLIT was re-balanced. Fitting the board to
+# 216 with the albedo alone drove it to 0.97, which left no headroom -- the gain
+# had to be capped at 1.03 and the DR distribution's MEAN then sat 37 grey levels
+# BELOW the matched nominal, i.e. the policy's average training appearance was
+# not the real cell at all. The albedo is now a physical 0.85 with the light
+# scaled by the same factor (the rendered result is identical), so both gain
+# ranges can be symmetric about 1.0 and the DR mean lands on the nominal.
+dr_table_rgb_gain: [0.90, 1.10]
 # Printed parts vary batch to batch and the filament fades; wider than the table.
 dr_object_rgb_tint: 0.025
 dr_object_rgb_gain: [0.85, 1.15]
 dr_background_gray: [0.25, 0.85]   # only the robot/base is visible once the table is wide
-dr_light_diffuse: [0.70, 1.25]
-dr_light_ambient: [0.02, 0.20]     # capped: >0.2 blows the tabletop to pure white
+# 2026-09-20: upper ends narrowed for the PIXEL arm. Measured on collected
+# frames, agentview first-frame brightness spanned 168-250/255 -- the top of that
+# range is clipping, and a blown-out tabletop has no geometry left to see.
+dr_light_diffuse: [0.85, 1.15]
+dr_light_ambient: [0.02, 0.12]     # was 0.20
 dr_light_specular: [0.40, 1.50]
 dr_light_dir: 0.30
 dr_light_pos: 0.40
+dr_light_shadow_n: 3     # umbra depth varies with whatever else is lit in the room
 
 # Mounting/calibration residual. Sized on the quoted PARK solve (1.0 deg / 11.4 mm).
 dr_cam_pos: 0.011
@@ -219,3 +300,82 @@ dr_base_height: 0.005
 dr_base_yaw_deg: 1.5
 dr_base_tilt_deg: 1.0
 dr_base_xy: 0.007
+
+# ---- OBJECT LAYOUT on this bench (BASE frame, metres / degrees), 2026-09-22 ----
+# ⚠️ `layout_tripod_z_rot_deg` DECIDES WHICH SIDE THE ARM INSERTS FROM, and it
+# is the single most consequential number in this block. MimicGen's insertion
+# subtask is a rigid transform in the TRIPOD frame, so the arm always stands at
+# azimuth = this yaw, as seen from the ring. The scene camera sits at azimuth
+# 149 deg from the ring, so a yaw near 149 puts the arm exactly in the line of
+# sight, and a yaw near -30 puts it on the far side.
+# (a) FEASIBILITY -- moving the ring across the table without rotating it asks
+#     for ~180 deg more wrist roll and `panda_joint7` is only +-166 deg:
+#     measured 37.5% of insertion timesteps pinned at the limit, grasp 12/12 but
+#     insertion missing by 22-136 mm (threshold 12 mm) => yield 5/154 = 3.2%.
+#     Yield vs yaw (n=50-60): -90 5% | -60 43% | -45 38% | -30 48% | -15 45% |
+#     0 22% | +15 10% | +30 10% | +45 5% | +90 7% | 120 24-36% | 135 40-56% |
+#     150 40-52% | 165 47-50%. Two feasible bands; needle yaw makes no difference.
+# (b) VISIBILITY -- ring pixels on the 224 agentview over the last 40 frames of
+#     8 successes (segmentation, i.e. what the policy actually sees):
+#     ring RIGHT yaw 90 (pre-swap) 14.4 | LEFT yaw 135 **3.4** | LEFT yaw -60
+#     34.7 | LEFT yaw -30 33.1 | LEFT yaw -15 34.4. Incidence is 50-57 deg in
+#     all of them, so this is ARM OCCLUSION plus distance, not viewing angle.
+# ⇒ the stated range is -30 +-5, not a fixed angle: the operator cannot hit an
+#   exact yaw with a tape, and putting their placement error INSIDE the training
+#   distribution is free. Measured at n=250 per cell: fixed -30 45.6% | +-5 48.0%
+#   | +-10 53.6% | +-15 42.4% -- all four within noise of each other (SE 3.2 pts,
+#   SE of a difference 4.5), so +-10 is available too if the bench needs it.
+# => -30 deg is the only value that is simultaneously in the feasible band and
+#    has the arm opposite the camera (179 deg away). 2.4x the pre-swap layout.
+# ⚠️ Three measurement traps burned on the way here, all now guarded in the
+#    scratch tooling and in scripts/preview_sim2real.py: mj_ray reports
+#    "visible" straight through the arm (it only tests COLLISION geoms);
+#    `e.reset()` on the raw robosuite env skips apply_sim2real so you measure
+#    robosuite's DEFAULT agentview; and model/data handles taken before a reset
+#    go stale because hard_reset rebuilds the sim.
+# The ring moved to the CAMERA side (robot's left) and the needle to the right:
+# measured on the old layout, the camera's ray to the ring was blocked by the
+# table edge and the 20 mm opening spanned 4.2 px; swapped it is unobstructed,
+# 0.73 m away, 5.2 px, 71 deg incidence. Ring gets a small +-3 cm jitter but NO
+# rotation (owner's call: position noise helps sim2real, spin does not).
+layout_needle_x: [0.36, 0.51]
+layout_needle_y: [-0.14, -0.04]
+layout_needle_z_rot_deg: [-120, -60]
+layout_tripod_x: [0.49, 0.55]
+layout_tripod_y: [0.23, 0.29]
+layout_tripod_z_rot_deg: [-35, -25]
+hide_table_legs: 1
+
+# ---- MATCHED LIGHTING (base frame), 2026-09-22 -------------------------------
+# Real cell: the lamp is ABOVE the scene camera, so shadows fall away from it.
+# The arena default was a directional light from the far right with NO shadows.
+# 0.8 m above the camera (camera is at 0.122, 0.501, 0.772), aimed at the task
+# area between the ring and the needle.
+# 2026-09-23: height, total diffuse and shadow-caster count are now FITTED to
+# the real board, not guessed. Two statistics, two separable knobs:
+#   far/near brightness gradient  <- strip HEIGHT (measured with shadows off, so
+#       the Lambert term is isolated): z 1.6 -> +19, 2.2 -> +13, 3.0 -> +9,
+#       4.0 -> +6.  The real board is +10, so the real rig behaves like a source
+#       ~2.1 m above the table, not a bulb 0.8 m above the camera -- a real room
+#       has ceiling light plus wall bounce, which is a far more distant source.
+#   board spread p90-p10          <- light_shadow_n (see its comment).
+# With the diffuse solved to put the board median on the real 216:
+#   z=3.0, k=5 -> median 216, spread 57, gradient +9   (real 216 / 52 / +10)
+light_pos: [0.122, 0.501, 3.00]
+# Solved so the DR MEAN board median lands on the real 216 -- not the nominal
+# render. The policy trains on DR samples, and dr_light_dir / dr_light_pos can
+# only LOWER the board's incidence cosine, so they bias the mean downward no
+# matter how symmetric the gains are; centring the nominal instead would leave
+# the average training frame ~17% darker than the bench.
+light_diffuse: 0.9953
+light_shadow_n: 5
+light_target: [0.45, 0.08, 0.02]
+light_directional: 0
+light_castshadow: 1
+# ...and it is a LED STRIP, not a bulb: 8 point lights over 0.9 m along the
+# robot's fore-aft axis (base +x). One bulb gives a single hard shadow that the
+# real fixture never produces; the overlapping penumbrae are the point.
+# Costs ~30% render time (7.0 vs 5.4 ms/step at 2 cams x 224) and changes
+# m.nlight => data recorded at a different light_line_n cannot be re-rendered.
+light_line_n: 8
+light_line_len: 0.9

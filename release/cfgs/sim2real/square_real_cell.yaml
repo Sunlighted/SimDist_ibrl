@@ -1,0 +1,63 @@
+# ============================================================================
+# SQUARE (NutAssemblySquare) -- REAL CELL, single source of truth for the task.
+#
+# Same physical bench as Threading: `inherit` pulls the arena, the zed2i solve,
+# the table colour and every dr_* width from threading_real_cell.yaml, so a
+# re-calibration lands on both tasks at once. ONLY the task-specific keys are
+# restated below. Do not copy anything else in here -- if a key belongs to the
+# room, it belongs in the parent.
+#
+# Env class: env/square_variants.py :: Square_RealCell (registered with
+# robosuite on import). Read its docstring before changing `workspace_offset`:
+# Square's pegs are ARENA geometry at fixed world coordinates, so this class --
+# not the wrapper's sim2real hook -- is what moves them with the nut.
+#
+# Gate:     python scripts/test_sim2real.py
+# Preview:  python scripts/preview_sim2real.py --task Square_RealCell \
+#               --config release/cfgs/sim2real/square_real_cell.yaml
+# ============================================================================
+inherit: threading_real_cell.yaml
+
+# ---------------------------------------------------------------- WORKSPACE
+# Pure base-displacement compensation, so the task sits where it sat in stock
+# Square_D0 RELATIVE TO THE ROBOT, and the stock reachability holds unchanged:
+#   stock base xy wrt table centre  = (-0.16 - 0.8/2, 0)   = (-0.560,  0.000)
+#   measured base xy wrt table centre (docs/real2sim.md §2e) = (-0.489, -0.034)
+#   displacement                                             = (+0.071, -0.034)
+# Applied to the nut sampler AND to peg1/peg2 (Square_RealCell._place_pegs), so
+# the nut<->peg geometry -- the task itself -- is untouched.
+#
+# Threading's parent value additionally carries a (0, +0.10) OCCLUSION fix: at
+# the D0 layout the arm sits between the zed2i and the ring. That number was
+# measured for the needle/tripod and CANNOT be carried across (the cell file
+# says so in as many words) -- Square's nut and peg are elsewhere on the bench
+# and the camera is the same, so the occlusion has to be re-measured here with
+# scripts/preview_sim2real.py before any extra offset is added.
+workspace_offset: [0.071, -0.034]
+
+# --------------------------------------------------------------- APPEARANCE
+# Which geoms count as "the task objects" for `object_rgb` (inherited) and for
+# the occlusion report. Square's are the nut and the two arena pegs; the pegs'
+# geoms ship UNNAMED in pegs_arena.xml and are named by Square_RealCell.
+# ⚠️ RoundNut is deliberately absent: single_object_mode=2 teleports it to
+# (10,10,10), so recolouring it would only cost time.
+# Colour: the inherited `object_rgb` (burgundy PLA measured off the Threading
+# parts, objects.jpg) applies to BOTH the nut and the peg -- confirmed
+# 2026-09-21 that the real Square parts are printed in the same filament.
+object_geom_prefixes: ["SquareNut", "peg1", "peg2"]
+
+# --------------------------------------------------------- PEG PLACEMENT DR
+# The square peg is ARENA geometry (pegs_arena.xml), so Square's own reset
+# sampler never touches it and without this it sits in exactly one spot every
+# episode. ⚠️ It is NOT in the 23-dim state obs, so for the STATE expert this is
+# unobservable noise bounded by the nut/peg clearance (45.4 mm hole vs 32 mm peg
+# => 6.7 mm per side); the PIXEL student does see it and can learn it.
+# Measured dose-response, expert model0.pt, n=200/cell, sigma=0.1 (§15k):
+#   0 mm 0.985 | 2 mm 0.970 | 5 mm 0.970 | 5 mm+3deg 0.990 | 10 mm 0.925 | 10 mm+5deg 0.935
+# The knee sits between 5 and 10 mm, exactly where the clearance says it should.
+# 5 mm = 75% of the clearance and costs nothing measurable; yaw to 5 deg is free
+# (rotating a square peg by a few degrees barely eats the gap).
+# ⚠️ Baked per episode into model_state => a pixel re-render reproduces the draw,
+# but changing this number invalidates collected episodes. Set it before采集.
+dr_peg_xy: 0.005
+dr_peg_yaw_deg: 3.0

@@ -43,6 +43,7 @@ import argparse
 import contextlib
 import dataclasses
 import glob
+import functools
 import json
 import os
 import sys
@@ -61,6 +62,7 @@ import train_rl  # noqa: E402
 import train_bc  # noqa: E402
 from env.robosuite_wrapper import PixelRobosuite  # noqa: E402
 from env.domain_shift import DomainShiftConfig  # noqa: E402
+from env.sim2real import capture_model_state, model_state_layout  # noqa: E402
 from common_utils import ibrl_utils as utils  # noqa: E402
 # Repo-relative splat defaults, so another machine needs only the repo +
 # submodules. Module-level imports here are cheap (json/os/sys/numpy); the
@@ -77,6 +79,12 @@ def parse_args():
                    help="comma-separated sub-optimal ckpt paths (e.g. snapshot_*.pt)")
     p.add_argument("--checkpoints_glob", type=str, default="",
                    help="glob for sub-optimal ckpts (alternative to --checkpoints)")
+    p.add_argument("--sim2real_cell", type=str, default="",
+                   help="render with THIS cell instead of the expert cfg's. The "
+                        "expert trains on the agentview-only cell; a 2-camera "
+                        "collection needs the *_calibrated_wrist one, which "
+                        "differs from it in `cameras` only. Without this the "
+                        "wrist renders at robosuite's DEFAULT pose, silently.")
     p.add_argument("--out_dir", type=str, required=True)
     p.add_argument("--num_traj", type=int, default=2000)
     p.add_argument("--num_proc", type=int, default=1,
@@ -169,6 +177,14 @@ def parse_args():
                         "frame and store variable-length bytes; the loader decodes. "
                         "224x224x3x2cam raw is 301,056 B/transition (6.1 TB at 100k "
                         "traj), which neither the quota nor RAM can hold.")
+    p.add_argument("--store_sim_state", type=int, default=0,
+                   help="1 = also store, per step, the MuJoCo state (qpos+qvel, "
+                        "float64) and, per episode, the mutable model fields "
+                        "(DR draw: base pose / lights / colours / cameras). "
+                        "Rendering is a pure function of those two, so ANY camera "
+                        "can be re-rendered later, index-aligned with these exact "
+                        "transitions (scripts/rerender_simdist_data.py). ~1.9%% of "
+                        "the image bytes. 0 = legacy, byte-for-byte.")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--flush_mb", type=int, default=2000,
                    help="flush a worker's buffer once it holds this many MB, in "
@@ -259,13 +275,60 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=(),
     # expert was trained on -- no error, just the wrong data.
     env_params["sim2real"] = load_cell(cfg)
     env = PixelRobosuite(**env_params)  # type: ignore
+    if _LAYOUT[0] is None:
+        _LAYOUT[0] = [[f, list(sh)] for f, sh in model_state_layout(env.env)]
     return env, env_params
+
+
+def attach_render_state_probe(env, cams):
+    """Record the MuJoCo state AT THE INSTANT robosuite renders the camera.
+
+    Not at the top of the rollout loop: robosuite runs `control_freq` physics
+    sub-steps per control step and its camera observable is rendered on the
+    sub-step its timer elapses, which is EARLIER than the end of the step. The
+    naive capture point is therefore one 2 ms sub-step ahead of the frame -- sub
+    mm of arm motion, invisible in a mean but a 1-pixel outline around every
+    edge, so a re-render could never match (measured: mean |diff| 1.2/255, max
+    123). Wrapping the sensor makes state and frame the same instant by
+    construction, at zero extra render cost.
+    """
+    box = {"state": None}
+    # robosuite REBUILDS its observables on every hard reset, so a wrap installed
+    # once at construction survives exactly zero episodes (it silently left the
+    # probe empty). Re-attach after each reset.
+    for c in cams:
+        ob = env.env._observables[f"{c}_image"]
+        orig = ob._sensor
+
+        @functools.wraps(orig)          # keeps __modality__, which Observable reads
+        def wrapped(obs_cache, _orig=orig, _sim=env.env.sim):
+            # mj_step is forward-then-integrate: when it returns, data.qpos is the
+            # NEW state but data.xpos -- what the renderer reads -- still belongs
+            # to the state before the last integration. Rendering as-is therefore
+            # produces a frame that no (qpos, forward) pair reproduces: replay was
+            # stuck at mean |diff| ~0.02-1.2/255, an outline around every edge.
+            # One forward() re-syncs xpos to qpos at no extra render cost, which
+            # makes the frame exactly `render(forward(state))` -- the contract the
+            # re-render script implements. forward() does not touch qpos/qvel, so
+            # the physics of the episode is unchanged.
+            _sim.forward()
+            box["state"] = np.asarray(_sim.get_state().flatten(), dtype=np.float64)
+            return _orig(obs_cache)
+
+        ob._sensor = wrapped
+    return box
+
+
+# Set once from --sim2real_cell before any env is built. load_cell() and
+# cell_record() both read it, so the PROVENANCE records the cell that was
+# actually rendered with, not the expert cfg's.
+_CELL_OVERRIDE = {"path": ""}
 
 
 def load_cell(cfg):
     """The expert cfg's sim2real cell (None if it has none). Read from the yaml
     at collection time, so the cell's DR ranges are the CURRENT file's."""
-    path = getattr(cfg, "sim2real_cell", "") or ""
+    path = _CELL_OVERRIDE["path"] or (getattr(cfg, "sim2real_cell", "") or "")
     if not path:
         return None
     from env.sim2real import load_sim2real
@@ -274,7 +337,7 @@ def load_cell(cfg):
 
 def cell_record(cfg):
     """Provenance for env_cfg.json: path + sha256 + the resolved config."""
-    path = getattr(cfg, "sim2real_cell", "") or ""
+    path = _CELL_OVERRIDE["path"] or (getattr(cfg, "sim2real_cell", "") or "")
     if not path:
         return None
     import hashlib
@@ -337,6 +400,16 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
         obs, _img = env.reset()
         states, actions, rewards, eflags = [], [], [], []
         frames = {c: [] for c in cams}   # index-aligned with `states`
+        sim_states = []                  # ditto; empty unless --store_sim_state
+        # After reset(), so it holds THIS episode's DR draw (the wrapper applies
+        # sim2real/domain-shift on reset). Stored as values, not as a seed.
+        model_state = (capture_model_state(env.env) if args.store_sim_state else None)
+        if args.store_sim_state and cams:
+            _PROBE[0] = attach_render_state_probe(env, cams)
+            # the frame reset() returned was rendered at the CURRENT state (the
+            # wrapper re-pulls the observation after applying DR), so prime it
+            _PROBE[0]["state"] = np.asarray(
+                env.env.sim.get_state().flatten(), dtype=np.float64)
         terminal = succ = False
         steps = 0
         with torch.no_grad(), utils.eval_mode(pol):
@@ -345,6 +418,11 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
                     noise_on = not noise_on
                     steps_left = sample_interval(noise_on)
                 states.append(obs["state"].cpu().numpy().astype(np.float32))
+                if args.store_sim_state:
+                    # the state the CURRENT frame was rendered at (see
+                    # attach_render_state_probe); float64 so it re-renders exactly
+                    assert _PROBE[0] is not None and _PROBE[0]["state"] is not None
+                    sim_states.append(_PROBE[0]["state"])
                 for c in cams:
                     # uint8 CHW straight from the wrapper; appended in the SAME
                     # iteration as `states`, so frame[t] and state[t] are the same
@@ -362,6 +440,11 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
                 steps += 1
 
         ep = {
+            # Which background photo this episode was rendered with (None when
+            # the cell has no photo DR). Needed because the photo lives in
+            # tex_rgb, which model_state does NOT carry, so a later wrist
+            # re-render cannot recover it any other way (docs/infra.md §15m).
+            "bg_index": getattr(env, "last_bg_index", None),
             "state": np.asarray(states, dtype=np.float32),
             "actions": np.asarray(actions, dtype=np.float32),
             "rewards": np.asarray(rewards, dtype=np.float32),
@@ -369,6 +452,9 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
         }
         for c in cams:
             ep[f"img::{c}"] = np.asarray(frames[c], dtype=np.uint8)
+        if args.store_sim_state:
+            ep["sim_state"] = np.asarray(sim_states, dtype=np.float64)
+            ep["model_state"] = np.asarray(model_state, dtype=np.float64)
         if args.save_values:
             with torch.no_grad(), full_ensemble_value(value_agent, args.value_full_ensemble):
                 sv = torch.from_numpy(ep["state"]).to("cuda")
@@ -450,12 +536,25 @@ def write_episodes(accepted, h5_path):
             d.create_dataset("expert_flags", data=ep["expert_flags"])
             if "values" in ep:
                 d.create_dataset("values", data=ep["values"])
+            for k in ("sim_state", "model_state"):
+                if k in ep:
+                    d.create_dataset(k, data=ep[k])
             d.attrs["num_samples"] = int(ep["actions"].shape[0])
             d.attrs["success"] = bool(success)
+            if ep.get("bg_index") is not None:
+                d.attrs["bg_index"] = int(ep["bg_index"])
             n_success += int(success)
         g.attrs["num_demos"] = len(accepted)
         g.attrs["num_success"] = n_success
+        _stamp_layout(g)
     return n_success
+
+
+def _stamp_layout(g):
+    """model_state is a flat vector; its field layout is constant per dataset, so
+    it lives once in the `data` group attrs (and survives merge_shards)."""
+    if _LAYOUT[0] is not None and "model_state_layout" not in g.attrs:
+        g.attrs["model_state_layout"] = json.dumps(_LAYOUT[0])
 
 
 class ShardWriter:
@@ -490,12 +589,18 @@ class ShardWriter:
                 d.create_dataset("expert_flags", data=ep["expert_flags"])
                 if "values" in ep:
                     d.create_dataset("values", data=ep["values"])
+                for k in ("sim_state", "model_state"):
+                    if k in ep:
+                        d.create_dataset(k, data=ep[k])
                 d.attrs["num_samples"] = int(ep["actions"].shape[0])
                 d.attrs["success"] = bool(success)
+                if ep.get("bg_index") is not None:
+                    d.attrs["bg_index"] = int(ep["bg_index"])
                 self.n += 1
                 self.n_success += int(success)
             g.attrs["num_demos"] = self.n
             g.attrs["num_success"] = self.n_success
+            _stamp_layout(g)
 
 
 def merge_shards(shard_paths, out_path):
@@ -518,7 +623,19 @@ def merge_shards(shard_paths, out_path):
                     total += 1
         g.attrs["num_demos"] = total
         g.attrs["num_success"] = n_success
+        for sp in shard_paths:                 # carry the layout across the merge
+            if not os.path.exists(sp):
+                continue
+            with h5py.File(sp, "r") as sf:
+                lay = sf["data"].attrs.get("model_state_layout")
+            if lay is not None:
+                g.attrs["model_state_layout"] = lay
+                break
     return total, n_success
+
+
+_LAYOUT = [None]   # filled by build_source_env when --store_sim_state is on
+_PROBE = [None]    # render-instant state probe (attach_render_state_probe)
 
 
 def write_env_cfg(out_dir, env_params, args):
@@ -534,6 +651,8 @@ def write_env_cfg(out_dir, env_params, args):
             dataclasses.asdict(env_params["init_distribution"])
             if env_params.get("init_distribution") is not None else None),
         "use_state": env_params.get("use_state"),
+        "store_sim_state": int(args.store_sim_state),
+        "model_state_layout": _LAYOUT[0],
         "sim2real_cell": cell_record(pyrallis.load(  # type: ignore
             train_rl.MainConfig,
             open(os.path.join(os.path.dirname(args.expert), "cfg.yaml"), "r"))),
@@ -659,6 +778,10 @@ def _worker(rank, args, ckpts, n_traj, shard_path, counter=None):
 
 def main():
     args = parse_args()
+    if getattr(args, "sim2real_cell", ""):
+        # installed BEFORE any env is built: load_cell() reads it
+        _CELL_OVERRIDE["path"] = args.sim2real_cell
+        print(f"[gen] sim2real cell override -> {args.sim2real_cell}", flush=True)
     assert not (args.value_use_ibrl and not args.expert_hybrid), (
         "--value_use_ibrl 1 needs --expert_hybrid 1 (the hybrid value is max-Q over "
         "{RL actor, prior}, so the prior must be attached).")

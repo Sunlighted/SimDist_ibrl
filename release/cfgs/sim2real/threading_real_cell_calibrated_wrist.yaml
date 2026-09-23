@@ -1,0 +1,130 @@
+# GENERATED from release/cfgs/sim2real/threading_real_cell.yaml plus the wrist camera.
+# Pose: the hand-eye solve (2cam_calibrated_v1/calibration.json,
+#   T_sim_hand_camera_opencv), validated earlier by ChArUco reprojection
+#   (median 7.28 px @2208x1242 = 1.3 px @224).
+# FOV: 49.014 deg, chosen 2026-09-23. The old 45.656 was the ZED Mini's HD2K
+#   value -- same wrong-resolution-mode provenance as the agentview's 60.845.
+#   hd720 native is 50.02 deg (fy 771.705); the largest square centred on the
+#   PRINCIPAL POINT is 2*351.798 = 703.6 px = 49.014 deg (cy binds, not H/2).
+#   Real side: undistort -> crop 703.6 px about (652.745, 351.798) -> 224.
+#   Not optimised for magnification on purpose: the wrist sees only ~3.4 px
+#   of the ring at insertion, so its job is context, not alignment.
+# Must differ from the collection cell in `cameras` ONLY.
+enabled: 1
+arena_from_real2sim: 1
+table_visual_half:
+- 0.3765
+- 0.3765
+table_visual_offset:
+- 0.011
+- 0.0755
+dr_background_image: /user_data/Chenyang/bg_textures/val_256
+dr_background_floor: 1
+table_rgb:
+- 0.85
+- 0.8507
+- 0.8403
+object_rgb:
+- 0.438
+- 0.0086
+- 0.0089
+workspace_offset:
+- 0.071
+- 0.066
+init_qpos:
+- 0.0
+- -0.7853981634
+- 0.0
+- -2.3561944902
+- 0.0
+- 1.5707963268
+- 0.7853981634
+cameras:
+- name: agentview
+  frame: base
+  pos:
+  - 0.1222
+  - 0.5014
+  - 0.7721
+  quat:
+  - 0.14313
+  - -0.48176
+  - 0.78211
+  - -0.36841
+  fovy: 50.0
+- name: robot0_eye_in_hand
+  frame: hand
+  randomize: false
+  pos:
+  - 0.07723720899797522
+  - -0.029359313368373177
+  - 0.016017710241538766
+  quat:
+  - 0.6717941462673785
+  - -0.0926679063895674
+  - -0.12658004467967346
+  - 0.7239356162361057
+  fovy: 49.014
+dr_table_rgb_tint: 0.02
+dr_table_rgb_gain:
+- 0.9
+- 1.1
+dr_object_rgb_tint: 0.025
+dr_object_rgb_gain:
+- 0.85
+- 1.15
+dr_background_gray:
+- 0.25
+- 0.85
+dr_light_diffuse:
+- 0.85
+- 1.15
+dr_light_ambient:
+- 0.02
+- 0.12
+dr_light_specular:
+- 0.4
+- 1.5
+dr_light_dir: 0.3
+dr_light_pos: 0.4
+dr_light_shadow_n: 3
+dr_cam_pos: 0.011
+dr_cam_rot_deg: 1.0
+dr_cam_fovy_deg: 1.0
+dr_base_height: 0.005
+dr_base_yaw_deg: 1.5
+dr_base_tilt_deg: 1.0
+dr_base_xy: 0.007
+layout_needle_x:
+- 0.36
+- 0.51
+layout_needle_y:
+- -0.14
+- -0.04
+layout_needle_z_rot_deg:
+- -120
+- -60
+layout_tripod_x:
+- 0.49
+- 0.55
+layout_tripod_y:
+- 0.23
+- 0.29
+layout_tripod_z_rot_deg:
+- -35
+- -25
+hide_table_legs: 1
+light_pos:
+- 0.122
+- 0.501
+- 3.0
+light_diffuse: 0.9953
+light_shadow_n: 5
+light_target:
+- 0.45
+- 0.08
+- 0.02
+light_directional: 0
+light_castshadow: 1
+light_line_n: 8
+light_line_len: 0.9

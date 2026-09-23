@@ -63,6 +63,14 @@ class MainConfig(common_utils.RunConfig):
     rl_camera: str = "robot0_eye_in_hand"
     obs_stack: int = 1
     prop_stack: int = 1
+    # SIM-TO-REAL cell (env/sim2real.py), e.g.
+    # release/cfgs/sim2real/threading_real_cell.yaml. Applied to BOTH the train
+    # and the eval env, exactly as train_rl.py does it. "" = off.
+    # ⚠️ Stage-1 had NO sim2real support until 2026-09-20: a RealCell run would
+    # have distilled against a replay collected on the measured cell while its
+    # envs (eval, and the planner's) sat on the ORIGINAL arena -- silently, with
+    # no error, the same class of bug as generate_simdist_data.py's.
+    sim2real_cell: str = ""
     # Number of PAST ACTIONS the env appends as obs["past_action"]. 0 = off
     # (legacy). Must equal world_model.history_length (and prop_stack) when
     # history is on, or the ACT path cannot build the same vector the model
@@ -401,6 +409,16 @@ class Workspace:
             # old rendering path byte-for-byte.
             state_only_no_render=bool(self.cfg.state_only_no_render),
         )
+        if self.cfg.sim2real_cell:
+            import hashlib
+            from env.sim2real import load_sim2real
+            common_env["sim2real"] = load_sim2real(self.cfg.sim2real_cell)
+            with open(self.cfg.sim2real_cell, "rb") as _f:
+                _sha = hashlib.sha256(_f.read()).hexdigest()
+            print(f"[sim2real] cell={self.cfg.sim2real_cell} sha256={_sha} "
+                  f"enabled={common_env['sim2real'].enabled} "
+                  f"table_above_base={common_env['sim2real'].table_above_base} "
+                  f"any_dr={common_env['sim2real'].any_dr()}", flush=True)
         # SOURCE (online training)
         self.train_env = PixelRobosuite(
             **common_env,

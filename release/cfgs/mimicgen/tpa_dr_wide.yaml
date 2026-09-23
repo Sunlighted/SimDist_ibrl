@@ -136,4 +136,4 @@ strict_success:
   max_needle_speed: 0.0
   max_nut_speed: 0.0
   max_tripod_disp: 0.04
-eval_hand_init_perturb_joint_sigma: null
+eval_hand_init_perturb_joint_sigma: 0.1

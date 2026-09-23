@@ -53,6 +53,7 @@ multi-day run and reports nothing -- 44's augment_fn was exactly that.)
   FOV or the pixel->geometry mapping is globally wrong.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -122,7 +123,8 @@ OPENCV_TO_MUJOCO = np.diag([1.0, -1.0, -1.0])
 class RealCameraConfig:
     """One physically-measured camera. Default = every field inert."""
     name: str = ""                  # sim camera name, e.g. "agentview"
-    frame: str = "base"             # "base" (statically mounted) | "ee" (wrist)
+    frame: str = "base"             # base | ee (grip site) | hand (sim hand body)
+    randomize: bool = True          # disable for a fixed, post-restoration camera
     pos: tuple = (0.0, 0.0, 0.0)
     # Orientation, OpenCV optical convention (w,x,y,z). PREFERRED.
     quat: Optional[tuple] = None
@@ -194,6 +196,22 @@ class Sim2RealConfig:
     arena_from_real2sim: int = 0
     table_full_size: Optional[tuple] = None
     base_xy: Optional[tuple] = None
+    # OBJECT LAYOUT on this bench, in BASE frame metres / degrees. None = keep the
+    # task's own reset distribution (shifted by workspace_offset, the legacy path).
+    # Set here rather than in each RL config because "where the parts sit on this
+    # bench" is a property of the cell: the demo generator (Threading_RealCell)
+    # and the RL/SimDist envs must not disagree.
+    # 2026-09-22: the ring moved to the camera side. Measured on the real cell,
+    # with the ring on the far side the camera's line of sight to it is blocked by
+    # the table edge (first ray hit = table_collision) and the 20 mm opening spans
+    # 4.2 px; swapping the two objects makes the ring visible, 0.73 m away,
+    # 5.2 px, at a 71 deg incidence instead of 52.
+    layout_needle_x: Optional[tuple] = None      # (lo, hi) in base frame
+    layout_needle_y: Optional[tuple] = None
+    layout_needle_z_rot_deg: Optional[tuple] = None
+    layout_tripod_x: Optional[tuple] = None
+    layout_tripod_y: Optional[tuple] = None
+    layout_tripod_z_rot_deg: Optional[tuple] = None
     # Robot reset joint configuration (7 arm joints, rad). None = robosuite's
     # default, which was designed for a table 112 mm BELOW the base: on the
     # measured cell (table 20.7 mm ABOVE) it leaves the grip site only 78 mm over
@@ -210,6 +228,19 @@ class Sim2RealConfig:
     # so that route silently walks the robot backwards out of reach.
     # The z half-size is never written, so the table TOP height cannot move here.
     table_visual_half: tuple = (0.0, 0.0)
+    # (dx, dy) of the VISUAL table relative to the collision table's centre, m.
+    # The real cell's white board is not centred on the measured work surface:
+    # the surface (0.739 x 1.240, which RANSAC fitted over the mats) is mostly
+    # green mat and wood, and only a ~0.62 x 0.66 m white board sits on it,
+    # offset by (+0.036, +0.076) from the surface centre (back-projected from the
+    # real scene camera). Rendering white over the whole surface would put white
+    # where the real cell has a green mat.
+    table_visual_offset: tuple = (0.0, 0.0)
+    # The arena's four steel table legs. They were invisible while the visual
+    # table was a 5 m plane; with the table cut down to the real white board they
+    # show up as two grey pillars that have no counterpart in the real cell (an
+    # optical breadboard on a bench). 1 = make them fully transparent.
+    hide_table_legs: int = 0
     # Flat diffuse colour for the table top, 0-1 RGB. None = keep the ceramic
     # texture. Setting it also clears geom_matid so the texture stops overriding.
     table_rgb: Optional[tuple] = None
@@ -249,6 +280,36 @@ class Sim2RealConfig:
     # every dy tested, on the LIFTED table.
     workspace_offset: tuple = (0.0, 0.0)
 
+    # ---- MATCHED LIGHTING ---------------------------------------------------
+    # The arena ships ONE directional light from the far right with
+    # castshadow=False, i.e. no shadows at all. The real cell is lit from above
+    # the scene camera, so its shadows fall AWAY from that camera; a policy that
+    # has only ever seen shadowless renders has no way to interpret them.
+    # Positions are in the BASE frame, like the cameras.
+    light_pos: Optional[tuple] = None        # None = leave the arena light alone
+    light_target: Optional[tuple] = None     # point it at this (base frame)
+    light_directional: Optional[int] = None  # 0 = point light (position matters)
+    light_castshadow: Optional[int] = None   # 1 = cast shadows
+    # The real fixture is a LED STRIP, not a bulb: a line above the scene camera
+    # running along the robot's fore-aft axis (base +x). MuJoCo has no area or
+    # line light, so it is approximated by `light_line_n` point lights spread
+    # over `light_line_len` metres, each at 1/n intensity. The overlapping
+    # penumbrae are the point of the exercise -- one bulb gives a hard, single
+    # shadow that a strip never produces. n=1 (default) = the single point light.
+    light_line_n: int = 1
+    light_line_len: float = 0.0              # metres, along base +x
+    # TOTAL diffuse summed over the strip (each light gets 1/n of it). None
+    # leaves whatever the arena/XML set. Fitted, not guessed: with the board's
+    # albedo pinned by the ZED, this is what puts the rendered board median on
+    # the real 216.
+    light_diffuse: Optional[float] = None
+    # How many of the strip's lights cast shadows. This is the UMBRA-DEPTH dial:
+    # a point shadowed from k of n lights still receives (n-k)/n of the light, so
+    # k sets how dark the shadow core is without touching its shape. None = all.
+    # Measured at light_pos z=3.0, board spread p90-p10 (real = 52):
+    #   k=3 -> 35 | k=4 -> 41 | k=5 -> 57 | k=6 -> 61 | k=8 -> 106
+    light_shadow_n: Optional[int] = None
+
     # ----------------------------------------------------- 2. MEASURED CAMERAS
     cameras: tuple = ()              # tuple[RealCameraConfig, ...]
 
@@ -263,7 +324,24 @@ class Sim2RealConfig:
     dr_light_ambient: tuple = (0.0, 0.0)    # ABSOLUTE ambient range
     dr_light_specular: tuple = (1.0, 1.0)   # multiplier on the nominal specular
     dr_light_dir: float = 0.0           # +- per-axis perturbation of the light dir
-    dr_light_pos: float = 0.0           # +- per-axis, metres
+    dr_light_pos: float = 0.0           # +- per-axis, metres. ⚠️ With a strip
+    # (light_line_n>1) this offset is drawn ONCE and applied to every light, so
+    # the rig translates as one object. Drawing it per light would scatter the
+    # line into a cloud and randomise the very thing the strip exists to model.
+    dr_light_shadow_n: int = 0          # +- on light_shadow_n, per episode. The
+    # real cell's shadows are much weaker than one hard rig produces and vary
+    # with whatever else is on in the room, so the umbra depth is randomised too.
+    # Photo backgrounds. "" = off. One or more directories ("+"- or ","-separated)
+    # of jpg/png; one image is painted onto the WALL texture (and, with
+    # dr_background_floor, the floor) per episode. The real cell has a poster and
+    # furniture behind the table that cannot be removed, and a flat grey wall
+    # (dr_background_gray) does not cover that: measured on the first real
+    # episodes, the whole background region is structured content the policy has
+    # never seen. Photos are the cheap stand-in.
+    # ⚠️ This changes the RENDERED frames, so it only reaches an offline stage-1
+    # arm through a re-render of the source replay (scripts/rerender_simdist_data.py).
+    dr_background_image: str = ""
+    dr_background_floor: int = 1        # also repaint the floor texture
     dr_base_height: float = 0.0         # +- metres on the robot base z
     # Residual base<->table misregistration (docs/infra.md §14a R1-R3). All of
     # them perturb the ROBOT BASE pose, never the table: what matters physically
@@ -272,6 +350,19 @@ class Sim2RealConfig:
     dr_base_yaw_deg: float = 0.0        # +- deg about world z      (R1: yaw snap 1.2 deg)
     dr_base_tilt_deg: float = 0.0       # +- deg about world x AND y (R2: table tilt 0.99 deg)
     dr_base_xy: float = 0.0             # +- metres per axis in x,y (R3: two solves ~7 mm apart)
+
+    # Placement tolerance of a peg that is ARENA geometry rather than a sampled
+    # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so
+    # the task's own reset sampler never touches them and every episode sees the
+    # peg in exactly one spot). Applied per reset as a body pose offset.
+    # ⚠️ For a STATE policy this perturbation is UNOBSERVABLE: Square's 23-dim
+    # obs carries SquareNut pose + proprio only, no peg. So it is noise the
+    # policy must absorb, not information it can use, and the usable range is
+    # bounded by the nut/peg clearance (45.4 mm hole vs 32 mm peg => 6.7 mm per
+    # side when the yaw is aligned, ~0 at 45 deg of yaw error). A PIXEL policy
+    # does see it. Measure before picking a value -- docs/infra.md §15k.
+    dr_peg_xy: float = 0.0              # +- metres per axis in x,y
+    dr_peg_yaw_deg: float = 0.0         # +- deg about world z
     # Camera mounting error, applied ON TOP of the measured extrinsics. This is
     # the residual a calibration cannot remove; your PARK solve quoted
     # 1.0 deg / 11.4 mm, which is the right order for these.
@@ -286,14 +377,22 @@ class Sim2RealConfig:
             self.dr_background_gray != (0.0, 0.0),
             self.dr_light_diffuse != (1.0, 1.0), self.dr_light_ambient != (0.0, 0.0),
             self.dr_light_specular != (1.0, 1.0), self.dr_light_dir, self.dr_light_pos,
+            self.dr_light_shadow_n,
             self.dr_base_height, self.dr_cam_pos, self.dr_cam_rot_deg,
-            self.dr_cam_fovy_deg, self.any_base_dr()])
+            self.dr_cam_fovy_deg, self.any_base_dr(), self.any_peg_dr(),
+            bool(self.dr_background_image)])
 
     def any_base_dr(self) -> bool:
         """True when the robot base pose is randomised (the OSC must re-latch)."""
         return bool(self.enabled) and any([
             self.dr_base_height, self.dr_base_yaw_deg, self.dr_base_tilt_deg,
             self.dr_base_xy])
+
+    def any_peg_dr(self) -> bool:
+        """True when an arena peg is randomised. Deliberately NOT part of
+        any_base_dr: that one means the ROBOT moved and the OSC must re-latch,
+        which a peg never causes."""
+        return bool(self.enabled) and any([self.dr_peg_xy, self.dr_peg_yaw_deg])
 
 
 # ---------------------------------------------------------------- application
@@ -345,6 +444,85 @@ def apply_cell_arena(env, cfg: Sim2RealConfig) -> None:
     env._s2r_arena_applied = True
 
 
+
+# Shadow-map settings used whenever the strip is on. Module-level so a render
+# experiment can sweep them without a config field: the frustum has to cover a
+# light 1.6 m up (default 0.6 clips into visible rectangles on the table) and
+# the resolution has to keep the penumbra from looking like stair steps.
+SHADOW_SCALE = 1.2
+SHADOW_SIZE = 8192
+
+
+def _line_light_offsets(cfg: Sim2RealConfig) -> Optional[np.ndarray]:
+    """Base-frame offsets of the strip's point samples, or None if n<=1."""
+    n = int(getattr(cfg, "light_line_n", 1) or 1)
+    if n <= 1:
+        return None
+    L = float(getattr(cfg, "light_line_len", 0.0) or 0.0)
+    t = np.linspace(-0.5, 0.5, n) * L
+    return np.stack([t, np.zeros(n), np.zeros(n)], axis=1)
+
+
+def apply_line_lights(env, cfg: Sim2RealConfig) -> None:
+    """Turn the arena's single light into a strip of `light_line_n` lights.
+
+    Has to happen on the MJCF, before `_initialize_sim` compiles it -- the light
+    COUNT is structural, unlike every other lighting knob. Wraps `_load_model`
+    for the same reason `apply_cell_arena` does (hard_reset rebuilds the arena
+    every episode). Each copy is dimmed by 1/n so the total flux is unchanged,
+    which also means the captured nominal (and therefore every dr_light_*
+    multiplier) keeps its meaning. Idempotent; takes effect on the next reset.
+
+    ⚠️ Changes `m.nlight` ⇒ changes the length of `capture_model_state`'s vector
+    ⇒ pixel data recorded with a different `light_line_n` cannot be re-rendered.
+    """
+    n = int(getattr(cfg, "light_line_n", 1) or 1)
+    if not cfg.enabled or n <= 1 or getattr(env, "_s2r_lights_applied", False):
+        return
+    assert n <= 8, (
+        f"light_line_n={n}: MuJoCo renders at most 8 lights, the extra ones "
+        "are silently dropped (and the 1/n dimming would then be wrong)")
+    inner = env._load_model
+
+    def load_model():
+        inner()
+        wb = env.model.worldbody
+        lights = wb.findall("light")
+        if not lights:
+            return
+        proto = lights[0]
+        # MuJoCo's own <light> defaults, needed because the arena writes neither:
+        # an absent attribute is NOT zero, so "scale what is written" silently
+        # left diffuse at 0.7 per light and made the strip n x too bright.
+        MJ_DEFAULT = {"diffuse": "0.7 0.7 0.7", "specular": "0.3 0.3 0.3"}
+        for li in lights:
+            for attr, dflt in MJ_DEFAULT.items():
+                v = li.get(attr) or dflt
+                li.set(attr, " ".join(f"{float(x) / n:.6g}" for x in v.split()))
+        import copy as _copy
+        for _ in range(n - 1):
+            wb.append(_copy.deepcopy(proto))
+        # Each light gets its own shadow map, and the default frustum
+        # (shadowscale 0.6) is too small for a light 1.6 m up: the maps clip
+        # into visible RECTANGLES on the table. Widen it and raise the
+        # resolution, or the strip looks like a rendering bug rather than a
+        # soft shadow.
+        import xml.etree.ElementTree as _ET
+        vis = env.model.root.find("visual")
+        if vis is None:
+            vis = _ET.SubElement(env.model.root, "visual")
+        mp = vis.find("map")
+        if mp is None:
+            mp = _ET.SubElement(vis, "map")
+        mp.set("shadowscale", str(SHADOW_SCALE))
+        ql = vis.find("quality")
+        if ql is None:
+            ql = _ET.SubElement(vis, "quality")
+        ql.set("shadowsize", str(SHADOW_SIZE))
+
+    env._load_model = load_model
+    env._s2r_lights_applied = True
+
 def apply_init_qpos(env, cfg: Sim2RealConfig) -> None:
     """Set the robot's reset joint configuration via robosuite's own
     `initial_qpos` robot config. NOT `env.robots[0].init_qpos`: `_load_robots`
@@ -359,6 +537,69 @@ def apply_init_qpos(env, cfg: Sim2RealConfig) -> None:
     n = len(env.robots[0].init_qpos)
     assert q.shape == (n,), f"sim2real.init_qpos has {q.shape[0]} joints, robot has {n}"
     env.robot_configs[0]["initial_qpos"] = q
+
+
+def cell_layout_bounds(cfg: Sim2RealConfig, table_centre_xy) -> Optional[dict]:
+    """The cell's object layout as MimicGen-convention bounds (TABLE frame).
+
+    The yaml states it in BASE frame because that is what a tape measure on the
+    bench gives; the env wants it relative to the table centre."""
+    if cfg.layout_needle_x is None and cfg.layout_tripod_x is None:
+        return None
+    cx, cy = float(table_centre_xy[0]), float(table_centre_xy[1])
+
+    def rng(v, c):
+        return None if v is None else (float(v[0]) - c, float(v[1]) - c)
+
+    def rot(v):
+        return None if v is None else (np.radians(float(v[0])), np.radians(float(v[1])))
+
+    return {"needle": {"x": rng(cfg.layout_needle_x, cx), "y": rng(cfg.layout_needle_y, cy),
+                       "z_rot": rot(cfg.layout_needle_z_rot_deg)},
+            "tripod": {"x": rng(cfg.layout_tripod_x, cx), "y": rng(cfg.layout_tripod_y, cy),
+                       "z_rot": rot(cfg.layout_tripod_z_rot_deg)}}
+
+
+def apply_cell_layout(env, cfg: Sim2RealConfig) -> bool:
+    """Override the env's reset distribution with the cell's layout. Idempotent.
+
+    Wraps `_get_initial_placement_bounds` like apply_workspace_offset does, so it
+    survives robosuite's per-reset rebuild and composes with the task's own
+    `reference` (the table offset). Returns True if anything was installed.
+    ⚠️ Takes precedence over workspace_offset for the fields it sets -- having
+    both shift the same object would double-count."""
+    if not cfg.enabled or getattr(env, "_s2r_layout_applied", False):
+        return False
+    if cfg.layout_needle_x is None and cfg.layout_tripod_x is None:
+        return False          # no layout stated -> nothing to install, and the
+                              # base_xy requirement below does not apply
+    # Table centre in BASE frame = -base_xy, taken from the CONFIG. Reading it off
+    # the env instead is an ordering trap: this hook runs before the arena patch,
+    # so env.table_offset / the base body still hold robosuite's defaults and the
+    # centre comes out (0.56, 0) instead of (0.489, 0.034) -- the layout then
+    # lands ~7 cm off with no error (measured: needle x fell back onto D0's range).
+    assert cfg.base_xy is not None, "cell layout needs base_xy (arena_from_real2sim)"
+    tc = -np.asarray(cfg.base_xy, dtype=np.float64)
+    bounds = cell_layout_bounds(cfg, tc)
+    if bounds is None:
+        return False
+    inner = env._get_initial_placement_bounds
+
+    def overridden():
+        out = {}
+        for name, b in inner().items():
+            b = dict(b)
+            spec = bounds.get(name)
+            if spec is not None:
+                for k in ("x", "y", "z_rot"):
+                    if spec[k] is not None:
+                        b[k] = spec[k]
+            out[name] = b
+        return out
+
+    env._get_initial_placement_bounds = overridden
+    env._s2r_layout_applied = True
+    return True
 
 
 def apply_workspace_offset(env, cfg: Sim2RealConfig) -> None:
@@ -409,7 +650,8 @@ def _small_rot(rng, deg):
     return Rx @ Ry @ Rz
 
 
-def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] = None):
+def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] = None,
+                   bg_index: Optional[int] = None):
     """Apply the cell config to a FRESHLY RESET robosuite env, in place.
 
     Call AFTER env.reset() (hard_reset rebuilds the model, so anything written
@@ -433,6 +675,10 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
         if hx > 0 and hy > 0:
             sz = m.geom_size[gid].copy()
             m.geom_size[gid] = np.array([float(hx), float(hy), sz[2]])  # z untouched
+        if tuple(cfg.table_visual_offset) != (0.0, 0.0):
+            gp = m.geom_pos[gid].copy()
+            m.geom_pos[gid] = np.array([float(cfg.table_visual_offset[0]),
+                                        float(cfg.table_visual_offset[1]), gp[2]])
         if cfg.table_rgb is not None:
             rgb = np.asarray(cfg.table_rgb, dtype=np.float64)
             if cfg.dr_table_rgb_tint:
@@ -441,6 +687,13 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
                 rgb = rgb * _rand(rng, cfg.dr_table_rgb_gain)
             m.geom_matid[gid] = -1        # drop the ceramic texture
             m.geom_rgba[gid] = np.array([*np.clip(rgb, 0.0, 1.0), 1.0])
+
+    if cfg.hide_table_legs:
+        for gi in range(m.ngeom):
+            nm = _geom_name(m, gi) or ""
+            if nm.startswith("table_leg") and nm.endswith("_visual"):
+                rgba = m.geom_rgba[gi].copy(); rgba[3] = 0.0
+                m.geom_rgba[gi] = rgba
 
     # ---- task objects ------------------------------------------------------
     if cfg.object_rgb is not None:
@@ -460,7 +713,16 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
                                         float(m.geom_rgba[gi][3])])
 
     # ---- background -------------------------------------------------------
-    if cfg.dr_background_gray != (0.0, 0.0):
+    # ⚠️ gray and photo are two ways to repaint the SAME surfaces, and they used
+    # to silently fight: gray sets geom_matid = -1 (drop the material so the flat
+    # rgba shows), but `_bg_texids` resolves the photo's target THROUGH the
+    # material and skips any geom with matid < 0. With both knobs on -- which is
+    # what the shipped cell asks for -- the photo therefore had no target at all
+    # and 100k episodes were collected with flat gray backgrounds, no error, no
+    # warning. Fix: when a photo set is configured, the photo owns these geoms
+    # and the material must be left intact.
+    _photo_owns_bg = bool(cfg.dr_background_image)
+    if cfg.dr_background_gray != (0.0, 0.0) and not _photo_owns_bg:
         for nm in _WALL_GEOMS:
             g = _geom_id(m, nm)
             if g is None:
@@ -469,29 +731,90 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
             m.geom_matid[g] = -1
             m.geom_rgba[g] = np.array([v, v, v, 1.0])
 
+    # ---- matched lighting (before the DR jitter, which composes on top) ----
+    _lit_pos = _lit_dir = None
+    # per-light matched pose, so the DR jitter composes on EACH strip sample
+    # rather than on whichever one the loop happened to end on.
+    _matched_pos: dict = {}
+    _matched_dir: dict = {}
+    _matched_diffuse: dict = {}
+    if cfg.light_pos is not None or cfg.light_target is not None or \
+            cfg.light_directional is not None or cfg.light_castshadow is not None:
+        bid = _body_id(m, "robot0_base")
+        bp = sim.data.body_xpos[bid].copy() if bid is not None else np.zeros(3)
+        bR = sim.data.body_xmat[bid].reshape(3, 3).copy() if bid is not None else np.eye(3)
+        _line_off = _line_light_offsets(cfg)
+        for li in range(m.nlight):
+            if cfg.light_directional is not None:
+                m.light_directional[li] = int(cfg.light_directional)
+            if cfg.light_castshadow is not None:
+                m.light_castshadow[li] = int(cfg.light_castshadow)
+            if cfg.light_diffuse is not None:
+                m.light_diffuse[li] = float(cfg.light_diffuse) / max(1, m.nlight)
+                _matched_diffuse[li] = m.light_diffuse[li].copy()
+            if cfg.light_pos is not None:
+                _p = np.asarray(cfg.light_pos, dtype=np.float64)
+                if _line_off is not None and li < len(_line_off):
+                    _p = _p + _line_off[li]
+                _lit_pos = bp + bR @ _p
+                m.light_pos[li] = _lit_pos
+                _matched_pos[li] = _lit_pos
+            if cfg.light_target is not None:
+                src = _lit_pos if _lit_pos is not None else np.asarray(m.light_pos[li])
+                d = (bp + bR @ np.asarray(cfg.light_target, dtype=np.float64)) - src
+                n = np.linalg.norm(d)
+                if n > 1e-8:
+                    _lit_dir = d / n
+                    m.light_dir[li] = _lit_dir
+                    _matched_dir[li] = _lit_dir
+
+    # ---- how many strip lights cast a shadow (umbra depth) -----------------
+    if cfg.light_shadow_n is not None:
+        k = int(cfg.light_shadow_n)
+        if cfg.dr_light_shadow_n:
+            k += int(rng.integers(-cfg.dr_light_shadow_n, cfg.dr_light_shadow_n + 1)
+                     if hasattr(rng, "integers") else
+                     rng.randint(-cfg.dr_light_shadow_n, cfg.dr_light_shadow_n + 1))
+        k = int(np.clip(k, 0, m.nlight))
+        m.light_castshadow[:] = 0
+        if k > 0:
+            # spread the casters along the strip, so the penumbra stays even
+            m.light_castshadow[np.linspace(0, m.nlight - 1, k).astype(int)] = 1
+
     # ---- lighting ---------------------------------------------------------
     if nominal is not None and any([cfg.dr_light_diffuse != (1.0, 1.0),
                                     cfg.dr_light_ambient != (0.0, 0.0),
                                     cfg.dr_light_specular != (1.0, 1.0),
                                     cfg.dr_light_dir, cfg.dr_light_pos]):
+        # one draw for the whole rig -- see dr_light_pos
+        _rig_dpos = (rng.uniform(-cfg.dr_light_pos, cfg.dr_light_pos, 3)
+                     if cfg.dr_light_pos else np.zeros(3))
         for li in range(m.nlight):
             if cfg.dr_light_diffuse != (1.0, 1.0):
-                m.light_diffuse[li] = np.clip(
-                    nominal["light_diffuse"][li] * _rand(rng, cfg.dr_light_diffuse), 0, 1)
+                # compose on the MATCHED value, not on the arena snapshot: the
+                # snapshot is taken before the matched lighting is written, so
+                # using it silently discards `light_diffuse` (the fitted value
+                # had literally no effect on any DR sample until this was fixed).
+                _b = _matched_diffuse.get(li, nominal["light_diffuse"][li])
+                m.light_diffuse[li] = np.clip(_b * _rand(rng, cfg.dr_light_diffuse), 0, 1)
             if cfg.dr_light_ambient != (0.0, 0.0):
-                m.light_ambient[li] = np.clip(_rand(rng, cfg.dr_light_ambient), 0, 1)
+                # ABSOLUTE range, but it is a TOTAL: every light contributes its
+                # own ambient, so with an n-light strip the draw must be split
+                # n ways or the scene gets n x the intended fill (the strip made
+                # [0.02, 0.12] behave like [0.16, 0.96] and washed the board out).
+                m.light_ambient[li] = np.clip(_rand(rng, cfg.dr_light_ambient), 0, 1) / max(1, m.nlight)
             if cfg.dr_light_specular != (1.0, 1.0):
                 m.light_specular[li] = np.clip(
                     nominal["light_specular"][li] * _rand(rng, cfg.dr_light_specular), 0, 1)
             if cfg.dr_light_dir:
-                d = nominal["light_dir"][li] + rng.uniform(-cfg.dr_light_dir,
-                                                           cfg.dr_light_dir, 3)
+                _b = _matched_dir.get(li, nominal["light_dir"][li])
+                d = _b + rng.uniform(-cfg.dr_light_dir, cfg.dr_light_dir, 3)
                 n = np.linalg.norm(d)
                 if n > 1e-8:
                     m.light_dir[li] = d / n
             if cfg.dr_light_pos:
-                m.light_pos[li] = nominal["light_pos"][li] + rng.uniform(
-                    -cfg.dr_light_pos, cfg.dr_light_pos, 3)
+                _b = _matched_pos.get(li, nominal["light_pos"][li])
+                m.light_pos[li] = _b + _rig_dpos
 
     # ---- robot base height -------------------------------------------------
     # Physics-affecting (it moves the whole kinematic chain), so keep the range
@@ -522,6 +845,62 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
                 m.body_quat[bid] = mat2quat_wxyz(
                     Rz @ Ry @ Rx @ quat_wxyz2mat(nominal["base_quat"]))
 
+    # ---- photo background --------------------------------------------------
+    if cfg.dr_background_image and nominal is not None and "geom_matid" in nominal:
+        # A RE-RENDER restores model_state from an episode that was collected
+        # while the gray knob was still stripping geom_matid to -1, so the broken
+        # value comes straight back and _bg_texids finds no target again. Put the
+        # material back for the background geoms before resolving them. Harmless
+        # on the live path (the values are already the nominal ones).
+        for _nm in tuple(_WALL_GEOMS) + ("floor",):
+            _g = _geom_id(m, _nm)
+            if _g is not None and int(m.geom_matid[_g]) < 0 <= int(nominal["geom_matid"][_g]):
+                m.geom_matid[_g] = nominal["geom_matid"][_g]
+    if cfg.dr_background_image:
+        # bg_index makes the draw REPRODUCIBLE: which photo an episode got is
+        # recorded as an INDEX (background_files() is sorted), so the dataset can
+        # be rebuilt frame-identically without carrying 2.3 MB of pixels.
+        # ⚠️ The photo lives in `tex_rgb`, which is NOT in MODEL_STATE_FIELDS, so
+        # restore_model_state does NOT bring it back -- recording the index here
+        # is the only thing that makes a re-render reproduce the background.
+        # Collection left this unrecorded until 2026-09-23 and the replay gate
+        # failed with max |diff| 212 the moment photo backgrounds were turned on.
+        if bg_index is None:
+            _nbg = len(background_files(cfg.dr_background_image))
+            bg_index = int(rng.integers(_nbg) if hasattr(rng, "integers")
+                           else rng.randint(_nbg))
+        _applied = apply_background_image(env, cfg, rng, index=bg_index)
+        # None => no offscreen context (state-only env), i.e. no photo was
+        # painted; do not claim one.
+        setattr(env, "_s2r_bg_index", bg_index if _applied is not None else None)
+        # Never let this fail quietly again: if the targets could not be
+        # resolved, the run would train on a background that is not the one the
+        # config asks for, and nothing downstream would ever notice.
+        assert _applied is not None or getattr(sim, "_render_context_offscreen", None) is None, (
+            "dr_background_image is set but no wall/floor texture could be resolved "
+            "(_bg_texids returned nothing). Something stripped geom_matid before "
+            "this ran -- the photo would be silently ignored.")
+
+    # ---- arena pegs (Square) ----------------------------------------------
+    # Placement tolerance for a peg the task's sampler never touches. Composed
+    # from `nominal`, like every other DR here, so repeated resets on one model
+    # cannot accumulate. body_pos/body_quat are in MODEL_STATE_FIELDS, so the
+    # draw is captured by capture_model_state and a pixel re-render reproduces
+    # it exactly (the replay contract, docs/infra.md §14e).
+    if cfg.any_peg_dr() and nominal is not None:
+        for name, (p0, q0) in (nominal.get("peg_pose") or {}).items():
+            bid = _body_id(m, name)
+            if bid is None:
+                continue
+            if cfg.dr_peg_xy:
+                dxy = rng.uniform(-cfg.dr_peg_xy, cfg.dr_peg_xy, 2)
+                m.body_pos[bid] = p0 + np.array([dxy[0], dxy[1], 0.0])
+            if cfg.dr_peg_yaw_deg:
+                yaw = np.radians(rng.uniform(-cfg.dr_peg_yaw_deg, cfg.dr_peg_yaw_deg))
+                cz, sz = np.cos(yaw), np.sin(yaw)
+                Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+                m.body_quat[bid] = mat2quat_wxyz(Rz @ quat_wxyz2mat(q0))
+
     # ---- cameras -----------------------------------------------------------
     for cam in cfg.cameras:
         if cam.is_inert():
@@ -529,6 +908,121 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
         _apply_camera(env, m, sim, cam, cfg, rng)
 
     sim.forward()
+
+
+_BG_FILES: dict = {}
+
+
+def background_files(spec: str) -> list:
+    """Sorted image list for a "+"/","-separated set of directories (cached).
+
+    Sorted, so an index into this list is a STABLE identifier for "which photo"
+    -- that is what the re-render pass records per episode instead of the 2.3 MB
+    of pixels (the replay contract cannot carry the texture itself)."""
+    key = str(spec)
+    if key not in _BG_FILES:
+        exts = (".jpg", ".jpeg", ".png")
+        files = []
+        for d in key.replace("+", ",").split(","):
+            d = d.strip()
+            if not d:
+                continue
+            for root, _dirs, names in os.walk(d):
+                files += [os.path.join(root, n) for n in sorted(names)
+                          if n.lower().endswith(exts)]
+        files = sorted(files)
+        assert files, f"dr_background_image: no images found under {spec!r}"
+        _BG_FILES[key] = files
+    return _BG_FILES[key]
+
+
+def _bg_texids(m):
+    """(wall_texid, floor_texid); either may be None. Resolved through the geoms
+    rather than hard-coded ids, which differ per task/arena."""
+    wall = floor = None
+    for g in range(m.ngeom):
+        nm = _geom_name(m, g) or ""
+        mid = int(m.geom_matid[g])
+        if mid < 0:
+            continue
+        tid = int(m.mat_texid[mid])
+        if tid < 0:
+            continue
+        if nm.startswith("wall_") and wall is None:
+            wall = (tid, mid)
+        elif nm == "floor" and floor is None:
+            floor = (tid, mid)
+    return wall, floor
+
+
+def apply_background_image(env, cfg: Sim2RealConfig, rng=None, index=None):
+    """Paint a photo onto the wall (and floor) texture. Returns the file used.
+
+    Writes straight into `model.tex_rgb` and re-uploads that texture to the GPU;
+    `mat_texrepeat` is forced to 1 so the photo shows once instead of tiling.
+    A state-only env has no render context -- the write is then a harmless no-op.
+    """
+    if not cfg.enabled or not cfg.dr_background_image:
+        return None
+    sim = env.sim if hasattr(env, "sim") else env.env.sim
+    m = sim.model
+    ctx = getattr(sim, "_render_context_offscreen", None)
+    if ctx is None:
+        # No offscreen context => nothing is ever rendered from this env (a
+        # state-only RL run, or the bare MimicGen class). Decoding a photo and
+        # rewriting tex_rgb would be pure cost, and it is what made a state-only
+        # expert run pay for a randomisation it cannot see. Verified that this
+        # cannot silently skip a PIXEL episode: PixelRobosuite has the context
+        # already AT CONSTRUCTION, i.e. before the first reset() ever calls this.
+        return None
+    from PIL import Image
+    files = background_files(cfg.dr_background_image)
+    rng = rng if rng is not None else np.random
+    idx = int(index) if index is not None else int(rng.integers(len(files))
+                                                   if hasattr(rng, "integers")
+                                                   else rng.randint(len(files)))
+    path = files[idx % len(files)]
+    img = Image.open(path).convert("RGB")
+    tex = getattr(m, "tex_rgb", None)
+    if tex is None:                       # mujoco >= 3 renamed it
+        tex = m.tex_data
+    targets = [t for t in _bg_texids(m) if t is not None]
+    if not cfg.dr_background_floor:
+        targets = targets[:1]
+    for tid, mid in targets:
+        w, h = int(m.tex_width[tid]), int(m.tex_height[tid])
+        adr = int(m.tex_adr[tid])
+        tex[adr:adr + 3 * w * h] = np.asarray(img.resize((w, h)), dtype=np.uint8).ravel()
+        m.mat_texrepeat[mid] = [1.0, 1.0]
+        if ctx is not None:
+            # NOT ctx.upload_texture(): robosuite passes its own MjModel wrapper
+            # to mjr_uploadTexture, which only accepts the raw mujoco.MjModel.
+            import mujoco
+            ctx.gl_ctx.make_current()
+            mujoco.mjr_uploadTexture(getattr(m, "_model", m), ctx.con, tid)
+    return path
+
+
+def apply_cameras(env, cfg: Sim2RealConfig, rng=None) -> int:
+    """Apply ONLY the cell's camera extrinsics/intrinsics to an already-built sim.
+
+    Needed after `restore_model_state`: that vector carries cam_pos/cam_quat/
+    cam_fovy as they were WHEN THE EPISODE WAS COLLECTED, so restoring it silently
+    puts back the OLD camera even when the cell has since been re-calibrated --
+    a re-render with a new extrinsic would quietly produce the old view.
+    Returns the number of cameras written."""
+    if not cfg.enabled or not cfg.cameras:
+        return 0
+    sim = env.sim if hasattr(env, "sim") else env.env.sim
+    m = sim.model
+    n = 0
+    for cam in cfg.cameras:
+        if cam.is_inert():
+            continue
+        _apply_camera(env, m, sim, cam, cfg, rng if rng is not None else np.random)
+        n += 1
+    sim.forward()
+    return n
 
 
 def _apply_camera(env, m, sim, cam: RealCameraConfig, cfg: Sim2RealConfig, rng):
@@ -539,14 +1033,18 @@ def _apply_camera(env, m, sim, cam: RealCameraConfig, cfg: Sim2RealConfig, rng):
     R_cv = cam.rotation_opencv()
     p = np.asarray(cam.pos, dtype=np.float64)
 
-    if cfg.dr_cam_pos:
+    if cam.randomize and cfg.dr_cam_pos:
         p = p + rng.uniform(-cfg.dr_cam_pos, cfg.dr_cam_pos, 3)
-    if R_cv is not None and cfg.dr_cam_rot_deg:
+    if cam.randomize and R_cv is not None and cfg.dr_cam_rot_deg:
         R_cv = R_cv @ _small_rot(rng, cfg.dr_cam_rot_deg)
 
     if cam.frame == "base":
         bid = _body_id(m, "robot0_base")
         assert bid is not None, "sim2real: robot0_base not found"
+        fp, fR = d.body_xpos[bid].copy(), d.body_xmat[bid].reshape(3, 3).copy()
+    elif cam.frame == "hand":
+        bid = _body_id(m, "robot0_right_hand")
+        assert bid is not None, "sim2real: robot0_right_hand not found"
         fp, fR = d.body_xpos[bid].copy(), d.body_xmat[bid].reshape(3, 3).copy()
     elif cam.frame == "ee":
         sid = _site_id(m, "gripper0_grip_site")
@@ -573,9 +1071,114 @@ def _apply_camera(env, m, sim, cam: RealCameraConfig, cfg: Sim2RealConfig, rng):
 
     fovy = cam.resolved_fovy()
     if fovy > 0:
-        if cfg.dr_cam_fovy_deg:
+        if cam.randomize and cfg.dr_cam_fovy_deg:
             fovy += rng.uniform(-cfg.dr_cam_fovy_deg, cfg.dr_cam_fovy_deg)
         m.cam_fovy[cid] = float(fovy)
+
+
+# ---------------------------------------------------- render-replay contract
+# Every model field this module (or domain_shift) can write per episode. Storing
+# the RESULT -- not the RNG seed -- is deliberate: a seed only replays if the
+# draw ORDER never changes, and it already changed once (dr_base_height is drawn
+# first so old height-only configs keep reproducing). With the fields themselves
+# on disk, re-rendering is independent of the sampling code entirely.
+# Rendering a frame is a pure function of (these fields, qpos) => an offline pass
+# can reproduce any camera, byte for byte. Gate: scripts/test_rerender.py.
+MODEL_STATE_FIELDS = (
+    "body_pos", "body_quat", "geom_rgba", "geom_matid", "geom_size",
+    "light_diffuse", "light_ambient", "light_specular", "light_dir", "light_pos",
+    # dr_light_shadow_n picks WHICH lights cast shadows each episode. Left out
+    # until 2026-09-23, when photo backgrounds and the strip light went in and
+    # the replay gate failed at max |diff| 118 with everything else restored:
+    # the re-render drew its own shadow set. A field that is randomised per
+    # episode and not listed here is silently unreproducible.
+    "light_castshadow",
+    "cam_pos", "cam_quat", "cam_fovy",
+)
+# ⚠️ Adding a field changes the model_state VECTOR LENGTH. restore_model_state
+# asserts the length, and every dataset stamps `model_state_layout`, so old and
+# new data cannot be mixed -- change it only when no dataset depends on it.
+
+
+def _model_of(env):
+    sim = env.sim if hasattr(env, "sim") else env.env.sim
+    return sim.model
+
+
+def model_state_layout(env) -> list:
+    """[(field, shape), ...] for the flat vector; constant for a given task+cell,
+    so it is stored once per dataset rather than per episode."""
+    m = _model_of(env)
+    return [(f, tuple(np.asarray(getattr(m, f)).shape)) for f in MODEL_STATE_FIELDS]
+
+
+def capture_model_state(env) -> np.ndarray:
+    """Flat float64 snapshot of every per-episode-mutable model field."""
+    m = _model_of(env)
+    return np.concatenate([
+        np.asarray(getattr(m, f), dtype=np.float64).ravel() for f in MODEL_STATE_FIELDS])
+
+
+def restore_model_state(env, vec) -> tuple:
+    """Write a `capture_model_state` vector back. Restores the episode's DR draw
+    (base pose, lights, colours, camera) without re-running any sampling.
+
+    Returns the tuple of fields it could NOT restore because the vector predates
+    them. Callers must handle a non-empty result: those fields keep whatever the
+    previous episode left, which is a silent cross-episode dependency."""
+    m = _model_of(env)
+    vec = np.asarray(vec, dtype=np.float64)
+    sizes = [(f, int(np.prod(np.asarray(getattr(m, f)).shape)) or 1)
+             for f in MODEL_STATE_FIELDS]
+    want = sum(n for _, n in sizes)
+    n_have = int(vec.shape[0])
+    _skipped = ()
+    if n_have != want:
+        # A dataset recorded before a field JOINED MODEL_STATE_FIELDS is short by
+        # that field's width -- and the field may sit in the MIDDLE of the layout
+        # (light_castshadow went in between light_pos and cam_pos), so a plain
+        # prefix restore would misalign everything after it. Drop the known
+        # late additions, newest first, until the widths agree. The naive loop
+        # used to die inside reshape with a message naming the wrong field.
+        trial = list(sizes)
+        for f in _MODEL_STATE_ADDED_LATE:
+            if sum(n for _, n in trial) == n_have:
+                break
+            trial = [(g, n) for g, n in trial if g != f]
+        assert sum(n for _, n in trial) == n_have, (
+            f"model state length {n_have} matches neither this build's layout "
+            f"({want}) nor any prefix of it with the known late additions "
+            f"{list(_MODEL_STATE_ADDED_LATE)} removed. Restoring it would "
+            f"misalign the fields, so it is refused.")
+        dropped = [f for f, _ in sizes if f not in {g for g, _ in trial}]
+        if dropped and not getattr(restore_model_state, "_warned", False):
+            print(f"[sim2real] model_state is {n_have} long, this build wants "
+                  f"{want}: {dropped} joined MODEL_STATE_FIELDS after this "
+                  f"dataset was recorded, so they are NOT reproducible from it "
+                  f"and keep whatever the current model has.", flush=True)
+            restore_model_state._warned = True
+        sizes = trial
+        _skipped = tuple(dropped)
+    else:
+        _skipped = ()
+    i = 0
+    for f, n in sizes:
+        cur = np.asarray(getattr(m, f))
+        chunk = vec[i:i + n].reshape(cur.shape)
+        i += n
+        if np.issubdtype(cur.dtype, np.integer):
+            chunk = np.rint(chunk).astype(cur.dtype)
+        getattr(m, f)[:] = chunk
+    return _skipped
+
+
+# Fields appended to MODEL_STATE_FIELDS after data had already been recorded,
+# NEWEST FIRST. restore_model_state drops them in this order to read an older
+# vector. Add to the front whenever the tuple above grows.
+_MODEL_STATE_ADDED_LATE = ("light_castshadow",)
+
+
+PEG_BODIES = ("peg1", "peg2")
 
 
 def snapshot_visual_nominal(env) -> dict:
@@ -586,6 +1189,11 @@ def snapshot_visual_nominal(env) -> dict:
     m = sim.model
     bid = _body_id(m, "robot0_base")
     return {
+        # geom_matid is here for ONE reason: dr_background_gray used to strip it
+        # to -1, and a re-render restores that -1 out of model_state, after which
+        # the photo background can no longer resolve its target. Keeping the
+        # pristine value lets apply_sim2real put the material back.
+        "geom_matid": m.geom_matid.copy(),
         "light_diffuse": m.light_diffuse.copy(),
         "light_ambient": m.light_ambient.copy(),
         "light_specular": m.light_specular.copy(),
@@ -593,6 +1201,10 @@ def snapshot_visual_nominal(env) -> dict:
         "light_pos": m.light_pos.copy(),
         "base_pos": m.body_pos[bid].copy() if bid is not None else None,
         "base_quat": m.body_quat[bid].copy() if bid is not None else None,
+        # Arena pegs (Square). Absent on Threading -> empty dict -> inert.
+        "peg_pose": {n: (m.body_pos[i].copy(), m.body_quat[i].copy())
+                     for n in PEG_BODIES
+                     for i in [_body_id(m, n)] if i is not None},
     }
 
 
@@ -653,6 +1265,24 @@ def load_sim2real(path) -> Sim2RealConfig:
     import yaml
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
+
+    # `inherit: <relative path>` -- one cell file built on another. The DROID
+    # cell is one physical bench: the camera solve, the table colour and the DR
+    # widths are properties of the room, not of the task, so a per-task file
+    # that restated them would silently go stale the next time the cameras are
+    # calibrated (exactly the class of drift docs/infra.md §14b is about).
+    # Child keys win; `cameras` is replaced wholesale, not merged per camera,
+    # because a half-overridden extrinsic is never what anyone means.
+    parent = raw.pop("inherit", None)
+    if parent is not None:
+        import os as _os
+        ppath = parent if _os.path.isabs(parent) else _os.path.join(
+            _os.path.dirname(_os.path.abspath(path)), parent)
+        with open(ppath) as f:
+            base = yaml.safe_load(f) or {}
+        assert "inherit" not in base, f"{ppath}: inherit chains are not supported"
+        base.update(raw)
+        raw = base
 
     cams = []
     for i, c in enumerate(raw.pop("cameras", []) or []):

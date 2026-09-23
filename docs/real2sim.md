@@ -539,6 +539,24 @@ agentview+eye_in_hand@96 以备 pixel）。cfg：`peg_insertion_state_source_mlp
 - 教训：**"collision 从 STL 来"是错觉** —— 视觉 mesh `contype=0`，碰撞是手摆的 primitive。
   改任务几何后必须**把碰撞体画出来叠在视觉上看一眼**，并在真 demo 上核对目标位置。
 
+### §5a2 ★★★ 成功判据可被 hack + 墙是软的（2026-09-23 发现并修复）
+MimicGen 数据（`scripts/gen_peg_mimicgen.py`，10 条脚本种子 → 1000，board ±10 mm/±5°）训出的
+IBRL 报 **0.86**（独立 n=100），但几乎全是**斜着把 peg 楔进墙里**：成功局墙穿透中位 **8.2 mm**
+（max 42）、倾角中位 11.5°、**62 步**成功（专家 191 步）；穿透 ≤2 mm 的合规成功只有 **0.14**。
+测量工具 `scripts/verify_peg_ibrl.py`（`--expert 1` = 同 env/同 seed 的脚本专家基线）。
+- 根因 ①：`_check_success` 只要 tip 进孔柱且比板面低 **15 mm**（板厚 41）⇒ 刚过口就算。
+- 根因 ②：墙用 MuJoCo 默认软接触（solref 0.02 / solimp 0.9–0.95）⇒ 持续推力下连**专家**都能
+  压进墙 21–40 mm（它之前只测出 0.53 mm 是因为 15 mm 就停了）。MimicGen 开环重放也有 45% 是挤进去的。
+- 修法（`env/peg_insertion.py` 新默认，旧值可传参复现）：墙 `solref (0.004,1)`（= 2×timestep，
+  最硬的稳定值）+ `solimp (0.99,0.999,0.001)`、`solmix 1000`（只作用在 peg-墙对，抓取不变）；
+  `insert_depth 0.030`；`success_max_tilt 5°`。
+- 验证：专家 **0.95**（n=60，穿透 ≤0.43 mm，倾角 ≤0.7°，201 步）；同一个 hack policy **0.84→0.04**；
+  smoke `[5]` 加了"刚过口"与"倾斜 10°"两个必须判负的用例。
+- 连带：MimicGen 生成率 ~57–70% → **17%**（插入噪声 0.05）/ **35%**（插入噪声 0，n=200 各，
+  z≈4.2 ⇒ 0.05≈2.5 mm/步 > 1.26 mm 间隙）；新 demo 穿透 ≤0.18 mm、倾角 ≤3.7°、插深中位 39.6 mm。
+- ⚠️ **2026-09-23 之前所有 peg 分数（含 v3 脚本链 IBRL 0.95）都是在旧判据+软墙下测的**，
+  引用前先用 `verify_peg_ibrl.py` 复查。重跑链：`TAG=_hard bash scripts/pipeline_peg_mimicgen.sh`。
+
 ### §5b 提交链（**已提交 2026-09-15**：collect 5465185 → peg_bc 5465186 → peg_ibrl 5465187）
 ```bash
 J1=$(sbatch --parsable scripts/slurm/collect_peg_demos.slrm)

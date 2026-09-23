@@ -1,0 +1,30 @@
+# Square on the real cell WITH the calibrated wrist camera -- the cell the
+# Square pixel stage-1 trains/evals in. Mirrors Threading's pair exactly:
+#   collection cell  square_real_cell.yaml                  (agentview only)
+#   training cell    square_real_cell_calibrated_wrist.yaml (this file)
+# The wrist frames in the dataset are re-rendered from stored sim_state with the
+# SAME calibration (docs/infra.md §14e / §15i), so this file must differ from the
+# collection cell in `cameras` ONLY -- scripts/test_sim2real.py §L checks that.
+#
+# Everything (arena, agentview solve, calibrated wrist, dr_*) comes from the
+# Threading calibrated-wrist cell; only the two task keys of
+# square_real_cell.yaml are restated. Keep them identical to that file.
+inherit: threading_real_cell_calibrated_wrist.yaml
+workspace_offset: [0.071, -0.034]
+object_geom_prefixes: ["SquareNut", "peg1", "peg2"]
+
+# --------------------------------------------------------- PEG PLACEMENT DR
+# The square peg is ARENA geometry (pegs_arena.xml), so Square's own reset
+# sampler never touches it and without this it sits in exactly one spot every
+# episode. ⚠️ It is NOT in the 23-dim state obs, so for the STATE expert this is
+# unobservable noise bounded by the nut/peg clearance (45.4 mm hole vs 32 mm peg
+# => 6.7 mm per side); the PIXEL student does see it and can learn it.
+# Measured dose-response, expert model0.pt, n=200/cell, sigma=0.1 (§15k):
+#   0 mm 0.985 | 2 mm 0.970 | 5 mm 0.970 | 5 mm+3deg 0.990 | 10 mm 0.925 | 10 mm+5deg 0.935
+# The knee sits between 5 and 10 mm, exactly where the clearance says it should.
+# 5 mm = 75% of the clearance and costs nothing measurable; yaw to 5 deg is free
+# (rotating a square peg by a few degrees barely eats the gap).
+# ⚠️ Baked per episode into model_state => a pixel re-render reproduces the draw,
+# but changing this number invalidates collected episodes. Set it before采集.
+dr_peg_xy: 0.005
+dr_peg_yaw_deg: 3.0

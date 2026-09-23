@@ -19,12 +19,14 @@ Last updated: 2026-09-18
 | **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **★★★ §48 5-seed 重做（已完成）：ensemble 复现 +0.258（撤回 §47 的 null）、anchor 不复现 −0.068（撤回 §47 的 +0.432）；§44 三项增广已实现 + `DEMO_OFFSET`** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~1120 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要** · **★§41d 四任务 48 格复现（dynamics 12/12 正；target value 只在 Threading 崩；TPA 是反例；★`learned+V_tgt` 列被 decode 误差废掉）**。 |
-| **`docs/infra.md`** | ~490 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）** · **§14 sim2real cell 与 real2sim 共用 arena（`arena_from_real2sim`）· §14d RealCell 全部随机化汇总**。 |
+| **`docs/infra.md`** | ~915 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）** · **§14 sim2real cell 与 real2sim 共用 arena（`arena_from_real2sim`）· §14d RealCell 全部随机化汇总 · ★§14e pixel 数据的重放契约（存 `sim_state`+`model_state` ⇒ 相机可事后重渲染）+ 校准腕相机 + 「腕相机在插入瞬间 0.0% 可见」** · **★§15 Square_RealCell（同一 bench 换任务）：cell yaml 的 `inherit`、`workspace_offset` 推导、rotw1 由类携带；★§15b Square 的 peg 是 arena 几何 ⇒ 抬桌会把柱子埋掉且不报错；★§15f2 source 专家 **0.96**（= Threading 的 0.957），IBRL 前 120k 全 0.00 是正常冷启动；§15f3 `[EVAL ENV]` 曾把 rotw1 印成 FULL；§15i Square pixel 数据的采集配方（★数据已随 09-23 的 cell 大改删除，方法仍有效）；**★§15j cell 大改后谁作废谁不作废：pixel 全废、Threading state 也废，但 Square 的 state 线（含 0.96 专家）不废 —— `layout_*` 按物体名匹配，Square 的 `nut` 不命中；★§15k 方柱扰动 `dr_peg_xy` 5mm/`dr_peg_yaw_deg` 3°（拐点与 6.7mm 间隙一致；**对 state 是不可观测噪声、对 pixel 才是信息**）；§15l 相机视角对 state 严格为零、对 pixel 是全部，Square 的取景余量是 Threading 的 7 倍；**★§15m 照片背景/软阴影让重放契约失效过：`tex_rgb` 与 `light_castshadow` 每局随机却没被捕获（212/118）；且逐字节判据已不可能，gate 改为「与渲染器自身的重复噪声比」**；§15n 采集就绪状态与成本（0.98 / 3.6 条每秒 / 2.29 MB 每条）**。 |
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
 | `docs/flow_qc_ug.md` | ~110 | （早于本次拆分就存在）flow actor + Q-chunking + UG 的在线 model-free RL 方案书 —— "不再修 SimDist、改把 policy 做强"那条支线。 |
 | **`docs/pixel-progress.md`** | ~112 | **做 pixel/视觉版之前必读 —— 现在是完整实验日志。** 所有已测数字：stage-1 四个 checkpoint（pixel 0.968/0.980 ≥ state）、target adapt 的 2×2（state 0.540 / pixel 0.028；dynamics-only 0.393 vs 0.023）、demo-count 扫（pixel 0.08→0.24，**state 0.360→0.75**）、latent probe（含它**不能**支撑的结论）、编码器 bench、环境坑。 |
 | `docs/pixel-gap-closing-prompt.md` | ~230 | 要接着推 pixel 的时候：交给 agent 的完整任务书（Phase A 增广 / B 数据对齐 state / C 224+ResNet-18），含活跃任务共用 checkout 的风险与回归门。
+| **`docs/real-teleop-requirements-EN.md`** | ~200 | **发给真机那边的英文需求书**（20 Hz、动作约定、两套栈的 EE 坐标系差异、相机原生内参与不裁剪、摆放、成功标注、逐次 checklist），含已收到 4 条数据的验收结论。 |
+| **`docs/real-teleop-stage2.md`** | ~140 | **真机采 stage-2 遥操作 demo 之前必读**：动作约定（20 Hz、相对实测 TCP、左乘、只看夹爪符号）、prop 的两个坑（世界系而非 base 系 / 位置是 TCP 姿态是 hand body）、相机裁剪、hdf5 契约；采完跑 `scripts/validate_real_demos.py`。 |
 | **`docs/real2sim.md`** | ~90 | **真机方向（sim2real via real2sim）的唯一真源**。架构决定 = MuJoCo + `_GaussianRenderer` batched gsplat、**不用 PolaRiS/Isaac**（全部实测：PolaRiS 3.98 steps/s、Isaac 固定地板 173 ms/step vs gsplat 558 tps/GPU@2cam·763k）；vertical slice 已通（PolaRiS 机器人 splat MIT+metric，丢 `panda_link0`，per-body 校正 + 4 个坑）；任务 = 方形 peg-in-hole ~3 mm/边（§39 地板 1.3 mm）；阶段 A–F 现状表。job 提交用 `aip-rhinehar`（FairShare 远好于 aip-gigor）。 |
 | **`CLAUDE_ARCHIVE.md`** | ~2020 | 只在需要回查已归档分支（§10/11/13/14/15/16/18/19/20/21/22/23）时。代码在本地 `_archive/`，不随仓库发布。 |
 
@@ -40,6 +42,9 @@ Last updated: 2026-09-18
 | **Square_D0 (rotw1)** | 0.98 | **0.98–1.00** | anchor **0.837**(10seed) / 0.886(d600) | tasks §41 · **§41b 拆账** |
 | **Coffee_D0** | 0.998 (σ.02) / **0.938** (σ.1) | **0.982** (C50) / 0.96 (C75) / 0.93 (G5x) | **0.907**(G5x, 2seed) = oracle 0.94 | tasks §40–40e |
 | **PegInsertion_D0** (sim2real) | IBRL **0.95** (n=500, `--mode rl`) | 真机，未测 | stage-1 跑中 | real2sim §2d-z/§2d-w |
+
+sim2real（RealCell）线的 source 专家（同一张 DROID bench，n=300 独立重评，σ=0.1）：
+**Threading_RealCell 0.957**（strict） · **Square_RealCell_RotW1 0.96**（strict 不适用，infra §15f2）。
 
 Threading target 的参考线阶梯（同一 harness，n≥300）：
 `policy 头裸跑 0.37–0.42` < `plain SimDist MPPI 0.88` < `dynens MPPI 0.962`
@@ -524,5 +529,13 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
 **`docs/infra.md`** — §3 domain shift 框架与全部旋钮 · §4 flow BC · §5 source/target eval
 （σ 初始化、TopkSaver、CLI flag）· §5b RNN-GMM/Diffusion · §5c strict success ·
 §6 三任务配置表 · §7 已知坑 · §12 Threading target 的 dynamics-only 定义。
+- **§15** ★ **Square_RealCell**：同一张真机 bench 换任务。**§15b 三条「只靠 wrapper hook 会静默失败」**
+  （其中 ③ Square 独有且致命：peg1/peg2 是 `pegs_arena.xml` 里写死世界坐标的 arena 几何，抬桌
+  113 mm 后柱子露出部分 130→**17 mm**，任务几何上不可能且零报错 —— 搬任何新任务上 real cell
+  都要先查「任务的目标物是不是 arena 的一部分」）；§15a cell yaml 的 `inherit`（连带：provenance
+  快照必须哈希整条 inherit 链）；§15c `workspace_offset=(0.071,−0.034)` 是纯 base 位移补偿，
+  **Threading 那 +0.10 的遮挡修正不可搬**；§15d rotw1 由**类**携带而不是 `init_dist` 旋钮
+  （生成不过 wrapper ⇒ 旋钮会让 demo 和 RL 两处各写一遍）；§15f 生成 86%/161 步、
+  **孔投影 14.5×17.6 px 对 Threading 的 3.9×6.0 `UNRESOLVABLE`**。
 
 **`docs/setup.md`** — §0 概览 · §1 环境（torch 2.7/cu128、mujoco 2.3.2、submodule）· §2 MimicGen 集成与数据转换。

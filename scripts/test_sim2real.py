@@ -19,6 +19,7 @@ import os
 os.environ.setdefault("MUJOCO_GL", "egl")
 import sys
 import numpy as np
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -318,22 +319,44 @@ def test_real2sim_arena():
             check(f"{tag}: {k}", np.allclose(a[k], a_ref[k], atol=1e-6),
                   f"{np.round(a[k], 5)} vs {np.round(a_ref[k], 5)}")
 
-    # objects keep their pose RELATIVE TO THE BASE vs the pre-arena cell
-    # (base (-0.56, 0), offset (0, 0.10)) -- the reach/occlusion checks were
-    # base-relative, so they carry over.
+    # Object placement. Which invariant applies depends on the cell:
+    #   * cell WITHOUT layout_* -> workspace_offset only, so the bounds must be
+    #     unchanged RELATIVE TO THE BASE vs the pre-arena cell (base (-0.56, 0),
+    #     offset (0, 0.10)); that is what makes the old reach/occlusion numbers
+    #     carry over.
+    #   * cell WITH layout_* -> the yaml states the bounds outright and WINS over
+    #     workspace_offset, so the check is that the realised base-frame bounds
+    #     equal the yaml to the metre. That is the check that catches the real
+    #     bug here: reading the table centre off the env instead of from base_xy
+    #     put the layout 7 cm off, silently, by falling back to D0's x range.
     old_base, old_off = np.array([-0.56, 0.0]), np.array([0.0, 0.10])
     b_d0 = make_env(Sim2RealConfig(enabled=1)); np.random.seed(0); b_d0.reset()
     raw = b_d0.env._get_initial_placement_bounds()
+    stated = {}
+    for obj in ("needle", "tripod"):
+        gx = getattr(cell, f"layout_{obj}_x"); gy = getattr(cell, f"layout_{obj}_y")
+        if gx is not None and gy is not None:
+            stated[obj] = (tuple(float(v) for v in gx), tuple(float(v) for v in gy))
     for tag, e in (("wrapper", rl), ("RealCell", gen), ("RealCell+hook", both)):
         m, d = e.env.sim.model, e.env.sim.data
         base = d.body_xpos[m.body_name2id("robot0_base")][:2]
         bnd = e.env._get_initial_placement_bounds()
-        ok = all(
-            np.allclose(np.array(bnd[k][ax]) - base[i],
-                        np.array(raw[k][ax]) + old_off[i] - old_base[i], atol=1e-6)
-            for k in raw for i, ax in enumerate(("x", "y")))
-        check(f"{tag}: object bounds unchanged relative to the base (no double offset)",
-              ok, str({k: (bnd[k]["x"], bnd[k]["y"]) for k in bnd}))
+        got = {k: tuple(tuple(np.array(bnd[k][ax]) - base[i]) for i, ax in
+                        enumerate(("x", "y"))) for k in bnd}
+        # `gen` is the bare RealCell class, which reads the SAME yaml, so it is
+        # held to the same rule as the two cell-configured envs.
+        if stated:
+            ok = all(np.allclose(got[k], stated[k], atol=1e-6) for k in stated)
+            check(f"{tag}: object bounds match the cell's stated layout", ok,
+                  f"{ {k: np.round(got[k], 4) for k in stated} } vs { stated }")
+        else:
+            ok = all(
+                np.allclose(np.array(bnd[k][ax]) - base[i],
+                            np.array(raw[k][ax]) + old_off[i] - old_base[i], atol=1e-6)
+                for k in raw for i, ax in enumerate(("x", "y")))
+            check(f"{tag}: object bounds unchanged relative to the base "
+                  f"(no double offset)", ok,
+                  str({k: (bnd[k]["x"], bnd[k]["y"]) for k in bnd}))
 
 
 def test_init_qpos():
@@ -423,6 +446,104 @@ def test_base_pose_dr():
           f"max drift {max(drift):.2f} mm")
 
 
+BG_DIR = "/user_data/Chenyang/bg_textures/val_256"
+
+
+def test_background_image():
+    print("\nL. photo background (dr_background_image)")
+    import dataclasses, os as _os
+    from env.sim2real import apply_background_image, background_files, load_sim2real
+    if not _os.path.isdir(BG_DIR):
+        check("background image set present", False, BG_DIR)
+        return
+    ypath = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                          "release/cfgs/sim2real/threading_real_cell_calibrated_wrist.yaml")
+    cell = load_sim2real(ypath)
+    cell = dataclasses.replace(cell, **{f.name: f.default
+                                        for f in dataclasses.fields(Sim2RealConfig)
+                                        if f.name.startswith("dr_")})
+    # the visual table must NOT hide the walls, or the knob cannot be seen at all
+    cell = dataclasses.replace(cell, table_visual_half=(0.37, 0.62))
+
+    def frame(env):
+        np.random.seed(0)
+        obs = env.reset()
+        obs = obs[0] if isinstance(obs, tuple) else obs
+        return obs["agentview"].numpy()
+
+    # A. default-off: byte-for-byte identical to the same cell without the knob
+    off1 = frame(make_env(cell))
+    off2 = frame(make_env(dataclasses.replace(cell, dr_background_image="")))
+    check("dr_background_image='' is byte-for-byte inert", np.array_equal(off1, off2))
+
+    # B. it BITES IN THE RENDERED IMAGE (not just in the texture array)
+    on = dataclasses.replace(cell, dr_background_image=BG_DIR)
+    env = make_env(on)
+    frames = []
+    for idx in (1000, 8000, 22000):
+        np.random.seed(0)
+        o = env.reset(); o = o[0] if isinstance(o, tuple) else o
+        apply_background_image(env.env, on, index=idx)
+        env.env.sim.forward()
+        r = env._extract_images(env.env._get_observations(force_update=True))
+        frames.append((r[0] if isinstance(r, tuple) else r)["agentview"].numpy())
+    d01 = np.abs(frames[0].astype(int) - frames[1].astype(int)).mean()
+    d02 = np.abs(frames[0].astype(int) - frames[2].astype(int)).mean()
+    check("different photos change the RENDERED frame", min(d01, d02) > 2.0,
+          f"mean |diff| {d01:.1f} / {d02:.1f}")
+    # The crop has to be DERIVED, not hard-coded: a fixed [90:130, 90:130] window
+    # was the IMAGE centre, which stopped being the TABLE centre as soon as the
+    # camera and the board changed -- it then straddled the wall and reported a
+    # 6.3 mean diff that looked like a background leak onto the table.
+    m_, d_ = env.env.sim.model, env.env.sim.data
+    cid_ = m_.camera_name2id("agentview")
+    cp_ = d_.cam_xpos[cid_].copy()
+    R_ = d_.cam_xmat[cid_].reshape(3, 3) @ np.diag([1.0, -1.0, -1.0])
+    res_ = frames[0].shape[-1]
+    f_ = (res_ / 2) / np.tan(np.radians(float(m_.cam_fovy[cid_])) / 2)
+    gid_ = m_.geom_name2id("table_visual")
+    pc_ = R_.T @ (d_.geom_xpos[gid_] - cp_)
+    u_ = int(round(f_ * pc_[0] / pc_[2] + res_ / 2))
+    v_ = int(round(f_ * pc_[1] / pc_[2] + res_ / 2))
+    r0, r1 = max(0, v_ - 20), min(res_, v_ + 20)
+    c0, c1 = max(0, u_ - 20), min(res_, u_ + 20)
+    delta_tbl = np.abs(frames[0][:, r0:r1, c0:c1].astype(int)
+                       - frames[1][:, r0:r1, c0:c1].astype(int)).mean()
+    check("the change is in the background, not on the table",
+          delta_tbl < 1.0,
+          f"crop around the projected table centre (row {r0}:{r1}, col {c0}:{c1}) "
+          f"mean |diff| {delta_tbl:.2f}")
+
+    # B2. the AUTOMATIC per-reset path, on the FIRST reset. B above calls
+    # apply_background_image() by hand, which proves the function works but NOT
+    # that reset() reaches it -- and "the hook exists but nobody calls it" is the
+    # exact failure that cost a multi-day run once (iron law 26). The first
+    # reset is the one at risk: the offscreen render context is created lazily,
+    # so the upload can be skipped on episode 1 of every worker.
+    f_on = frame(make_env(on))
+    f_off = frame(make_env(dataclasses.replace(cell, dr_background_image="")))
+    d_first = np.abs(f_on.astype(int) - f_off.astype(int)).mean()
+    check("reset() itself applies the photo, already on episode 1", d_first > 2.0,
+          f"mean |diff| vs the same cell without the knob: {d_first:.1f}")
+
+    # C. the background must NOT jump inside an episode
+    np.random.seed(1)
+    o = env.reset(); o = o[0] if isinstance(o, tuple) else o
+    a = (o["agentview"].numpy(), )
+    shots = [a[0]]
+    for _ in range(3):
+        o, *_ = env.step(torch.zeros(env.action_dim))
+        shots.append(o["agentview"].numpy())
+    # compare a fixed background patch (top-left corner) across the episode
+    patch = [f[:, :30, :30].astype(int) for f in shots]
+    jump = max(np.abs(patch[0] - p).mean() for p in patch[1:])
+    check("background is constant within an episode", jump < 1.0, f"max |diff| {jump:.2f}")
+    check("image list is sorted and non-empty (stable index)",
+          background_files(BG_DIR) == sorted(background_files(BG_DIR))
+          and len(background_files(BG_DIR)) > 100,
+          f"{len(background_files(BG_DIR))} images")
+
+
 def test_dr_ranges():
     print("\nE. DR: zero-width ranges are inert, real ranges vary")
     base_cam = RealCameraConfig(name="agentview", frame="base", pos=(0.6, 0.48, 0.78),
@@ -460,6 +581,134 @@ def test_dr_ranges():
           f"max dev {spread:.4f} m")
 
 
+def test_square_realcell():
+    """L. Square on the measured cell.
+
+    Square gets its own section because two things that are free on Threading
+    have to be done by hand here, and both fail silently (env/square_variants.py):
+      * the nut sampler is built ONCE in __init__ from `reference=(0,0,0.82)`,
+        so the wrapper's `apply_workspace_offset` never runs and the reference
+        does not follow the table;
+      * peg1/peg2 are arena geometry at fixed world coordinates, so lifting the
+        table by 113 mm buries the peg (0.130 m exposed -> 0.017 m) without any
+        error, and no success would ever be possible.
+    """
+    print("\nL. Square_RealCell: arena, pegs, sampler, rotw1")
+    import dataclasses
+    import robosuite
+    from env.sim2real import load_sim2real
+    import env.square_variants as sv
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cell = dataclasses.replace(
+        load_sim2real(os.path.join(root, "release/cfgs/sim2real/square_real_cell.yaml")),
+        dr_base_height=0.0, dr_base_yaw_deg=0.0, dr_base_tilt_deg=0.0, dr_base_xy=0.0)
+
+    ref = make_env(None, task="PegInsertion_D0"); np.random.seed(0); ref.reset()
+    a_ref = arena(ref)
+
+    sq = make_env(None, task="Square_RealCell"); np.random.seed(0); sq.reset()
+    both = make_env(cell, task="Square_RealCell"); np.random.seed(0); both.reset()
+    for tag, e in (("Square_RealCell", sq), ("Square_RealCell + sim2real_cell", both)):
+        a = arena(e)
+        for k in a_ref:
+            check(f"{tag}: {k}", np.allclose(a[k], a_ref[k], atol=1e-6),
+                  f"{np.round(a[k], 5)} vs {np.round(a_ref[k], 5)}")
+
+    # --- geometry RELATIVE TO THE BASE is exactly stock Square_D0's ---------
+    # This is the whole point of `workspace_offset = measured base xy - stock
+    # base xy`: the task keeps the reachability and grasp geometry it was
+    # designed with, and only its position on the bench changes.
+    stock = robosuite.make(
+        "Square_D0", robots="Panda", has_renderer=False, has_offscreen_renderer=False,
+        use_camera_obs=False,
+        controller_configs=robosuite.load_controller_config(default_controller="OSC_POSE"))
+    np.random.seed(0); stock.reset()
+    sm, sd = stock.sim.model, stock.sim.data
+    s_base = sd.body_xpos[sm.body_name2id("robot0_base")]
+    s_peg = sd.body_xpos[sm.body_name2id("peg1")] - s_base
+    s_bnd = stock._get_initial_placement_bounds()
+
+    m, d = sq.env.sim.model, sq.env.sim.data
+    base = d.body_xpos[m.body_name2id("robot0_base")]
+    peg = d.body_xpos[m.body_name2id("peg1")] - base
+    check("peg1 xy relative to the base is unchanged vs stock Square_D0",
+          np.allclose(peg[:2], s_peg[:2], atol=1e-6), f"{np.round(peg[:2],5)} vs {np.round(s_peg[:2],5)}")
+    lift = float(sq.env.table_offset[2]) - float(stock.table_offset[2])
+    check("peg1 rose by exactly the table lift (so its exposed length is stock's)",
+          abs((peg[2] - s_peg[2]) - lift) < 1e-9, f"{peg[2]-s_peg[2]:.6f} vs {lift:.6f}")
+
+    bnd = sq.env._get_initial_placement_bounds()
+    ok = all(np.allclose(np.array(bnd[k][ax]) - base[i], np.array(s_bnd[k][ax]) - s_base[i],
+                         atol=1e-6)
+             for k in s_bnd for i, ax in enumerate(("x", "y")))
+    check("nut bounds relative to the base are unchanged vs stock Square_D0", ok,
+          str({k: (bnd[k]["x"], bnd[k]["y"]) for k in bnd}))
+    check("nut sampler reference follows the lifted table (NOT the stock 0.82)",
+          abs(float(bnd["nut"]["reference"][2]) - float(sq.env.table_offset[2])) < 1e-9,
+          str(bnd["nut"]["reference"]))
+
+    # The nut must actually LAND on the new table, not at the old reference --
+    # the bounds above are only the recipe; this reads the built sim.
+    nut_z = float(d.get_joint_qpos(sq.env.nuts[0].joints[0])[2])
+    check("the nut spawns just above the measured table top",
+          0.0 < nut_z - float(sq.env.table_offset[2]) < 0.10,
+          f"nut z {nut_z:.4f}, table top {float(sq.env.table_offset[2]):.4f}")
+
+    # --- the round peg is off the bench (user's layout call, 2026-09-21) ----
+    check("ROUND_PEG is off by default", sv.Square_RealCell.ROUND_PEG is False)
+    p2 = d.body_xpos[m.body_name2id("peg2")]
+    check("peg2 is parked off-table", np.linalg.norm(p2 - base) > 5.0, str(np.round(p2, 3)))
+
+    # --- peg placement DR: the peg is arena geometry, so nothing else moves it -
+    def peg_spread(c, n=12):
+        e = make_env(c, task="Square_RealCell")
+        ps = []
+        for i in range(n):
+            np.random.seed(i); e.reset()
+            mm, dd = e.env.sim.model, e.env.sim.data
+            ps.append(dd.body_xpos[mm.body_name2id("peg1")][:2].copy())
+        return np.asarray(ps)
+    inert = peg_spread(dataclasses.replace(cell, dr_peg_xy=0.0, dr_peg_yaw_deg=0.0))
+    # 1e-9 m, not ==0: mj_forward leaves float64 rounding at the 1e-16 m level.
+    # A real leak is 5 mm, i.e. six orders of magnitude above this.
+    check("dr_peg_xy=0 leaves the peg fixed", float(inert.std(0).max()) < 1e-9,
+          f"std {1e6*inert.std(0).max():.3g} um")
+    live = peg_spread(dataclasses.replace(cell, dr_peg_xy=0.005, dr_peg_yaw_deg=3.0))
+    dev = np.abs(live - inert[0]).max()
+    check("dr_peg_xy actually moves the peg, inside its range",
+          live.std(0).min() > 0 and dev <= 0.005 + 1e-9, f"max dev {1000*dev:.1f} mm")
+    # It must NOT be a robot-base DR: that flag makes the OSC re-latch.
+    check("peg DR does not masquerade as base DR",
+          not dataclasses.replace(cell, dr_peg_xy=0.005).any_base_dr())
+    thr = load_sim2real(os.path.join(root, "release/cfgs/sim2real/threading_real_cell.yaml"))
+    check("the peg knob is off on Threading (no pegs there)", not thr.any_peg_dr())
+
+    # --- rotw1 carried by the CLASS, so generation and RL cannot disagree ---
+    rw = make_env(None, task="Square_RealCell_RotW1")
+    lo, hi = rw.env._get_initial_placement_bounds()["nut"]["z_rot"]
+    check("Square_RealCell_RotW1 window is 120-180 deg",
+          abs(np.degrees(lo) - 120.0) < 1e-6 and abs(np.degrees(hi) - 180.0) < 1e-6,
+          f"{np.degrees(lo):.2f}-{np.degrees(hi):.2f} deg")
+    # The pixel training cell must be the collection cell PLUS the calibrated
+    # wrist and nothing else: the dataset's wrist frames are re-rendered from
+    # stored state, so any other difference would make training-time eval and
+    # the training data come from different scenes (docs/infra.md §15i).
+    wrist = load_sim2real(os.path.join(
+        root, "release/cfgs/sim2real/square_real_cell_calibrated_wrist.yaml"))
+    plain = load_sim2real(os.path.join(root, "release/cfgs/sim2real/square_real_cell.yaml"))
+    differ = [f.name for f in dataclasses.fields(plain)
+              if getattr(plain, f.name) != getattr(wrist, f.name)]
+    check("calibrated-wrist cell differs from the collection cell in `cameras` only",
+          differ == ["cameras"], str(differ))
+    check("... and its agentview is identical",
+          [c for c in wrist.cameras if c.name == "agentview"]
+          == [c for c in plain.cameras if c.name == "agentview"])
+    check("the plain Square_RealCell keeps D0's full 360 deg window",
+          abs(np.degrees(sq.env._get_initial_placement_bounds()["nut"]["z_rot"][1])
+              - 360.0) < 1e-6)
+
+
 def main():
     test_default_off()
     test_geometry()
@@ -471,7 +720,9 @@ def main():
     test_real2sim_arena()
     test_init_qpos()
     test_base_pose_dr()
+    test_background_image()
     test_dr_ranges()
+    test_square_realcell()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"FAILED ({len(FAILED)}):")

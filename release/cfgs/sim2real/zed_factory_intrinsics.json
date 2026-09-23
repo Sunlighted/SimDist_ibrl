@@ -1,0 +1,115 @@
+{
+  "_source": "Stereolabs factory calibration, downloaded by serial; ros2/zed_calibration/SN<serial>.conf",
+  "_frame": "LEFT eye, UNRECTIFIED -- this is what publish_zed_uvc.py publishes, so the recorded frames carry the distortion below",
+  "_received": "2026-09-23",
+  "scene": {
+    "model": "ZED 2i",
+    "serial": 37597132,
+    "distortion_k1k2p1p2k3": [
+      -0.0492,
+      0.0206,
+      0.0009,
+      -0.0006,
+      -0.0083
+    ],
+    "modes": {
+      "vga": {
+        "size": [
+          672,
+          376
+        ],
+        "fx": 266.223,
+        "fy": 266.235,
+        "cx": 326.777,
+        "cy": 183.877,
+        "v_fov_deg": 70.455,
+        "h_fov_deg": 103.218,
+        "max_centred_square_px": 367.8,
+        "max_centred_square_vfov_deg": 69.262
+      },
+      "hd720": {
+        "size": [
+          1280,
+          720
+        ],
+        "fx": 532.445,
+        "fy": 532.47,
+        "cx": 622.555,
+        "cy": 352.755,
+        "v_fov_deg": 68.125,
+        "h_fov_deg": 100.483,
+        "max_centred_square_px": 705.5,
+        "max_centred_square_vfov_deg": 67.048
+      },
+      "hd1080": {
+        "size": [
+          1920,
+          1080
+        ],
+        "fx": 1064.89,
+        "fy": 1064.94,
+        "cx": 928.11,
+        "cy": 528.51,
+        "v_fov_deg": 53.776,
+        "h_fov_deg": 84.069,
+        "max_centred_square_px": 1057.0,
+        "max_centred_square_vfov_deg": 52.789
+      }
+    }
+  },
+  "wrist": {
+    "model": "ZED Mini",
+    "serial": 16478414,
+    "distortion_k1k2p1p2k3": [
+      -0.1013,
+      0.054,
+      0.0,
+      0.0001,
+      0.0422
+    ],
+    "modes": {
+      "vga": {
+        "size": [
+          672,
+          376
+        ],
+        "fx": 385.904,
+        "fy": 385.852,
+        "cx": 341.873,
+        "cy": 183.399,
+        "v_fov_deg": 51.954,
+        "h_fov_deg": 82.091,
+        "max_centred_square_px": 366.8,
+        "max_centred_square_vfov_deg": 50.844
+      },
+      "hd720": {
+        "size": [
+          1280,
+          720
+        ],
+        "fx": 771.808,
+        "fy": 771.705,
+        "cx": 652.745,
+        "cy": 351.798,
+        "v_fov_deg": 50.018,
+        "h_fov_deg": 79.333,
+        "max_centred_square_px": 703.6,
+        "max_centred_square_vfov_deg": 49.014
+      },
+      "hd1080": {
+        "size": [
+          1920,
+          1080
+        ],
+        "fx": 1543.617,
+        "fy": 1543.41,
+        "cx": 988.49,
+        "cy": 526.596,
+        "v_fov_deg": 38.567,
+        "h_fov_deg": 63.756,
+        "max_centred_square_px": 1053.2,
+        "max_centred_square_vfov_deg": 37.678
+      }
+    }
+  }
+}

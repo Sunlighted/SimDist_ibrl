@@ -25,7 +25,29 @@ from env.robosuite_wrapper import PixelRobosuite
 from env.sim2real import load_sim2real
 
 CAMS = ["agentview", "robot0_eye_in_hand"]
-OBJECTS = ("needle_obj_root", "tripod_obj_root")
+
+# Per task: the bodies the occlusion report projects, and the pair of geom
+# prefixes whose FIT is the task's precision bottleneck -- the hole the policy
+# has to align, and the thing that goes into it. `feature_px` measures the hole.
+TASKS = {
+    "Threading_D0":   dict(objects=("needle_obj_root", "tripod_obj_root"),
+                           hole="tripod_obj_ring", hole_mm=20.0),
+    "Threading_RealCell": dict(objects=("needle_obj_root", "tripod_obj_root"),
+                               hole="tripod_obj_ring", hole_mm=20.0),
+    # Square: the nut's square hole goes over peg1. The nut body carries the
+    # hole, so it is measured from the nut's own geoms; peg2 (the round peg) is
+    # listed only so the occlusion report says whether it is in shot -- it has
+    # no counterpart on the real bench (single_object_mode=2 keeps RoundNut off
+    # the table, but the arena peg stays).
+    "Square_D0":      dict(objects=("SquareNut_main", "peg1", "peg2"),
+                           hole="SquareNut", hole_mm=32.0),
+    "Square_RealCell": dict(objects=("SquareNut_main", "peg1", "peg2"),
+                            hole="SquareNut", hole_mm=32.0),
+    "Square_RealCell_RotW1": dict(objects=("SquareNut_main", "peg1", "peg2"),
+                                  hole="SquareNut", hole_mm=32.0),
+}
+OBJECTS = TASKS["Threading_D0"]["objects"]
+HOLE_PREFIX = TASKS["Threading_D0"]["hole"]
 
 
 def hole_report(env, cam_name, res):
@@ -50,8 +72,8 @@ def hole_report(env, cam_name, res):
     R = d.cam_xmat[cid].reshape(3, 3) @ np.diag([1.0, -1.0, -1.0])
     f = (res / 2) / np.tan(np.radians(float(m.cam_fovy[cid])) / 2)
     P = np.array([d.geom_xpos[g] for g in range(m.ngeom)
-                  if (m.geom_id2name(g) or "").startswith("tripod_obj_ring")
-                  and (m.geom_id2name(g) or "").endswith("_vis")])
+                  if (m.geom_id2name(g) or "").startswith(HOLE_PREFIX)
+                  and (m.geom_id2name(g) or "").endswith(("_vis", "_visual"))])
     if len(P) < 4:
         return None
     pc = (P - cp) @ R
@@ -66,49 +88,43 @@ def hole_report(env, cam_name, res):
     return u.max() - u.min(), v.max() - v.min(), dist, inc
 
 
-def visible_fraction(env, cam_name, prefix):
-    """Fraction of an object's geoms actually reachable by a ray from the camera.
+def visible_pixels(env, cam_name, prefix, res):
+    """How many pixels of an object the camera ACTUALLY sees, from the renderer.
 
-    Replaces an earlier heuristic that compared the object's depth against
-    `robot0_base`'s and called anything nearer than the base "occluded". That was
-    a FALSE POSITIVE machine: the base is the pedestal, not the arm, so a camera
-    mounted anywhere above the robot reports every workpiece as occluded while
-    the render plainly shows it. Two rounds of camera-placement advice were built
-    on that mistake.
+    ⚠️ This used to cast `mj_ray` from the camera to each of the object's geoms
+    and call a hit on the object "visible". That is a FALSE-NEGATIVE machine for
+    occlusion by the ROBOT: what you see in the render are the arm's VISUAL
+    meshes, while mj_ray only tests the simplified COLLISION geoms, so the ray
+    squeaks past a link that plainly covers the object on screen. Measured on
+    Threading real cell, insertion moment, 240 frames: mj_ray said "1.00 visible,
+    zero blockers" for BOTH object layouts, while segmentation said 131 px
+    (0% of frames blank) for one and 14 px / median 0 / **52% of frames totally
+    invisible** for the other. Two layout decisions were made on the wrong number.
 
-    mj_ray returns the first geom hit. A hit on ANOTHER geom of the same object is
-    self-occlusion, which does not stop you seeing the object, so it counts as
-    visible; anything else (an arm link, a finger) does not.
+    Segmentation IS the renderer, so it cannot disagree with the policy's input.
+    Returns (visible_px, covering_geom_name_at_the_object_centre).
     """
-    import mujoco
     m, d = env.env.sim.model, env.env.sim.data
-    mm = m._model if hasattr(m, "_model") else m
-    dd = d._data if hasattr(d, "_data") else d
-    cid = m.camera_name2id(cam_name)
-    cp = d.cam_xpos[cid].copy()
-    ids = [g for g in range(m.ngeom)
-           if (m.geom_id2name(g) or "").startswith(prefix)
-           and (m.geom_id2name(g) or "").endswith("_vis")]
-    if not ids:
-        ids = [g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith(prefix)]
+    ids = [g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith(prefix)]
     if not ids:
         return None
-    vis, blockers = 0, {}
-    gid = np.zeros(1, dtype=np.int32)
-    for g in ids:
-        tgt = d.geom_xpos[g].copy()
-        vec = tgt - cp
-        n = np.linalg.norm(vec)
-        if n < 1e-9:
-            continue
-        mujoco.mj_ray(mm, dd, cp, vec / n, None, 1, -1, gid)
-        hit = m.geom_id2name(int(gid[0])) if gid[0] >= 0 else None
-        if hit is not None and hit.startswith(prefix):
-            vis += 1
-        else:
-            blockers[hit] = blockers.get(hit, 0) + 1
-    worst = max(blockers, key=blockers.get) if blockers else None
-    return vis / len(ids), worst
+    seg = env.env.sim.render(width=res, height=res, camera_name=cam_name,
+                             segmentation=True)[::-1]
+    geomid = seg[..., 1]
+    vis = int(np.isin(geomid, ids).sum())
+    # what sits at the object's projected centre when nothing of it shows
+    cid = m.camera_name2id(cam_name)
+    cp = d.cam_xpos[cid].copy()
+    R = d.cam_xmat[cid].reshape(3, 3) @ np.diag([1.0, -1.0, -1.0])
+    f = (res / 2) / np.tan(np.radians(float(m.cam_fovy[cid])) / 2)
+    pc = R.T @ (np.mean([d.geom_xpos[g] for g in ids], axis=0) - cp)
+    cover = None
+    if pc[2] > 0:
+        u = int(round(f * pc[0] / pc[2] + res / 2))
+        v = int(round(f * pc[1] / pc[2] + res / 2))
+        if 0 <= u < res and 0 <= v < res:
+            cover = m.geom_id2name(int(geomid[v, u]))
+    return vis, cover
 
 
 def occlusion_report(env, cam_name, res):
@@ -132,16 +148,16 @@ def occlusion_report(env, cam_name, res):
         u = f * pc[0] / pc[2] + res / 2
         v = f * pc[1] / pc[2] + res / 2
         inframe = 0 <= u < res and 0 <= v < res
-        vf = visible_fraction(env, cam_name, nm.replace("_root", ""))
-        frac, blocker = vf if vf else (1.0, None)
+        vf = visible_pixels(env, cam_name, nm.replace("_root", ""), res)
+        px, cover = vf if vf else (None, None)
         if not inframe:
             tag = "OUT-OF-FRAME"
-        elif frac < 0.5:
-            tag = f"OCCLUDED {100*(1-frac):.0f}% by {blocker}"
-        elif frac < 0.95:
-            tag = f"partly occluded ({100*frac:.0f}% visible)"
+        elif px == 0:
+            tag = f"INVISIBLE (0 px) behind {cover}"
+        elif px is not None and px < 30:
+            tag = f"barely visible ({px} px, centre shows {cover})"
         else:
-            tag = "OK"
+            tag = f"OK ({px} px)"
         rows.append((nm, u, v, pc[2], tag))
     return rows
 
@@ -149,6 +165,13 @@ def occlusion_report(env, cam_name, res):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--task", default="Threading_D0", choices=sorted(TASKS),
+                    help="which env to render the cell on. NOT cosmetic: the "
+                         "*_RealCell classes bake the measured arena into the "
+                         "env itself (for Square, they also re-place the arena "
+                         "pegs), so rendering a cell on the plain D0 class "
+                         "shows a DIFFERENT scene from the one that gets "
+                         "trained on.")
     ap.add_argument("--num", type=int, default=6)
     ap.add_argument("--res", type=int, default=224)
     ap.add_argument("--out", default="figs/sim2real")
@@ -165,6 +188,11 @@ def main():
                          "about the optical axis and rescaling.")
     ap.add_argument("--no_dr", action="store_true", help="render the nominal only")
     args = ap.parse_args()
+
+    global OBJECTS, HOLE_PREFIX
+    OBJECTS = TASKS[args.task]["objects"]
+    HOLE_PREFIX = TASKS[args.task]["hole"]
+    hole_mm = TASKS[args.task]["hole_mm"]
 
     cfg = load_sim2real(args.config)
     if args.cam_pos is not None:
@@ -197,7 +225,7 @@ def main():
                 setattr(cfg, f.name, f.default)
 
     env = PixelRobosuite(
-        "Threading_D0", "Panda", 400, image_size=args.res, rl_image_size=args.res,
+        args.task, "Panda", 400, image_size=args.res, rl_image_size=args.res,
         camera_names=CAMS, rl_cameras=CAMS, use_state=False, obs_stack=1,
         state_stack=1, prop_stack=1, flip_image=True, device="cpu",
         hand_init_perturb_joint_sigma=0.0, sim2real=cfg)
@@ -226,16 +254,16 @@ def main():
                     loc = "  (behind camera)" if u is None else \
                         f"  u={u:6.1f} v={v:6.1f} depth={dep:.3f}"
                     print(f"    {nm:18s}{loc}  -> {tag}")
-                rv = visible_fraction(env, c, "tripod_obj_ring")
+                rv = visible_pixels(env, c, HOLE_PREFIX, args.res)
                 if rv is not None:
-                    print(f"    {'ring geoms visible':18s}  {100*rv[0]:5.1f} %"
-                          + (f"   (blocked by {rv[1]})" if rv[1] else ""))
+                    print(f"    {'hole geoms visible':18s}  {rv[0]:5d} px"
+                          + (f"   (centre shows {rv[1]})" if rv[1] else ""))
                 hr = hole_report(env, c, args.res)
                 if hr is not None:
                     w, h, dd, inc = hr
                     verdict = ("UNRESOLVABLE" if min(w, h) < 5 else
                                "marginal" if min(w, h) < 10 else "ok")
-                    print(f"    {'RING OPENING':18s}  {w:5.1f} x {h:5.1f} px  "
+                    print(f"    {'HOLE (%.0f mm)' % hole_mm:18s}  {w:5.1f} x {h:5.1f} px  "
                           f"at {dd:.3f} m, incidence {inc:4.1f} deg  -> {verdict}")
 
     S, P = args.res, 4

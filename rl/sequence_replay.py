@@ -615,6 +615,7 @@ def load_source_replay_to_sequence_buffer(
     print(f"[seq-buffer] loading {len(ids)} source-replay trajectories from {data_path}")
     loaded = 0
     n_skipped = 0
+    _skip_reason = None
     for ep_id in ids:
         ep = g[ep_id]
         # A shard writer killed at its walltime can leave a final group whose
@@ -628,8 +629,10 @@ def load_source_replay_to_sequence_buffer(
             _ = ep["obs"]["state"].shape
             for _cam in getattr(buffer, "image_keys", ()):
                 _ = ep["obs"][f"{_cam}_image"].shape
-        except Exception:  # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
             n_skipped += 1
+            if _skip_reason is None:
+                _skip_reason = f"{type(_e).__name__}: {_e}"
             continue
         states = np.array(ep["obs"]["state"]).astype(np.float32)  # [T, obs] = s_0..s_{T-1}
         # PIXEL: read the camera frames written by generate_simdist_data.py.
@@ -669,7 +672,24 @@ def load_source_replay_to_sequence_buffer(
         loaded += 1
     f.close()
     if n_skipped:
-        print(f"[seq-buffer] !! skipped {n_skipped} incomplete episode(s) in "
-              f"{data_path} (truncated writer output)")
+        # "truncated writer output" is only ONE way to land here, and stating it
+        # as the cause cost real time: a shard that is perfectly intact but was
+        # collected with FEWER CAMERAS than image_keys asks for fails the same
+        # probe, and every episode gets skipped with a message blaming the
+        # writer. Report the first actual exception and, when everything was
+        # skipped, say what the file really contains.
+        print(f"[seq-buffer] !! skipped {n_skipped} episode(s) in {data_path}; "
+              f"first reason: {_skip_reason}")
+        if loaded == 0:
+            try:
+                _probe = g[ids[0]]
+                _have = sorted(_probe["obs"].keys())
+            except Exception:  # noqa: BLE001
+                _have = ["<unreadable>"]
+            print(f"[seq-buffer] !! NOTHING loaded from this shard. It provides "
+                  f"obs keys {_have}; this run asks for image_keys "
+                  f"{tuple(getattr(buffer, 'image_keys', ()))}. If a camera is "
+                  f"missing, the shard needs scripts/rerender_simdist_data.py "
+                  f"(a render-only pass over the stored sim_state), not a re-collect.")
     print(f"[seq-buffer] loaded {loaded} source trajectories; #episodes={buffer.size()}, "
           f"#transitions={buffer.num_transitions()}, #success={buffer.num_success}")

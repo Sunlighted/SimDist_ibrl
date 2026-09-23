@@ -1,0 +1,81 @@
+# ============================================================================
+# IBRL on the REAL-CELL Square geometry (rotw1 nut window).
+#
+# Reference recipe = release/cfgs/mimicgen/square_d0_state_ibrl_source_rotw1_sig01.yaml
+# (the sim2sim rotw1 source expert, 0.98). Changes, marked ### REAL-CELL:
+#   1. task_name       -> Square_RealCell_RotW1, which bakes in BOTH the
+#                         measured arena (table +20.7 mm above the base, the
+#                         real2sim table size / base xy, Franka-ready reset, the
+#                         pegs re-placed on the lifted table, the round peg off
+#                         the bench) and the 120-180 deg nut window.
+#   2. sim2real_cell   -> the cell's dr_* on top: base pose DR (height/xy/yaw/
+#                         tilt). Visual DR in the same file is inert for state.
+#   3. bc_policy       -> MLP BC trained on real-cell MimicGen demos
+#   4. preload_datapath-> the same real-cell demos
+#   5. NO train_init_dist / eval_init_dist. The reference set the window with
+#      that knob, which lives in the wrapper and so is invisible to MimicGen
+#      generation. Here the CLASS carries it, so generation, the BC prior and
+#      this run cannot disagree. Do not re-add the knob -- two definitions of
+#      one window is how they drift (and neither side errors).
+#
+# ⚠️ No strict_success: Threading/Coffee only (docs/infra.md §5c). The whole
+# Square line runs with it false, so these numbers stay comparable to §41b.
+# ⚠️ The base-pose DR is a second difference from the reference recipe, which
+# had none. If this underperforms 0.98, rerun with the cell's dr_base_* zeroed
+# before blaming the geometry or the demos (iron law #9).
+#
+# Run (via scripts/pipeline_realcell.sh, which builds the prior first):
+#   TASK=square bash scripts/pipeline_realcell.sh
+# ============================================================================
+task_name: Square_RealCell_RotW1                                   ### REAL-CELL
+sim2real_cell: release/cfgs/sim2real/square_real_cell.yaml         ### REAL-CELL
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+
+bc_policy: exps/mimicgen/square_realcell_mlp_bc_seed1/model0.pt                        ### REAL-CELL
+preload_num_data: 10
+preload_datapath: release/data/mimicgen/generated/square_realcell_rotw1/processed_data96.hdf5   ### REAL-CELL
+num_warm_up_episode: 50
+
+num_train_step: 400000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 10000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 1
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+
+train_domain_shift:
+  mode: none
+eval_domain_shift:
+  mode: none

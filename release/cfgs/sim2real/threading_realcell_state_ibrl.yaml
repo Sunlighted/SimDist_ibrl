@@ -47,6 +47,12 @@ sim2real_cell: "release/cfgs/sim2real/threading_real_cell.yaml"   ### REAL-CELL
 episode_length: 400
 end_on_success: 1
 use_state: 1
+# No images are used by a state agent, so do not build an EGL context for it.
+# Beyond the wasted render, the cell now carries dr_background_image: without
+# this flag the state run pays a JPEG decode + texture upload on every reset for
+# a randomisation it cannot see, and it is the PIXEL distillation data that is
+# supposed to carry the photo backgrounds, not this stage.
+state_only_no_render: 1
 state_stack: 1
 obs_stack: 1
 prop_stack: 1

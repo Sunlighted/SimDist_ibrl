@@ -1,0 +1,62 @@
+# MimicGen variant of peg_insertion_state_ibrl_source_v3.yaml: same IBRL recipe,
+# MLP prior + preload from the MimicGen demos, board jitter +-10 mm / +-5 deg on
+# BOTH train and eval env. --snapshot_period 25000 is passed by the pipeline
+# (scripts/pipeline_peg_mimicgen.sh) and is LOAD-BEARING for data collection.
+# PegInsertion_D0 SOURCE expert (real2sim square peg-in-hole), plain IBRL with
+# the MLP BC prior, hand_init sigma = 0.1 (project standard). Mirrors
+# square_d0_state_ibrl_source_rotw1_sig01.yaml minus the Square-only init_dist
+# (the peg task has no nut z_rot window; init variety = joint sigma + in-hand
+# grasp jitter, see env/peg_insertion.py).
+#
+# No prior_margin (docs/tasks.md §32: it lowers final performance).
+# --snapshot_period 25000 is passed by scripts/slurm/ibrl_source.slrm and is
+# LOAD-BEARING: stage-1 source-replay generation needs sub-optimal snapshots.
+bc_policy: exps/mimicgen/peg_source_mlp_bc_mg_n1000_board_seed1/model0.pt
+discount: 0.99
+end_on_success: 1
+episode_length: 300
+eval_domain_shift:
+  mode: none
+eval_hand_init_perturb_joint_sigma: 0.1
+log_per_step: 10000
+mix_rl_rate: 0.5
+mp_eval: 1
+nstep: 3
+num_critic_update: 5
+num_eval_episode: 50
+num_train_step: 400000
+num_warm_up_episode: 50
+obs_stack: 1
+preload_datapath: release/data/peg_insertion/demos_mg_n1000_board/processed_data96.hdf5
+preload_num_data: 10
+prop_stack: 1
+q_agent:
+  act_method: ibrl
+  bootstrap_method: ibrl
+  ibrl_eps_greedy: 1
+  state_actor:
+    dropout: 0
+    hidden_dim: 1024
+    layer_norm: 0
+    num_layer: 3
+  state_critic:
+    hidden_dim: 1024
+    layer_norm: 1
+    num_k: 2
+    num_layer: 3
+    num_q: 5
+replay_buffer_size: 1000
+save_dir: exps/mimicgen/peg_ibrl_source_mg_board_seed1
+seed: 1
+state_stack: 1
+stddev_max: 0.1
+stddev_min: 0.1
+task_name: PegInsertion_D0
+train_domain_shift:
+  mode: none
+train_hand_init_perturb_joint_sigma: 0.1
+board_pos_noise: 0.01
+board_yaw_noise: 5.0
+update_freq: 2
+use_state: 1
+use_wb: 0

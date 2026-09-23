@@ -1,0 +1,27 @@
+\begin{figure}[t]
+\centering
+\begin{minipage}[t]{0.65\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \textbf{Planner negative results}\par\vspace{0.3em}
+  \includegraphics[width=\linewidth]{figs/negres_value_attempt.pdf}
+  \caption{%
+    \textbf{Adapting value-related components does not raise the SimDist
+    ceiling.} A much stronger proposal trained on 500 demonstrations only
+    matches the gain from using a dynamics ensemble.
+  }
+  \label{fig:planner-negres}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.34\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \textbf{Dyna-IBRL margin sweep}\par\vspace{0.3em}
+  \includegraphics[width=\linewidth]{figs/margin_sweep.pdf}
+  \caption{%
+    \textbf{The prior-preference margin controls how quickly Dyna-IBRL moves
+    away from the source-guided policy.} $m=0.01$ is best among the completed
+    multi-seed settings, while larger margins are still preliminary.
+  }
+  \label{fig:margin-sweep}
+\end{minipage}
+\end{figure}

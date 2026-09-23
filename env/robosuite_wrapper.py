@@ -26,6 +26,10 @@ import env.peg_insertion  # noqa: F401,E402
 
 from env.sim2real import (
     Sim2RealConfig,
+    apply_cell_arena,
+    apply_cell_layout,
+    apply_init_qpos,
+    apply_line_lights,
     apply_sim2real,
     apply_workspace_offset,
     snapshot_visual_nominal,
@@ -147,6 +151,13 @@ STATE_SHAPE["Threading_RealCell"] = (37,)
 # processes) rebuilds the env from it -- without this import those processes
 # would fail to find the class.
 import env.threading_variants  # noqa: E402,F401
+# Same for the Square real-cell variant. It is NOT just a reset distribution:
+# Square's pegs are arena geometry at fixed world coordinates, so only this
+# class puts them on the measured table (see env/square_variants.py).
+for _t in ["Square_RealCell", "Square_RealCell_RotW1"]:
+    STATE_KEYS[_t] = DEFAULT_STATE_KEYS
+    GOOD_CAMERAS[_t] = ["agentview", "robot0_eye_in_hand"]
+import env.square_variants  # noqa: E402,F401
 
 PROP_KEYS = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 PROP_DIM = 9
@@ -336,6 +347,7 @@ class PixelRobosuite:
 
         # ---- sim2real cell ----
         self.sim2real = sim2real if sim2real is not None else Sim2RealConfig()
+        self.last_bg_index: Optional[int] = None
         self._s2r_active = bool(self.sim2real.enabled)
         self._s2r_nominal: Optional[dict] = None
         if self._s2r_active:
@@ -351,7 +363,11 @@ class PixelRobosuite:
             # one-shot patch like apply_init_distribution's. It must land before
             # the first reset AND after any InitDistConfig override, so that the
             # offset composes on top of whatever bounds are in force.
-            apply_workspace_offset(self.env, self.sim2real)
+            if not apply_cell_layout(self.env, self.sim2real):
+                apply_workspace_offset(self.env, self.sim2real)
+            apply_cell_arena(self.env, self.sim2real)
+            apply_line_lights(self.env, self.sim2real)
+            apply_init_qpos(self.env, self.sim2real)
             if off is not None:
                 assert hasattr(self.env, "table_offset"), (
                     f"{env_name} has no `table_offset`; sim2real.table_above_base "
@@ -656,7 +672,11 @@ class PixelRobosuite:
             # trap restore_nominal exists to avoid on the physics side).
             self._s2r_nominal = snapshot_visual_nominal(self.env)
             apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
-            if self.sim2real.dr_base_height:
+            # Which background photo this episode drew. The collector stores it
+            # per episode so a re-render can repaint the same one (the photo is
+            # in tex_rgb, which model_state does not carry).
+            self.last_bg_index = getattr(self.env, "_s2r_bg_index", None)
+            if self.sim2real.any_base_dr():
                 # Moving the base translates the whole chain, so the OSC
                 # controller must re-latch or it drives toward the pre-move goal.
                 ctrl = self.env.robots[0].controller

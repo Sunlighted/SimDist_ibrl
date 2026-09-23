@@ -275,10 +275,10 @@ critic & margin & ens.
 \cmidrule(lr){1-2}\cmidrule(lr){5-6}
 data & TD target & SR @100k & $N_{50}\downarrow$ & collect & backup \\
 \midrule
-$\checkmark$ & $\checkmark$ & \ph{0.878} & \ph{20k} & \ph{0.07} & \ph{0.14} \\
-$\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
----          & $\checkmark$ & \ph{0.790} & \ph{40k} & \ph{0.64} & \ph{0.12} \\
----          & ---          & \ph{0.630} & \ph{85k} & \ph{0.81} & \ph{0.65} \\
+$\checkmark$ & $\checkmark$ & \ph{0.878} & \ph{20k} & \ph{0.15} & \ph{0.11} \\
+$\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.11} & \ph{0.81} \\
+---          & $\checkmark$ & \ph{0.790} & \ph{40k} & \ph{0.67} & \ph{0.07} \\
+---          & ---          & \ph{0.630} & \ph{85k} & \ph{0.71} & \ph{0.78} \\
 \bottomrule
 \end{tabular}
 \caption{%
@@ -288,10 +288,15 @@ $\checkmark$ & ---          & \ph{0.882} & \ph{15k} & \ph{0.03} & \ph{0.65} \\
   differ only in what happened during training. Removing it from the TD target
   is free; removing it from the data channels is not. ``Win rate'' is the
   fraction of steps at which the actor wins the argmax, reported separately for
-  collection and for the backup. The dose--response over $m$ is in
+  collection and for the backup and averaged over the first 50k target
+  transitions. The dose--response over $m$ is in
   Appendix Table~\ref{tab:app-margin-dose}.
   [TODO: $k$ seeds, $\ge 300$ evaluation episodes; currently seed~1, Threading,
   in-training eval.]
+  % win-rate columns: 10 seeds each, mean of dyna/{collect,bootstrap}_rl_frac over
+  % rounds 1-50 (0-50k). W&B simdist_threading_3arm groups, row order:
+  % dynaibrl_dynens_m001 / dynaibrl_m001dataonly / dynaibrl_m001bootonly / dynaibrl_dynens_m0.
+  % SR@100k and N50 are still the seed-1 numbers.
 }
 \label{tab:margin-channel}
 \end{minipage}\hfill
@@ -320,6 +325,34 @@ $0.790$ and doubles the transitions needed to reach $50\%$ success. The margin i
 Addressing the two conditions in isolation yields partial improvement. Reducing model error through an ensemble of dynamics heads breaks the ceiling by improving its final performance. Controlling the collection distribution through the margin accelerates the adaptation process. Both gains are real, but neither alone reaches the best performance achievable within the budget.
 
 Applying both corrections together produces an additional interaction of $+0.153$ beyond their individual contributions, reaching $0.715$---the highest success rate among all methods under the same budget. The interaction is expected: a more accurate model makes the imagined rollouts more useful, but only when those rollouts are drawn from a region where the model is reliable; staying near the prior helps only when the model is accurate enough in that region to support meaningful value updates. Neither condition substitutes for the other, and their combination is what justifies the cost of learning a world model for adaptation.
+
+\begin{figure}[t]
+\centering
+\begin{minipage}[t]{0.65\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \textbf{Planner negative results}\par\vspace{0.3em}
+  \includegraphics[width=\linewidth]{figs/negres_value_attempt.pdf}
+  \caption{%
+    \textbf{Adapting value-related components does not raise the SimDist
+    ceiling.} A much stronger proposal trained on 500 demonstrations only
+    matches the gain from using a dynamics ensemble.
+  }
+  \label{fig:planner-negres}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.34\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \textbf{Dyna-IBRL margin sweep}\par\vspace{0.3em}
+  \includegraphics[width=\linewidth]{figs/margin_sweep.pdf}
+  \caption{%
+    \textbf{The prior-preference margin controls how quickly Dyna-IBRL moves
+    away from the source-guided policy.} $m=0.01$ is best among the completed
+    multi-seed settings, while larger margins are still preliminary.
+  }
+  \label{fig:margin-sweep}
+\end{minipage}
+\end{figure}
 
 \subsection{What to Adapt in the Planner: Value, Dynamics, or Proposal?}
 \label{sec:planner-adapt}
@@ -909,7 +942,137 @@ weighting temperature $\beta$ & $3.0$ \\
 \end{tabular}
 \end{table}
 
-[Computational Cost]
+\subsection{Computational cost}
+\label{app:compute}
+
+We separate computational cost into a one-time training cost and the online
+latency of the deployed controller. The training measurements should be read as
+wall-clock records of our pipeline rather than as hardware-normalized
+benchmarks: all sim-to-sim jobs were run on a workstation with four RTX Pro 6000
+Blackwell GPUs (96GB each), but several jobs shared the same GPU. The stage-1
+timings in particular therefore include background contention. The inference
+measurements are more stable and are the relevant numbers for real-time
+execution.
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Training cost of the source assets and stage-1 world-model
+  distillation.} Source expert times are for IBRL unless otherwise noted.
+  Stage-1 uses the default SimADEPT world model ($K=5$, $H=5$). Times were
+  measured under shared-GPU load, so they are conservative wall-clock estimates
+  rather than isolated throughput measurements. Missing entries were not present
+  in the logs.}
+\label{tab:app-training-cost}
+\small
+\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Task & Source expert & Source data & Stage-1 distillation \\
+\midrule
+Threading & $400$k steps, $13.4$h
+  & $20$k trajectories, $\sim$$2$h on L40S
+  & $800$k steps, $\sim$$125$ms/step, $29.7$h \\
+Square & $400$k steps, $2.9$h
+  & $200$k trajectories, time not logged
+  & $1.2$M steps, $\sim$$181$ms/step, $64.1$h \\
+Coffee & $400$k steps, $3.7$h
+  & $100$k trajectories, time not logged
+  & $1$M steps, $\sim$$109$ms/step, $33.2$h \\
+ThreePieceAssembly & $1.5$M steps, time not logged
+  & $100$k trajectories, $\sim$$22$h with $8$ workers
+  & $1$M steps, $\sim$$96$ms/step, $\sim$$27$h \\
+Threading pixel, ResNet-18@$224$
+  & same as state
+  & $100$k JPEG trajectories
+  & $150$k steps, $\sim$$0.93$s/step, $\sim$$39$h on L40S \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+For the real-cell state experiment, generating $1000$ demonstrations took
+$8$min with $10$ parallel processes. Format conversion took about $30$min, MLP
+behavior cloning about $1$h, and the IBRL source expert ($400$k steps) took
+$4$h $42$min on one GPU. At the time of writing, the real-cell SimDist stage-1
+run is not yet available: the pipeline has regenerated demonstrations and is in
+the conversion stage. We therefore leave that cell as unmeasured rather than
+reporting a derived number; using the Threading state stage-1 run as a rough
+proxy suggests an order of $\sim$$30$h.
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Single-step inference latency.} Timing includes copying one
+  observation from CPU to GPU, computing the action, and copying the action back
+  to CPU. Each planner configuration was run three times on each of two GPUs,
+  for $1000$ steps per run after discarding the first $50$ warm-up steps. MPPI
+  uses the paper setting: $350$ candidates, $3$ iterations, horizon $H=5$, and
+  $64$ elites.}
+\label{tab:app-inference-latency}
+\small
+\begin{tabular}{lccc}
+\toprule
+Method & median (ms) & p95 (ms) & range of six medians \\
+\midrule
+SimADEPT, state, MPPI $K=5$ & $11.7$ & $20.2$ & $11.6$--$11.8$ \\
+SimDist, state, MPPI $K=1$ & $4.8$ & $9.5$ & $4.7$--$4.8$ \\
+Policy head only, state & $0.23$ & $0.7$ & --- \\
+IBRL, actor + prior + critic selection & $0.86$ & $1.6$ & --- \\
+SimADEPT, pixel ResNet-18@$224$, MPPI $K=5$ & $13.5$ & $22.3$ & $13.4$--$13.9$ \\
+SimDist, pixel ResNet-18@$224$, MPPI $K=1$ & $6.5$ & $11.6$ & --- \\
+Pixel policy head only & $1.8$ & $3.7$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The control loop runs at $20$Hz, giving a $50$ms budget per step. SimADEPT's
+p95 latency uses about $40\%$ of this budget in both the state and pixel
+settings, and peak GPU memory remains below $200$MB. It is about $14\times$
+slower than IBRL in the state setting, but the absolute latency remains small
+relative to the control period. The measurements were taken while other
+training jobs occupied roughly $25\%$ of the GPU, so the reported numbers are
+conservative; the six-run medians varied by less than $2\%$. The pixel model
+uses randomly initialized weights for this latency test, which is sufficient
+because latency depends on the architecture rather than on the learned weight
+values. An earlier $30$-step smoke test gave a slower $18.9$ms estimate for
+$K=5$ because warm-up was insufficient; Table~\ref{tab:app-inference-latency}
+is the value used in our analysis.
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Where MPPI time is spent} in the state model with $K=5$. Each block
+  varies one parameter while holding the others at the default planner setting.
+  Median latency is reported in milliseconds.}
+\label{tab:app-mppi-breakdown}
+\small
+\begin{tabular}{ll}
+\toprule
+Sweep & median latency (ms) \\
+\midrule
+Candidates: $100$, $350$, $1000$, $3000$, $10000$
+  & $11.2$, $11.5$, $18.6$, $47$, $153$ \\
+Iterations: $1$, $3$, $6$, $12$
+  & $5.7$, $11.4$, $21.8$, $40.0$ \\
+Horizon: $1$, $3$, $5$, $8$
+  & $3.1$, $7.3$, $11.4$, $17.9$ \\
+Dynamics heads $K$: $1$, $2$, $3$, $5$
+  & $4.8$, $6.5$, $8.3$, $12.2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The planner is cheap in width and expensive in depth. Increasing the number of
+candidate sequences from $100$ to $350$ is almost free at batch size $1$,
+because latency is dominated by kernel launches rather than arithmetic; much
+larger candidate sets eventually become compute-bound. In contrast, the number
+of MPPI iterations and the rollout horizon scale almost linearly. The ensemble
+size also scales nearly linearly, adding about $1.8$ms per additional head in
+the current implementation, because \texttt{next\_all} evaluates heads
+serially in Python. This is an implementation cost rather than an algorithmic
+requirement; batching the heads or capturing the rollout in a CUDA graph should
+reduce it.
 
 \section{Supplementary experiments}
 

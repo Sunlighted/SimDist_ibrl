@@ -888,6 +888,41 @@ dynens 是 `adapt_value=0`(value 头全程冻结在 source 蒸馏的 V_src)。�
 dynamics 误差不再主导时才 binding —— 与 §33 的限定语("dynamics 越准,换 value 的代价越小")
 是同一枚硬币的两面。**⇒ 报 dynens 增益时必须写清 anchor 那一格是开还是关。**
 
+### ★ 2026-09-21 补测:头数 × 预测误差(关闭 §31「误差被压下去」这个只从分数反推的环节)
+`scripts/diag_dynens_pred_error.py` + `summarize_dynens_pred_error.py`,数据/结果在
+`exps/diag_dynens_pred_error/`。协议:行为策略 = 本节 0.962 那个 planner(`ablate_frozen.pt`,
+采集时 50/50 成功),target 域 50 局、每 4 步一个快照 ⇒ **1332 个 on-policy 状态**;每状态 64 条
+H=5 候选(24 base = policy rollout+0.1 噪声,40 rand = N(0,1.0),即 original-recipe 第一轮的构成),
+每条都在**真实 target 仿真**里从快照回放。所有模型在**同一批 (s, 候选)** 上打分 ⇒ 配对;CI =
+按 episode 的 bootstrap。主指标是 planner 真正消费的量:每个模型用**自己的 value** 给
+「模型想象的终端」和「真实终端的编码」打分,看排序是否一致(Spearman / top-1 regret,单位 =
+std_k(J_true))。
+
+| (target, base 候选) | rank ρ ↑ | regret/σ ↓ | 已知闭环分 |
+|---|---:|---:|---:|
+| **adapted** 1 头(plain,独立模型) | 0.532 | 0.811 | 0.879 |
+| adapted 5 头截断到 1 | 0.478 | 0.888 | 0.132 |
+| adapted 5 头截断到 3 | 0.566 | 0.724 | 0.942 |
+| **adapted 5 头** | **0.595** | **0.706** | 0.950–0.962 |
+| stage-1 1 头(plain) | 0.462 | 0.942 | — |
+| stage-1 5 头 | 0.524 | 0.840 | — |
+| stage-1 10 头 | 0.545 | 0.805 | — |
+
+- **集成确实降低了 planner 相关的预测误差**,但幅度是**中等**的,不是"逼近 oracle":配对 Δ(adapted
+  plain → 5 头)regret −0.105 [−0.172,−0.037]、ρ +0.062 [+0.039,+0.085];误差/信号比仍 ≈0.85(>0.5)。
+- **同一 ckpt 截断(唯一干净的单变量)全部单调**:1→3→5 头在 ρ、regret、noise/signal、解码 mm 上都变好,
+  3→5 已很小(regret +0.018,CI 含 0)⇒ 与分数上的「≈3 头饱和」对上。
+- **独立训练的 1/5/10 头(stage-1)单调但递减**:regret 0.942 → 0.840 → 0.805;5→10 配对 −0.035
+  [−0.088,+0.021] ns ⇒ 与「10 头不会更高」的预测一致。
+- ⚠️ **只在 base(policy 邻域)候选上成立**:全部候选上 adapted plain 的 regret(0.279)反而低于 5 头
+  (0.375)。增益集中在 elite 实际来自的那一带,random 候选上不成立 —— 报数必须注明候选子集。
+- ⚠️ **解码 mm 只能做同模型内比较**:decoder 自身往返误差 12–18 mm,1 步 latent 预测误差 ≈ 整步 latent
+  位移(相对误差 1.3–2.2)—— 与 §30「mm 级误差对成绩零预测力」同型,**不是 bug**(训练 consistency
+  ≈1e-4/维,与测得量级一致)。跨模型的 mm(不同 decoder)不可比,别放进论文。
+- ⚠️ 工具坑:`eval_oracle_dyn_mppi.restore()` 只写 qpos/qvel,**漏了 PandaGripper.current_action
+  (累加器)和 qacc_warmstart** ⇒ 回放执行动作与主 env 差最多 7e-3(针 0.22 mm)。新脚本用完整快照
+  (误差 <5e-5,每次运行都自检)。旧 oracle 数字因此是"近 oracle",量级影响应很小但未复测。
+
 ---
 
 ## 33. 为什么 value adapt 会让 SimDist 变差 —— 根因 = 排序信号只有 0.0068（2026-07-25~28）

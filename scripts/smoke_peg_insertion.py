@@ -274,18 +274,32 @@ def t5_success_detector(env):
     raw = env.env
     sim = raw.sim
     board_pos = np.array(sim.data.body_xpos[raw.obj_body_id["board"]])
-    tip_z = board_pos[2] + BOARD_HALF_Z - 0.020
+    tip_z = board_pos[2] + BOARD_HALF_Z - (raw.insert_depth + 0.005)
     center_in = np.array([board_pos[0], board_pos[1], tip_z + PEG_HALF[2]])
     quat_vert = np.array([0.0, 1.0, 0.0, 0.0])  # wxyz: 180 deg about x -> +z down
     sim.data.set_joint_qpos(raw.peg.joints[0], np.concatenate([center_in, quat_vert]))
     sim.forward()
     assert raw._check_success(), "teleported-in peg not detected as success"
-    for off in ([0.05, 0, 0], [0, 0, 0.10]):
+    # side / far above / just past the mouth (the pre-2026-09-23 false positive)
+    for off in ([0.05, 0, 0], [0, 0, 0.10], [0, 0, raw.insert_depth - 0.015]):
         c = center_in + np.array(off)
         sim.data.set_joint_qpos(raw.peg.joints[0], np.concatenate([c, quat_vert]))
         sim.forward()
         assert not raw._check_success(), f"offset {off} wrongly detected as success"
-    print("[5] success detector OK (in=True, side=False, above=False)")
+    if raw.success_max_tilt is not None:
+        # same tip depth, peg tilted 10 deg about x: must NOT count
+        import robosuite.utils.transform_utils as T
+        a = np.radians(10.0)
+        # R = Rx(180) (tip down), then tilt about world y by 10 deg
+        R = T.euler2mat(np.array([np.pi, 0.0, 0.0]))
+        R = T.euler2mat(np.array([0.0, a, 0.0])) @ R
+        q_tilt = T.convert_quat(T.mat2quat(R), to="wxyz")
+        tip_off = R @ np.array([0.0, 0.0, PEG_HALF[2]])   # centre sits above the tip along the axis
+        c = np.array([board_pos[0], board_pos[1], tip_z]) + tip_off
+        sim.data.set_joint_qpos(raw.peg.joints[0], np.concatenate([c, q_tilt]))
+        sim.forward()
+        assert not raw._check_success(), "10-deg tilted peg wrongly detected as success"
+    print("[5] success detector OK (in=True, side/above/mouth-only/tilted=False)")
 
 def t6_scripted(env, n_episodes):
     results = [scripted_episode(env) for _ in range(n_episodes)]

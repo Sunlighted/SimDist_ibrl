@@ -39,7 +39,7 @@ q_agent:
     dropout: 0
     layer_norm: 0
 train_hand_init_perturb_joint_sigma: 0.1
-eval_hand_init_perturb_joint_sigma: null
+eval_hand_init_perturb_joint_sigma: 0.1
 train_domain_shift:
   mode: dr
   dr_seed: 1

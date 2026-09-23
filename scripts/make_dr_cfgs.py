@@ -97,8 +97,11 @@ def main():
         }
         out["eval_domain_shift"] = tgt
         out["strict_success"] = yaml.safe_load(open(spec["stage1"])).get("strict_success")
-        out["eval_hand_init_perturb_joint_sigma"] = yaml.safe_load(
-            open(spec["stage1"])).get("eval_hand_init_perturb_joint_sigma")
+        # sigma is forced to 0.1 for ALL four rather than inherited: Threading's
+        # and TPA's stage-1 cfgs leave it unset (their adapt runs pass it on the
+        # command line), so inheriting would evaluate two of the four arms
+        # without hand perturbation and make the row incomparable.
+        out["eval_hand_init_perturb_joint_sigma"] = 0.1
         out["use_wb"] = 1
 
         path = f"{CFG}/{task}_dr_wide.yaml"

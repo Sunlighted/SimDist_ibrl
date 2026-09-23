@@ -1,0 +1,46 @@
+# MimicGen variant of peg_insertion_state_source_mlp_bc_v3.yaml: identical
+# except the demos and the board reset jitter.
+# Demos: 1000 MimicGen demos (scripts/gen_peg_mimicgen.py, 10 scripted-expert
+# seeds, board jitter +-10 mm / +-5 deg), converted by tools/dataset_states_to_obs.py.
+# The eval env gets the SAME board jitter (dataset.board_*_noise).
+#
+#   bash scripts/pipeline_peg_mimicgen.sh
+
+seed: 1
+
+dataset:
+  path: release/data/peg_insertion/demos_mg_n1000_board/processed_data96.hdf5
+  num_data: -1                # all 1000 demos
+  use_state: 1
+  state_stack: 1
+  prop_stack: 1
+  obs_stack: 1
+  action_horizon: 1           # single-step (StateBcPolicy)
+  # STRICTLY greater than the longest demo (dataset.py asserts len < eval_len)
+  eval_episode_len: 350
+  val_ratio: 0.0
+  hand_init_perturb_joint_sigma: 0.1
+  board_pos_noise: 0.01
+  board_yaw_noise: 5.0
+
+state_policy:
+  num_layer: 3
+  hidden_dim: 1024
+  dropout: 0.0
+  layer_norm: 0
+
+batch_size: 256
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 5
+num_epoch: 2000
+epoch_len: 100
+eval_period: 50
+num_eval_episode: 50
+
+eval_target_during_training: 0
+eval_domain_shift:
+  mode: none
+
+use_wb: 0
+save_dir: exps/mimicgen/peg_source_mlp_bc_mg_n1000_board_seed1

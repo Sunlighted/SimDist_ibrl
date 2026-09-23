@@ -327,6 +327,11 @@ class MainConfig(common_utils.RunConfig):
     # the YAML is edited in place as calibration improves, so the path alone does
     # not pin what a run actually trained on.
     sim2real_cell: str = ""
+    # PegInsertion board reset jitter (env/peg_insertion.py board_pos_noise [m,
+    # uniform +- per axis] / board_yaw_noise [deg, uniform +-]), applied to BOTH
+    # train and eval env. 0/0 = env_kwargs None = byte-for-byte legacy.
+    board_pos_noise: float = 0.0
+    board_yaw_noise: float = 0.0
     # SGFT (Simulation-Guided Fine-Tuning, Yin et al. ICLR 2025) on top of IBRL.
     # Path to a frozen source-domain QAgent checkpoint. When set, that agent is
     # reused for BOTH roles:
@@ -586,6 +591,13 @@ class Workspace:
 
         self._setup_replay()
 
+    def _board_env_kwargs(self):
+        if self.cfg.board_pos_noise == 0 and self.cfg.board_yaw_noise == 0:
+            return None
+        print(f"[board jitter] pos +-{self.cfg.board_pos_noise} m, yaw +-{self.cfg.board_yaw_noise} deg")
+        return dict(board_pos_noise=self.cfg.board_pos_noise,
+                    board_yaw_noise=self.cfg.board_yaw_noise)
+
     def _setup_env(self):
         self.rl_cameras: list[str] = list(set(self.cfg.rl_cameras + self.cfg.bc_cameras))
         if self.cfg.use_state:
@@ -636,6 +648,7 @@ class Workspace:
             state_only_no_render=bool(self.cfg.state_only_no_render),
             stage_reward=self.cfg.stage_reward,
             sim2real=s2r,
+            env_kwargs=self._board_env_kwargs(),
         )
         self.eval_env_params = dict(
             env_name=self.cfg.task_name,
@@ -657,6 +670,7 @@ class Workspace:
             init_distribution=self.cfg.eval_init_dist,
             state_only_no_render=bool(self.cfg.state_only_no_render),
             sim2real=s2r,
+            env_kwargs=self._board_env_kwargs(),
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 

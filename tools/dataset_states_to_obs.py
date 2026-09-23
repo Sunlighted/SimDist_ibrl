@@ -68,6 +68,16 @@ try:
 except Exception:
     pass
 
+try:
+    import env.square_variants  # noqa: F401  # registers Square_RealCell{,_RotW1}
+except Exception:
+    pass
+
+try:
+    import env.peg_insertion  # noqa: F401  # registers PegInsertion_D0 (real2sim)
+except Exception:
+    pass
+
 
 def extract_trajectory(
     env,

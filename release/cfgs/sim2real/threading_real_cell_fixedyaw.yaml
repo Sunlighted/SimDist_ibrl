@@ -1,0 +1,386 @@
+# CONTROL ARM for the +-5 deg tripod-yaw question (2026-09-23). Byte-identical
+# to threading_real_cell.yaml except layout_tripod_z_rot_deg, which is FIXED at
+# -30 here. Everything downstream (demos, BC prior, IBRL) is rebuilt on this
+# file so the A/B isolates the yaw jitter and nothing else.
+# ⚠️ Keep in sync with the live cell by REGENERATING it, never by hand-editing.
+# ============================================================================
+# THREADING_D0 -- REAL CELL, single source of truth.
+#
+# Everything here is MEASURED on the robot (calibration chain: scan_run2 ->
+# ground_scan_run2.py -> make_cell_layout.py -> cell_layout.json) or is an
+# explicitly flagged PLACEHOLDER. Nothing is hand-tuned to make a render look
+# nice. Quality of the base solve: 1.0 deg / 11.4 mm over 14 poses (PARK); the
+# table plane is tilted 0.68 deg from base z, which cross-checks the whole chain.
+#
+# Frames/conventions are documented in env/sim2real.py. Short version:
+#   * poses are in the frame named by `frame` ("base" = robot0_base,
+#     "ee" = robot0's gripper0_grip_site -- NOT Franka's O_T_EE);
+#   * `quat` is (w,x,y,z) in the OPENCV optical convention (+z along the optical
+#     axis, +y DOWN). MuJoCo's own convention is applied internally.
+#   * `fovy` is the VERTICAL fov in degrees; renders are square so fx must == fy.
+#
+# Gate:     python scripts/test_sim2real.py
+# Preview:  python scripts/preview_sim2real.py --config release/cfgs/sim2real/threading_real_cell.yaml
+# ============================================================================
+enabled: 1
+
+# ------------------------------------------------------------------ GEOMETRY
+# Real: the table plane sits 20.8 mm ABOVE the base origin.
+# Sim default is -112 mm (robosuite puts the Panda on a 0.912 m column over a
+# 0.800 m table), so this is a +132.8 mm lift AND A SIGN FLIP. Consequence to
+# keep in mind: the nominal initial eef drops from 211 mm to 78 mm above the
+# table, i.e. the whole task geometry changes and the source expert, the stage-1
+# replay and the target demos all have to be regenerated.
+#
+# 2026-09-18: the arena is now taken from the real2sim task's MEASURED constants
+# (env/peg_insertion.py MEASURED_*, docs/real2sim.md §2e), so this cell and
+# PegInsertion_D0 share one arena by construction. This supplies:
+#   table_above_base = +0.0207   (was 0.0208 here -- same measurement, 0.1 mm)
+#   table_full_size  = 0.739 x 1.240 x 0.03 (collision + visual; was sim 0.8x0.8)
+#   base_xy          = (-0.489, -0.034) wrt the table centre (was sim (-0.56, 0))
+# Do NOT restate those three keys here -- load_sim2real() refuses.
+arena_from_real2sim: 1
+
+# Visual-only enlargement (half-sizes, metres). The real bench is wide enough
+# that no edge is visible from either camera; 2.5 x 2.5 pushes every edge out of
+# frame. Writes `table_visual` (contype=conaffinity=0) ONLY -- the collision box
+# and the robot base placement are untouched. Never widen via table_full_size:
+# threading.py:244 derives the base xpos from table_full_size[0].
+# 2026-09-23 RE-DERIVED with the corrected camera. The previous value (half
+# 0.31/0.33, offset 0.036/0.076) was back-projected with the WRONG intrinsics
+# (HD2K 60.84 deg about the image centre), so it was both too small and offset:
+# the board covered 34.9% of the 224 input in sim against 45.9% on the real one.
+# Method: back-project EVERY board pixel of the undistorted t=0 frame onto the
+# table plane and take the extent of the cloud -- occlusion only removes points,
+# so this is tight wherever the board is unoccluded, unlike the 4-corner fit that
+# died on the corner the arm covers. Three episodes agree:
+#   min-area rect centre (0.493, 0.116) size 0.74 x 0.75 m, yaw -87.4 deg
+#   axis-aligned x[0.117, 0.880]  y[-0.254, 0.497]  (base frame)
+# ★ 2026-09-23 the SIZE is now tape-measured: the board is a 0.753 x 0.753 m
+#   SQUARE. That is an independent check on the whole camera chain -- the
+#   back-projection had said 0.748 x 0.747, i.e. 5 mm / 0.7% off. With the size
+#   pinned, the best-covering square holds 99.80% of the cloud at centre
+#   (0.4940, 0.1200) => x[0.118, 0.871] y[-0.257, 0.496].
+# Predictions to confirm with the tape (bench = real2sim's measured work surface,
+#   x[0.119, 0.859] y[-0.586, 0.654] in base frame):
+#   near edge   2 mm INSIDE the bench near edge (essentially flush)
+#   far  edge  12 mm OVERHANGING the bench far edge -> TAPE SAYS 18 mm (2026-09-23)
+#              => x centre 0.5000, board x[0.1235, 0.8765]; the near edge then sits
+#              4 mm inside the bench near edge, self-consistent (a 753 mm board on a
+#              739 mm deep bench MUST overhang ~14 mm somewhere).
+#              BOTH axes are now tape-measured; nothing here is back-projected.
+#   left edge  158 mm from the bench left edge -> TAPE SAYS 168 mm (2026-09-23)
+#              => y shifted -10.5 mm to centre 0.1095; x is still the fit, unmeasured
+#   right edge 329 mm from the bench right edge
+# ⚠️ the board is yawed ~2.6 deg wrt the base axes; `table_visual` is an
+#   axis-aligned box, so that tilt is NOT represented.
+table_visual_half: [0.3765, 0.3765]
+table_visual_offset: [0.0110, 0.0755]
+dr_background_image: /user_data/Chenyang/bg_textures/val_256
+dr_background_floor: 1
+
+# ---- COLOURS: fitted to the ZED at t=0, not eyeballed (2026-09-22) ----------
+# t=0 is the frame to use: the arm is still out of shot, so both red parts are
+# fully lit and the board is unshadowed. A mid-episode frame puts the object in
+# the gripper's shadow and fits an albedo far too dark (that mistake shipped once).
+# Superseded values, kept as a warning: the old table_rgb came from a photo of a
+# DIFFERENT table (a warm 226,220,206 cream) and the old object_rgb (119,67,69)
+# from a shaded face -- the pair rendered a cream board with a grey-maroon object
+# where the real cell has a neutral white board and a saturated red one.
+# Measured on realdata/episode_0001/0002/0004 frame 0 -- all three agree to +-1:
+#   object (114, 1, 1)   board (219, 220, 218)
+# Two different criteria on purpose: the BOARD is matched in ABSOLUTE pixels (it
+# is the brightest diffuse surface, so it anchors the scene's exposure), the
+# OBJECT is matched on the object/board RATIO (absolute would bake the exposure
+# into its albedo twice). Fit reproduces board (219,219,218), object (114,1,1).
+# Setting these also drops the MJCF's ceramic / wood-grain textures -- grain is a
+# cue the policy can learn that does not exist on the bench.
+# ⚠️ The real red is at the sensor floor in G and B, so object_rgb's G/B are
+# ~0.01 and dr_object_rgb_tint (absolute 0.025) clips half its draws at 0.
+# ⚠️ table_rgb 0.97 is high for a real whiteboard (~0.85): the strip is a little
+# dimmer than the real fixture and the albedo absorbs it. Consequence is that
+# dr_table_rgb_gain would CLIP at 1.0, so its upper bound is 1.03, not 1.10.
+table_rgb: [0.85, 0.8507, 0.8403]
+object_rgb: [0.438, 0.0086, 0.0089]
+
+# Rigid translation of the WHOLE reset distribution, in the table frame (m).
+# Moves needle and tripod together, so their relative geometry -- the task -- is
+# unchanged; it only says where on the bench the parts are laid out.
+#
+# ★ WHAT THIS BUYS, measured by ray-casting from the AS-MEASURED zed2i:
+# it is an OCCLUSION fix, not a resolution fix.
+#     dy +0.00   ring 5/20 geoms visible -- blocked by robot0_g40/g41 (arm links)
+#     dy +0.10   ring 20/20 visible
+#     dy +0.30   ring 20/20 visible
+# At the D0 default the arm sits squarely in front of the hole from this camera.
+#
+# It does NOT improve angular resolution, because closing the range degrades the
+# viewing incidence by just as much (the camera is off to the robot's LEFT at
+# base y=+0.48, so pulling the parts left flattens the angle onto the hole face):
+#     dy +0.00  d=0.943  hole 3.4 x 4.6 px  incidence 48.0
+#     dy +0.10  d=0.880       3.2 x 4.8     incidence 52.9
+#     dy +0.30  d=0.776       2.6 x 5.2     incidence 64.7
+# Projected AREA is flat across all of them. So take the smallest offset that
+# clears the arm -- +0.10 -- and get resolution from the FOV instead.
+#
+# ⚠️ The optimum is CAMERA-DEPENDENT. For a camera moved forward to base
+# (0.60,0.48,0.78) the best offset is +0.30, for a different reason (there it
+# really does close the range). Re-run scripts/preview_sim2real.py after any
+# camera move; do not carry this number across.
+# ⚠️ Do NOT shift objects individually -- moving only the tripod runs it into the
+# needle's sampling box (RandomizationError) and gains nothing.
+# Reach re-verified on the LIFTED table by driving the OSC to each object:
+# residual <1 mm at every dy tested.
+#
+# 2026-09-18: re-expressed for the measured arena. The base moved from (-0.56, 0)
+# to (-0.489, -0.034) in the table frame, i.e. by (+0.071, -0.034). The offset is
+# shifted by that same vector so every object keeps its position RELATIVE TO THE
+# ROBOT (and hence the reach/occlusion checks above, which are base-relative):
+# old (0.0, 0.10) + (0.071, -0.034) = (0.071, 0.066).
+workspace_offset: [0.071, 0.066]
+
+# Robot reset pose (7 arm joints, rad) = Franka's standard "ready" pose
+# [0, -pi/4, 0, -3pi/4, 0, pi/2, pi/4]. robosuite's default (grip site 78 mm over
+# THIS table) put the fingers into the table on ~5% of sigma=0.1 resets; ready
+# puts it ~0.47 m over the table. The sigma=0.1 joint init noise is centred here,
+# so this must match the real robot's home pose -- replace it if the real cell
+# resets somewhere else (docs/infra.md §14a R10).
+init_qpos: [0.0, -0.7853981634, 0.0, -2.3561944902, 0.0, 1.5707963268, 0.7853981634]
+
+# ------------------------------------------------------------------- CAMERAS
+cameras:
+  # --- zed2i, external -----------------------------------------------------
+  # ⚠️ TWO THINGS ARE STILL PLACEHOLDERS HERE:
+  #   1. ROLL. The layout reports only the optical axis (+0.57, -0.43, -0.70),
+  #      which is 2 DOF; `look_dir` synthesises the third from up=+z. A camera
+  #      rolled 10 deg renders an image rolled 10 deg and no training fixes it.
+  #      REPLACE with the measured `quat` from cell_layout.json before generating
+  #      any dataset.
+  #   2. fovy 70.0 is the ZED 2i spec, not your calibration. Replace with
+  #      fy + res from the intrinsics (fovy is then derived).
+  #
+  # ⚠️ OCCLUSION: at the AS-MEASURED position the robot arm sits between the
+  # camera and the workspace -- base depth 0.796 m vs tripod depth 0.99 m, and
+  # the render shows the tripod almost entirely hidden behind the gripper.
+  # Moving the camera forward along base +x by 46 cm clears it
+  # (base depth 0.977 > tripod 0.90):
+  #     pos: [0.60, 0.48, 0.78]     # RECOMMENDED
+  # Decide this BEFORE regenerating data; it is baked into every frame.
+  #
+  # 2026-09-18: pose REPLACED with the independent re-solve (docs/real2sim.md
+  # §2d-x; ground_run2_solved.json: T_base_board @ T_board_zed2i, 2D PnP over
+  # scan_run2's 14 poses, zed2i spread 0.41 deg / 20 mm). Full 6-DOF, so the
+  # roll placeholder is gone. The old values (0.141, 0.479, 0.778) + look_dir
+  # came from ground_transforms.json (§2d chain) and differ by ~30 mm.
+  # ⚠️ real2sim/scan_pipeline/render_camera_pov.py still reads the §2d
+  # ground_transforms.json -- agree on one solve with the real2sim side.
+  - name: agentview
+    frame: base
+    pos: [0.1222, 0.5014, 0.7721]
+    quat: [0.14313, -0.48176, 0.78211, -0.36841]   # OpenCV optical, wxyz
+    # ⚠️ THE RING OPENING IS 20 mm. Measured with scripts/preview_sim2real.py:
+    #     fovy 70 -> 4.1 x 3.4 px   UNRESOLVABLE
+    #     fovy 45 -> 6.9 x 5.8 px   marginal
+    #     fovy 30 -> 10.6 x 9.0 px  marginal
+    # Shifting the objects does NOT fix this: moving the tripod 15 cm toward the
+    # camera (as far as it can go before RandomizationError -- the tripod box
+    # collides with the needle box) takes the hole from 4.2x3.6 to 4.5x3.5 px,
+    # i.e. nothing, because the incidence angle degrades as the distance drops.
+    # Rotating tripod_z_rot only TRADES the two axes (4.2x3.6 -> 2.7x5.3 at +45
+    # deg); the projected area is flat. Angular resolution is the only lever.
+    # For scale, sim's own agentview resolves it even worse (2.8 x 12.9 px at
+    # 74.7 deg incidence) -- the third-person view never aligned the insertion in
+    # the first place, the wrist camera does.
+    # ⚠️ A ZED's FOV is FIXED, so "fovy 45" on the bench means CROPPING the native
+    # image and rescaling. The crop window must be CENTRED ON THE OPTICAL AXIS:
+    # MuJoCo's camera is a symmetric pinhole with no principal-point offset, so an
+    # off-centre crop cannot be represented here and would desync sim from real.
+    # 2026-09-18: real intrinsics. HD2K native calibration fy = 1057.6 px at
+    # 1242 px height (docs/real2sim.md §2d; ZED intrinsics are per resolution
+    # MODE -- never rescale across modes, that was a 17% error) =>
+    # fovy = 2*atan(1242 / (2*1057.6)) = 60.84 deg. The real stream must be
+    # centre-cropped to square at native HD2K (preserves this vertical FOV).
+    # ⚠️ fy is quoted from the doc; the raw intrinsics.json (scan_run2) is not on
+    # this machine -- re-check fy and that cx,cy are ~centred when it is.
+    # ---- FOV: chosen 2026-09-23, NOT inherited from HD2K -------------------
+    # What the policy sees is a 224x224 square, so the only lever on how many
+    # pixels land on the 20 mm ring hole is how tightly we crop. The camera's
+    # own numbers give the UPPER BOUND and nothing else: hd720 native vFOV is
+    # 68.13 deg (fy 532.470), and the largest square centred on the PRINCIPAL
+    # POINT is 2*352.755 = 705.5 px = 67.05 deg (cy, not H/2, is the binding
+    # constraint). Everything below that is a task trade-off the intrinsics
+    # cannot answer, so it was measured (200 resets each, full DR):
+    #   fovy | crop of 720 | ring px | hole short axis | worst framing margin
+    #  60.85 |   625 |  34.5 |  3.8 |  39.1 px = 149 mm on the table  <- old
+    #  50.00 |   497 |  53.4 |  4.8 |  20.4 px =  62 mm               <- chosen
+    #  45.00 |   441 |  66.2 |  5.4 |   9.1 px =  24 mm
+    #  40.00 |   388 |  84.3 |  6.1 |  -5.0 px = already out of frame
+    # 50 deg is the knee: 1.55x the ring pixels of the old setting while keeping
+    # 62 mm of physical slack for the errors the sim's DR does NOT model (operator
+    # placement beyond the stated box, camera mount drift, base-pose residuals
+    # R1-R9). 45 deg buys another 24% of ring pixels for 24 mm of slack, which is
+    # inside the plausible real-world error -- do not take it without measuring
+    # the bench's actual placement spread first.
+    # ⚠️ Changing this number invalidates every collected pixel episode.
+    # On the real side: centre-crop 2*532.470*tan(25 deg) = 497 px AROUND THE
+    # PRINCIPAL POINT (622.555, 352.755), NOT the image centre, then resize to
+    # 224. Undistort first -- the recorded stream is the UNRECTIFIED left eye.
+    # Factory intrinsics: release/cfgs/sim2real/zed_factory_intrinsics.json
+    fovy: 50.0
+
+  # --- zedm, wrist --- DELIBERATELY NOT APPLIED YET ------------------------
+  # The hand-eye result is  pos: [0.036, -0.076, 0.014]  in "the EE frame".
+  # It is commented out rather than applied because APPLYING IT NOW IS WORSE THAN
+  # LEAVING IT OUT:
+  #   * the rotation is missing, so the camera would keep sim's orientation while
+  #     moving ~150 mm to a new mount point -- it then stares at bare tabletop and
+  #     renders a BLANK image (this actually happened: figs/sim2real/
+  #     robot0_eye_in_hand.png, with the preview reporting OUT-OF-FRAME / BEHIND);
+  #   * "EE frame" is not yet reconciled. This field means robosuite's
+  #     gripper0_grip_site; a Franka hand-eye is normally expressed in O_T_EE,
+  #     which depends on F_T_EE / NE_T_EE. For reference the sim's own wrist mount
+  #     is (0, +0.050, -0.097) in grip_site. Until the frames are matched the
+  #     difference between those two numbers is uninterpretable, so do NOT
+  #     "correct" either one.
+  # Uncomment once BOTH the rotation and the frame definition are in hand.
+  # The wrist camera matters more than agentview here: the ~1.8 mm insertion
+  # alignment is driven by it, agentview only does coarse localisation.
+  # - name: robot0_eye_in_hand
+  #   frame: ee
+  #   pos: [0.036, -0.076, 0.014]
+  #   quat: [w, x, y, z]                # REQUIRED -- OpenCV optical convention
+  #   fy: 0.0
+  #   res: 224
+
+# ------------------------------------------------- RANDOMISATION (around the above)
+# Rule: MEASURED quantities are matched, not randomised. These cover what is
+# genuinely uncontrolled or drifts. Ranges chosen from the preview renders --
+# the previous, wider set produced visible green tints and blown-out tabletops.
+
+# ⚠️ 2026-09-23: workspace_offset / init_qpos / cameras were restored from git
+# after a scripted comment insertion sliced them out. The `layout_*` block below
+# OVERRIDES workspace_offset for the objects it names (apply_cell_layout wins),
+# so workspace_offset now only documents the pre-layout recipe.
+
+dr_table_rgb_tint: 0.02        # +- per channel; the table is a KNOWN white, so narrow
+# ⚠️ 2026-09-23: the albedo/diffuse SPLIT was re-balanced. Fitting the board to
+# 216 with the albedo alone drove it to 0.97, which left no headroom -- the gain
+# had to be capped at 1.03 and the DR distribution's MEAN then sat 37 grey levels
+# BELOW the matched nominal, i.e. the policy's average training appearance was
+# not the real cell at all. The albedo is now a physical 0.85 with the light
+# scaled by the same factor (the rendered result is identical), so both gain
+# ranges can be symmetric about 1.0 and the DR mean lands on the nominal.
+dr_table_rgb_gain: [0.90, 1.10]
+# Printed parts vary batch to batch and the filament fades; wider than the table.
+dr_object_rgb_tint: 0.025
+dr_object_rgb_gain: [0.85, 1.15]
+dr_background_gray: [0.25, 0.85]   # only the robot/base is visible once the table is wide
+# 2026-09-20: upper ends narrowed for the PIXEL arm. Measured on collected
+# frames, agentview first-frame brightness spanned 168-250/255 -- the top of that
+# range is clipping, and a blown-out tabletop has no geometry left to see.
+dr_light_diffuse: [0.85, 1.15]
+dr_light_ambient: [0.02, 0.12]     # was 0.20
+dr_light_specular: [0.40, 1.50]
+dr_light_dir: 0.30
+dr_light_pos: 0.40
+dr_light_shadow_n: 3     # umbra depth varies with whatever else is lit in the room
+
+# Mounting/calibration residual. Sized on the quoted PARK solve (1.0 deg / 11.4 mm).
+dr_cam_pos: 0.011
+dr_cam_rot_deg: 1.0
+dr_cam_fovy_deg: 1.0
+
+# Base mounting tolerance ONLY. This moves the kinematic chain, so it is NOT a
+# way to absorb a mis-measured table height -- that must be matched exactly
+# (the task's tolerance window is ~1.8 mm).
+dr_base_height: 0.005
+
+# 2026-09-19: base<->table misregistration residuals (docs/infra.md §14a R1-R3),
+# applied as a perturbation of the ROBOT BASE pose (the table stays level so the
+# objects on it are never unseated). Widths from the measured disagreements:
+#   R1 yaw: real base yaw 91.2 deg snapped to 90         -> +-1.5 deg
+#   R2 tilt: table plane 0.99 deg off base z             -> +-1.0 deg about x and y
+#   R3 xy: two independent grounding solves ~7 mm apart  -> +-7 mm per axis
+# The IBRL source expert (2026-09-18) was trained WITHOUT these three.
+dr_base_yaw_deg: 1.5
+dr_base_tilt_deg: 1.0
+dr_base_xy: 0.007
+
+# ---- OBJECT LAYOUT on this bench (BASE frame, metres / degrees), 2026-09-22 ----
+# ⚠️ `layout_tripod_z_rot_deg` DECIDES WHICH SIDE THE ARM INSERTS FROM, and it
+# is the single most consequential number in this block. MimicGen's insertion
+# subtask is a rigid transform in the TRIPOD frame, so the arm always stands at
+# azimuth = this yaw, as seen from the ring. The scene camera sits at azimuth
+# 149 deg from the ring, so a yaw near 149 puts the arm exactly in the line of
+# sight, and a yaw near -30 puts it on the far side.
+# (a) FEASIBILITY -- moving the ring across the table without rotating it asks
+#     for ~180 deg more wrist roll and `panda_joint7` is only +-166 deg:
+#     measured 37.5% of insertion timesteps pinned at the limit, grasp 12/12 but
+#     insertion missing by 22-136 mm (threshold 12 mm) => yield 5/154 = 3.2%.
+#     Yield vs yaw (n=50-60): -90 5% | -60 43% | -45 38% | -30 48% | -15 45% |
+#     0 22% | +15 10% | +30 10% | +45 5% | +90 7% | 120 24-36% | 135 40-56% |
+#     150 40-52% | 165 47-50%. Two feasible bands; needle yaw makes no difference.
+# (b) VISIBILITY -- ring pixels on the 224 agentview over the last 40 frames of
+#     8 successes (segmentation, i.e. what the policy actually sees):
+#     ring RIGHT yaw 90 (pre-swap) 14.4 | LEFT yaw 135 **3.4** | LEFT yaw -60
+#     34.7 | LEFT yaw -30 33.1 | LEFT yaw -15 34.4. Incidence is 50-57 deg in
+#     all of them, so this is ARM OCCLUSION plus distance, not viewing angle.
+# ⇒ the stated range is -30 +-5, not a fixed angle: the operator cannot hit an
+#   exact yaw with a tape, and putting their placement error INSIDE the training
+#   distribution is free. Measured at n=250 per cell: fixed -30 45.6% | +-5 48.0%
+#   | +-10 53.6% | +-15 42.4% -- all four within noise of each other (SE 3.2 pts,
+#   SE of a difference 4.5), so +-10 is available too if the bench needs it.
+# => -30 deg is the only value that is simultaneously in the feasible band and
+#    has the arm opposite the camera (179 deg away). 2.4x the pre-swap layout.
+# ⚠️ Three measurement traps burned on the way here, all now guarded in the
+#    scratch tooling and in scripts/preview_sim2real.py: mj_ray reports
+#    "visible" straight through the arm (it only tests COLLISION geoms);
+#    `e.reset()` on the raw robosuite env skips apply_sim2real so you measure
+#    robosuite's DEFAULT agentview; and model/data handles taken before a reset
+#    go stale because hard_reset rebuilds the sim.
+# The ring moved to the CAMERA side (robot's left) and the needle to the right:
+# measured on the old layout, the camera's ray to the ring was blocked by the
+# table edge and the 20 mm opening spanned 4.2 px; swapped it is unobstructed,
+# 0.73 m away, 5.2 px, 71 deg incidence. Ring gets a small +-3 cm jitter but NO
+# rotation (owner's call: position noise helps sim2real, spin does not).
+layout_needle_x: [0.36, 0.51]
+layout_needle_y: [-0.14, -0.04]
+layout_needle_z_rot_deg: [-120, -60]
+layout_tripod_x: [0.49, 0.55]
+layout_tripod_y: [0.23, 0.29]
+layout_tripod_z_rot_deg: [-30, -30]
+hide_table_legs: 1
+
+# ---- MATCHED LIGHTING (base frame), 2026-09-22 -------------------------------
+# Real cell: the lamp is ABOVE the scene camera, so shadows fall away from it.
+# The arena default was a directional light from the far right with NO shadows.
+# 0.8 m above the camera (camera is at 0.122, 0.501, 0.772), aimed at the task
+# area between the ring and the needle.
+# 2026-09-23: height, total diffuse and shadow-caster count are now FITTED to
+# the real board, not guessed. Two statistics, two separable knobs:
+#   far/near brightness gradient  <- strip HEIGHT (measured with shadows off, so
+#       the Lambert term is isolated): z 1.6 -> +19, 2.2 -> +13, 3.0 -> +9,
+#       4.0 -> +6.  The real board is +10, so the real rig behaves like a source
+#       ~2.1 m above the table, not a bulb 0.8 m above the camera -- a real room
+#       has ceiling light plus wall bounce, which is a far more distant source.
+#   board spread p90-p10          <- light_shadow_n (see its comment).
+# With the diffuse solved to put the board median on the real 216:
+#   z=3.0, k=5 -> median 216, spread 57, gradient +9   (real 216 / 52 / +10)
+light_pos: [0.122, 0.501, 3.00]
+# Solved so the DR MEAN board median lands on the real 216 -- not the nominal
+# render. The policy trains on DR samples, and dr_light_dir / dr_light_pos can
+# only LOWER the board's incidence cosine, so they bias the mean downward no
+# matter how symmetric the gains are; centring the nominal instead would leave
+# the average training frame ~17% darker than the bench.
+light_diffuse: 0.9953
+light_shadow_n: 5
+light_target: [0.45, 0.08, 0.02]
+light_directional: 0
+light_castshadow: 1
+# ...and it is a LED STRIP, not a bulb: 8 point lights over 0.9 m along the
+# robot's fore-aft axis (base +x). One bulb gives a single hard shadow that the
+# real fixture never produces; the overlapping penumbrae are the point.
+# Costs ~30% render time (7.0 vs 5.4 ms/step at 2 cams x 224) and changes
+# m.nlight => data recorded at a different light_line_n cannot be re-rendered.
+light_line_n: 8
+light_line_len: 0.9

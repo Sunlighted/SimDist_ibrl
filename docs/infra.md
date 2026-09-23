@@ -716,3 +716,517 @@ STRICT 85/100、均长 215（旧 arena 99/83/216）。**任何脚本都别再手
 **专家对 DR 的覆盖**：IBRL 专家（2026-09-18）训练时只见过 ② 里的高度 DR，R1–R3 是采集时才加的。
 独立重评（n=300，strict，σ=0.1）：只开高度 **0.957** → 全开 **0.947**，差异在噪声内。
 采集混合数据的成功率 ≈ 73.5%（专家 + snapshot + 动作噪声，不是专家水平）。
+
+### 14e. ★ PIXEL stage-1 数据链：重放契约 + 校准腕相机（2026-09-19/21）
+
+**数据集**：`/user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_pixel_v1/`
+- `part{1..8}.hdf5` = 采集产物，10 万条（8×12500），**只渲染 agentview**（224²，JPEG q90），
+  成功率 73.0–74.2%，每条约 1.14 MB。
+- `2cam_calibrated_v1/part*_2cam.hdf5` = 补渲染腕相机后的 **36000 条**（4500/shard，
+  = `seq_replay_max_transitions` 6.5M 的上限，多了训练也看不到），653 万 transition。
+- 同目录另存 `cell_snapshot.yaml` + `expert.sha256` + `git_head.txt` + `git_diff.patch`。
+
+**★ 重放契约（rollout 与渲染解耦）** —— 这是本阶段最重要的基础设施。
+`--store_sim_state 1` 让每条轨迹带上：每步 `sim_state`（qpos+qvel，float64，180 B/步）
+和每局 `model_state`（1350×float64 ≈ 10.8 KB，= 该局 DR **实际写进模型的值**：base 位姿 /
+灯光 / 颜色 / 相机）。渲染是 `(模型字段, qpos)` 的纯函数 ⇒ **任何相机都能事后重渲染，且与
+已有帧逐索引对齐**（`scripts/rerender_simdist_data.py`）。开销只占图像字节的 1.9%。
+- **存结果不存种子**：种子要求抽样顺序永不变，而顺序已经改过一次。
+- gate `scripts/test_rerender.py` 两半都验：重渲染像素与 JPEG 字节**逐位相同**；且
+  **跳过 `model_state` 还原会渲出不同画面**（证明还原是有用的，不是摆设）。
+- 价值兑现：腕相机外参未定时先只采 agentview，定了之后补渲染 —— **rollout 一条没浪费**。
+
+⚠️ **三个坑（都已修，别再踩）**
+1. **`generate_simdist_data.py` 原本完全不读 `sim2real_cell`** ⇒ 给 RealCell 专家采集会
+   **静默落在原版 arena**。同理 **`train_simdist.py` 到 2026-09-20 才有 `sim2real_cell`**。
+2. **`mj_step` 是先 forward 再积分** ⇒ 一步结束时 `data.qpos` 已更新、渲染读的 `data.xpos`
+   还停在积分前。robosuite 的相机 sensor 直接渲染，于是**图像比 qpos 落后一个物理子步**，
+   表现为每条边缘一圈 1 px 轮廓（mean |diff| 1.2/255），任何 `(qpos, forward)` 都复现不出来。
+   修法 = 在 sensor 渲染前补一次 `forward()`（`attach_render_state_probe`），零额外渲染开销。
+   ⚠️ 探针必须**每局 reset 后重挂**：robosuite 每次 hard reset 重建 observables。
+3. **`restore_model_state` 会把 `cam_*` 一起还原** ⇒ 用**新**外参重渲染时会被悄悄改回旧相机。
+   现役 rerender 在 restore **之后**才写相机（`env/sim2real.py:apply_cameras` 同样语义）。
+
+**校准腕相机**（`2cam_calibrated_v1/calibration.json`，cell = `threading_real_cell_calibrated_wrist.yaml`）
+- 采用的解释：`T_ee_zedm` 中的 "ee" = **Franka 法兰**，且 robosuite 的 hand 系需再绕 z 转 **45°**
+  才对上（= 早先记的 B@45 假设）。grip 系下 pos (0.0294, 0.0772, −0.0810)、
+  quat_cv (0.6718, −0.0927, −0.1266, 0.7239)、**fovy 45.656°**（sim 默认腕相机是 75°）。
+- ⚠️ **这个坐标系假设从未用真机照片验证过**，而数据、cell、两个 stage-1 都建立在它上面。
+  决定性证据仍是 `scan_run2/pose_*/zedm_left.png` + `render_camera_pov.py`（数据在别的机器上）。
+- 一致性已验：该 cell 与采集 cell **非相机字段逐字段相同**；用它渲染 vs 数据集帧
+  mean<1 / max<40（JPEG 噪声量级）⇒ 训练期 eval 与训练数据同源。
+- ⚠️ 不对称：agentview 帧带每局相机 DR 抖动（采集时抽的），补渲染的腕相机是固定位姿无抖动；
+  eval 时两者都抖。
+
+**★★ 腕相机在插入瞬间看不到目标（0.0%）**
+120 条成功轨迹的最后 20% 帧，把 ring 几何中心与针尖投影进腕相机：
+**校准腕相机 0.0% / 0.0%，sim 默认腕相机（fovy 75）也是 0.0% / 0.0%**（目标落在画面下沿
+之外，v≈334–408 vs 画幅 224）。**原版 arena 用 MimicGen source demo 复算同样是 0.0%**
+⇒ **不是 RealCell 的退化，这个任务的腕相机一直如此**，published 的 pixel 阶梯也是在这个
+条件下训的。合并 agentview 在 224² 下孔只有 3.9×5.9 px ⇒ **两个相机都不解析毫米级对准**，
+这是 pixel < state 的一个结构性原因，也意味着**真机上这个相机位提供不了对准信息**（要改
+就得物理挪相机，不是改 sim）。
+
+**stage-1 双臂**（2026-09-21 起跑，只差增广，数据/cell/seed/上限全同）
+`exps/mimicgen/threading_realcell_pixel_stage1_seed1`（base：仅 shift，GPU0，1.28 it/s ≈ 32.5 h）
+vs `..._aug_seed1`（+prop 噪声 2 mm / 色彩抖动 0.3 / 模糊 σ≤2.0，GPU1，1.53 it/s ≈ 27 h）。
+eval 改成 **source = 真机 cell 名义物理**（`eval_domain_shift.mode=none`、`eval_source=0`、
+σ=0.1 两端一致）⇒ `score/score` 就是 TopkSaver 的选择指标。
+⚠️ **与 §47/§48 的 sim2sim 阶梯不可比**（那边全在 dynamics-only target 上）。
+⚠️ eval 用 spawn 会**重新 import** 共享代码 ⇒ 跑完前别改 `env/*.py`、`rl/*.py`、`train_simdist.py`。
+
+⚠️ **中间产物 `2cam/`（sim 默认腕相机那批，49 GB）8 个文件全部不可读**（`data` 组打不开，
+但文件大小看着正常）—— 已于 2026-09-21 删除。**按大小判断 hdf5 完整性会骗人，要真的打开它。**
+
+### §14f ★ 物体布局翻边 + 灯带 + 物体颜色标定（2026-09-22）
+
+**目标**（owner 定）：ring 放到相机那一侧（robot 左 / +y）、needle 放到右侧，**且手臂要从
+ring 的右边插入**，让 agentview 看得见插入过程。ring 只做小位移随机化、不转。
+
+★★ **`layout_tripod_z_rot_deg` 决定手臂从哪一侧插入，是这一块里最要紧的数。**
+MimicGen 的插入 subtask 是 **tripod 坐标系**里的刚体变换 ⇒ 从 ring 看过去，**手臂永远站在
+方位角 = 这个 yaw 的位置**。相机在 ring 的 **149°** 方向，所以 yaw≈149 = 手臂正好挡在视线上，
+yaw≈−30 = 手臂在正对面。
+
+**(a) 可行性**（`panda_joint7` 只有 ±166°）：只搬位置不转 tripod 要求手腕多绕 180° ——
+逐帧回放 12 条失败：抓取 **12/12 成功**，插入差 22–136 mm（阈值 12 mm），**37.5% 的时间步
+joint7 margin = 0** ⇒ 生成率 5/154 = **3.2%**。
+
+| yaw | −90 | −60 | −45 | −30 | −15 | 0 | +15 | +30 | +45 | +90 | 120 | 135 | 150 | 165 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 生成率 (n=50–60) | 5% | 43% | 38% | **48%** | 45% | 22% | 10% | 10% | 5% | 7% | 24–36% | 40–56% | 40–52% | 47–50% |
+
+两条可行带（≈−60…−15 和 ≈120…165），中间和 ±90 都塌。**needle 的 yaw 无影响**（三档实测）。
+
+**(b) 可见性** —— 8 条成功 demo 的最后 40 帧，224 agentview 上 ring 的 **segmentation 像素数**
+（= 策略真正看到的）：
+
+| 布局 | ring px | 全盲帧 | 入射角 |
+|---|---:|---:|---:|
+| ring 右 / yaw 90（翻边前） | 14.4 | 0% | 53° |
+| ring 左 / yaw 135（从相机侧插） | **3.4** | 1% | 52° |
+| ring 左 / **yaw −60** | 34.7 | 0% | 57° |
+| ring 左 / **yaw −30** | 33.1 | 0% | 50° |
+| ring 左 / yaw −15 | 34.4 | 0% | 52° |
+
+入射角四档一样（50–57°）⇒ 差别是**手臂遮挡 + 距离**，不是视角。
+⇒ **配方 = `layout_tripod_z_rot_deg: [-30,-30]`**：唯一同时落在可行带里、且手臂正对相机
+反面（179°）的值，可见性是翻边前的 **2.4×**、是 yaw 135 的 **10×**。
+⚠️ 即便如此，ring 孔在 224 上仍只有 ~5 px —— 这是 §14e 那条角分辨率天花板，没被解决。
+
+**★★★ 三个测量陷阱，全部在这一轮里各骗过我一次**（都已加防线）：
+1. **`mj_ray` 会穿过机械臂报「可见」** —— 它只测简化的**碰撞**几何，而画面里挡人的是**视觉**
+   网格。它对上表的四个布局一律报 "1.00 可见、零遮挡"。`scripts/preview_sim2real.py` 的
+   `visible_fraction` 已换成 segmentation 版 `visible_pixels`（讽刺的是它上一版注释还写着
+   「前一版是假阳性机器」，这一版是**假阴性机器**）。
+2. **`e.reset()`（裸 robosuite env）跳过 `apply_sim2real`** ⇒ 相机退回 robosuite 默认
+   `(0.5, 0, 1.35)`，量的根本不是我们标定的 ZED 位姿。**识别方法：物体变回木头色**
+   （cell 的 `object_rgb` 也没应用）。可视化和测量都只能用 **wrapper 的 `env.reset()`**。
+3. **reset 之前取的 `m, d` 句柄会失效** —— `hard_reset` 重建 sim，旧句柄冻结在构造时刻，
+   由它算出的 `cam_xpos` / 投影 / 入射角全是假的（`sim.render` 用的是 live sim，所以
+   **只有像素数那一栏是真的**，这正是当时数字自相矛盾的原因）。
+⇒ 现在的测量脚本每次 reset 后重取句柄，并**断言相机位姿等于 cell 的标定值**才肯输出。
+
+**灯带 + 与真机对齐的亮度/阴影**（owner：真机是沿机械臂前后方向的一条灯带，在相机上方）。
+MuJoCo 没有线/面光源 ⇒ `light_line_n: 8` 个点光源沿 base **+x** 铺开 `light_line_len: 0.9` m，
+各 1/n 亮度。实现上的三个坑：① arena 的 `<light>` **没写 `diffuse`**（MuJoCo 默认 0.7）⇒「只缩放
+写出来的属性」= 没缩放 ⇒ 全白。② 默认 `shadowscale=0.6` 的阴影视锥对高处的灯太小 ⇒ 桌面出现
+**矩形硬边**；已设 `shadowscale 1.2` + `shadowsize 8192`。③ **`m.nlight` 变了 ⇒
+`capture_model_state` 向量长度变了 ⇒ 换 `light_line_n` 后旧 pixel 数据不可重渲染**。
+成本 5.4 → 7.1 ms/step（+30%）；n>8 直接 assert。
+
+★★ **亮度和阴影是按真机白板拟合的，不是眼调。两个统计量、两个可分离的旋钮：**
+
+| 统计量 | 旋钮 | 真机 | 拟合后 |
+|---|---|---:|---:|
+| 板面远/近半区**梯度** | 灯**高度**（关阴影测，隔离 Lambert 项） | +10 | +9 |
+| 板面 **p90−p10 跨度** | **`light_shadow_n`**（8 盏里几盏投影） | 52 | 55 |
+| 板面**中位数** | **`light_diffuse`**（整条灯带的总 diffuse） | 216 | 216 |
+
+- 灯高：z 1.6→梯度 +19 / 2.2→+13 / **3.0→+9** / 4.0→+6 ⇒ **`light_pos` z 从 1.60 抬到 3.00**。
+  真机那条灯带的**等效**高度远高于「相机上方 0.8 m」—— 房间有顶灯 + 墙面反弹，等效源更远。
+- ⚠️ **抬灯不能治跨度，反而变差**（72→108）：p10 是被**阴影**压低的，不是被余弦。
+- `light_shadow_n` 是**本影深度**的物理旋钮：被 k 盏挡住的点仍收到 (n−k)/n 的光。
+  z=3.0 实测 k=3→35 / 4→41 / **5→57** / 6→61 / 8→106（真机 52）⇒ 取 **5**。
+- ⚠️ **环境光不是解药**：总 ambient 0→0.30（同时解 diffuse 保持中位数 216）只把跨度 75→71。
+
+**DR 覆盖阴影**：`dr_light_shadow_n: 3` ⇒ 每局 k∈[2,8]，本影深度随机。加上 `dr_light_*`，
+24 次抽样实测 **board 216±22 / spread 55±18 / object (108,3,2)**（真机 216 / 52 / (114,1,1)）。
+
+★★★ **这一轮在 DR 里挖出三个 bug，都是加灯带之后才出现的、且全都静默：**
+1. **`dr_light_ambient` 是按每盏灯写绝对值** ⇒ 8 盏灯把 `[0.02,0.12]` 变成总量 `[0.16,0.96]`，
+   板面被冲白。已按 `nlight` 分摊。
+2. **`dr_light_diffuse` 乘的是 arena 快照，不是匹配值** ⇒ `light_diffuse` 这个新旋钮
+   **对任何一个 DR 样本都毫无作用**（扫 0.7→1.6 板面中位数纹丝不动 179.5，这才暴露出来）。
+   `_matched_pos/_matched_dir` 当初修过同一个坑，diffuse 漏了。
+3. **`dr_light_pos` 是逐灯独立抽的** ⇒ 一条灯带被打散成一团点光源，把灯带存在的意义随机化掉了。
+   已改成整条灯带**刚体**平移（一次抽样，所有灯共用）。
+
+★ **DR 的均值要对齐真机，而不是 nominal**：`dr_light_dir`/`dr_light_pos` 只会**降低**板面入射
+余弦 ⇒ 无论增益多对称，DR 均值都系统性偏暗。曾经的状态是 nominal 216、**DR 均值 179**（暗 17%），
+也就是策略看到的平均画面根本不是真机。`light_diffuse` 现在是按 **DR 均值 = 216** 解出来的。
+⚠️ 连带：albedo/灯光的**配比**也重平衡过 —— 只靠 albedo 把板面拟到 216 会把它逼到 **0.97**，
+增益上界只能设 1.03、DR 均值再被拉低；现在 albedo 回到物理的 **0.85**、灯按同比例调亮
+（渲染结果不变），两个增益范围就能对称取 `[0.90,1.10]` / `[0.85,1.15]`。
+
+**并行试布局的办法**：`THREADING_REAL_CELL_YAML` 环境变量覆盖 `Threading_RealCell` 读的 cell
+文件（不设 = 逐字节旧行为）⇒ 候选 cell 放 scratchpad，**不用动线上 yaml**（而 `Threading_RealCell`
+每次 reset 都重读它，改线上 yaml 会当场打死在跑的 job）。`gen_realcell_demos.py --measure`
+现在按 `--shard` 给实验目录命名，`--video` 保留失败并出 playback mp4。
+
+---
+
+## 15. Square_RealCell：把 Square 搬上同一张真机 bench（2026-09-21）
+
+**同一个 DROID cell、同一套相机解与 DR，只换任务与物体。** 唯一真源 =
+`release/cfgs/sim2real/square_real_cell.yaml` + `env/square_variants.py`。
+arena 仍然来自 `env/peg_insertion.py` 的 `MEASURED_*`（§14），所以 Square / Threading /
+PegInsertion 三条线共享一个 arena，gate §L 逐项比对。
+
+### 15a. cell yaml 现在可以 `inherit`
+
+`load_sim2real()` 新增 `inherit: <相对路径>`（子键覆盖父键，`cameras` 整体替换，不支持链式）。
+`square_real_cell.yaml` 因此只有 **2 个 task 键**（`workspace_offset` / `object_geom_prefixes`），
+相机解、桌色、全部 `dr_*` 都从 `threading_real_cell.yaml` 继承。
+**理由**：那些量是「这间屋子」的属性不是任务的属性 —— 重标定一次相机就该同时落到两条线上，
+而一份复制粘贴的副本只会在下一次标定时静默过期（正是 §14b 那类漂移）。
+⚠️ 连带：任何做 provenance 快照的脚本都要把 **inherit 链上的每个文件**一起哈希。
+`pipeline_realcell.sh` 已改（`cell_files()` + `sha256sum -c`）；只存子文件等于没存。
+
+### 15b. ★ Square 不能只靠 wrapper 的 sim2real hook —— 三条，全部静默失败
+
+前两条 Threading 也有（所以要注册类），**第三条是 Square 独有的，而且是致命的**：
+
+1. MimicGen（生成）和 robomimic（`tools/dataset_states_to_obs.py`）都从 hdf5 里的 env_name
+   建 env，永远不过我们的 wrapper。
+2. `apply_workspace_offset` 打的是 `_get_initial_placement_bounds`，**Threading 每次 hard reset
+   重读，Square 不读**：`Square_D0.__init__` 一次性把 bounds 建成
+   `SequentialCompositeSampler` 交给 `NutAssemblySquare`，而 `_load_model` 只在
+   `placement_initializer is None` 时才重建（`nut_assembly.py:406`），`_reset_internal` 只调
+   `.sample()`。⇒ **wrapper 的 offset patch 在 Square 上是 no-op**，螺母会留在 D0 的位置。
+3. ★ **peg1/peg2 是 arena 几何，写死在 `pegs_arena.xml` 的世界坐标 `(0.23, ±0.1, 0.85)`；
+   `TableArena`/`PegsArena` 都不会让它们跟着 `table_offset` 走。** 桌面从 0.820 抬到 0.9327
+   之后，半高 0.1 m 的柱子露出部分从 **130 mm 变成 17 mm** —— 任务不是变难，是**几何上不可能**，
+   而且没有任何地方会报错。`Square_RealCell._place_pegs` 把两根柱子重新放到新桌面上，
+   并且施加与螺母**相同**的 `workspace_offset`，所以 nut↔peg 的相对几何（即任务本身）不变。
+   ⚠️ 改的是 `super()._load_model()` 之后的**合并后 task XML**，因为那份 XML 才是 MimicGen
+   存进 hdf5 `model_file`、robomimic 回放时用的东西。
+
+附带：两根柱子的 geom 在 `pegs_arena.xml` 里**没有 name**，所以对一切按 geom 名工作的东西
+（cell 的 `object_rgb`、preview 的遮挡报告、逐 geom 的 domain shift）都不存在。`_place_pegs`
+顺手给它们命名（`peg1_col0` / `peg1_vis1` / …），这才让柱子能被当成任务物体处理。
+
+### 15c. `workspace_offset = (0.071, −0.034)`：纯 base 位移补偿
+
+```
+stock base xy 相对桌心 = (−0.16 − 0.8/2, 0)        = (−0.560,  0.000)
+实测 base xy 相对桌心（§2e）                        = (−0.489, −0.034)
+位移                                                = (+0.071, −0.034)
+```
+⇒ 螺母与柱子**相对机器人**的位置与 stock `Square_D0` 逐位一致（gate §L 检查），
+stock 的可达性/抓取几何原样保留。
+
+⚠️ **Threading 的 `(0.071, 0.066)` 里多出来的 `(0, +0.10)` 是遮挡修正，不可搬过来**
+（cell 文件里已写明「camera-dependent」）。Square 这边 **不需要**：同一台 zed2i 下
+preview 报告螺母与方柱都是 `OK`，无遮挡。
+
+**可达性实测**（OSC P 控制伺服到 4 个 waypoint × 5 seed，残差）：
+
+| waypoint | Square_RealCell | stock Square_D0 |
+|---|---:|---:|
+| nut grasp | 0.2–0.3 mm | 0.6–1.3 mm |
+| nut lift +12 cm | 0.7–0.8 mm | 0.7–1.0 mm |
+| over peg top +6 cm | **0.1–5.4 mm** | 0.1–1.0 mm |
+| peg insert（柱身中段） | 9.2–10.0 mm | 10.0–11.1 mm |
+
+最后一行两边都是 ~10 mm ⇒ 那是**空夹爪撞柱子**的伪迹，不是可达性。
+真正的信息是 `over peg top` 一行：RealCell 最差 5.4 mm vs stock 1.0 mm ⇒ 桌面抬高 113 mm 后
+柱顶相对 base 从 +38 mm 变成 +151 mm，**余量确实变小了但够用**。
+
+### 15d. rotw1 由**类**携带，不用 `init_dist` 旋钮
+
+`Square_RealCell_RotW1`（`NUT_Z_ROT = (2π/3, π)`，即 120–180°，与
+`square_d0_state_ibrl_source_rotw1_sig01.yaml` 逐位一致）。
+**为什么不用 `init_dist.nut_z_rot`**：那个旋钮在 `PixelRobosuite`
+（`env/domain_shift.py::_apply_square_init_distribution`）里，MimicGen 生成根本不经过它 ⇒
+窗口就得在两处各写一遍，而两边都不会报错。现在类名承载完整任务定义，生成 / BC prior /
+`train_rl.py` 三处只写 `Square_RealCell_RotW1`，**cfg 里没有 `init_dist` 块**。
+不带窗口的 `Square_RealCell` 保留 D0 原生 360°。
+
+### 15e. 圆柱 peg2 已下桌（`ROUND_PEG = False`，2026-09-21 用户决定）
+
+`Square_D0` 的 `single_object_mode=2` 把 RoundNut 传送到 (10,10,10)，**但没动它的柱子** ⇒
+peg2 作为干扰物留在桌上，真机上没有对应物；而且被 `object_rgb` 上成同一个 burgundy 后，
+两根柱子在渲染里几乎无法区分。现在与 RoundNut 同样处理。
+⚠️ 这是**开关不是删除**（要和公开 Square 数据集对比时得拨回来），而且它改的是合并后的 task
+XML ⇒ **烘进每一条生成的 demo，不是渲染期选项，改了必须重新生成，不能混用**。
+
+### 15f. 实测数字（2026-09-21）
+
+| 项 | Square_RealCell | 对照 |
+|---|---:|---|
+| MimicGen 生成成功率（360°，n=50 attempts） | **78%** | Threading RealCell 53%（§14b） |
+| MimicGen 生成成功率（rotw1，n=50） | **86%** | — |
+| demo 均长 / 最长（rotw1） | 161 / 171 步 | Threading 218 步 |
+| agentview 遮挡 | 螺母 OK / 方柱 OK | Threading 需 +0.10 m 才不被臂挡 |
+| 孔投影（agentview, 224²） | **14.5 × 17.6 px @ 34.5° 入射** | Threading 环口 3.9 × 6.0 px `UNRESOLVABLE` |
+| 孔投影（腕相机, 224²） | 24.1 × 18.3 px @ 18.5° | Threading 1.1 × 11.2 px @ 83.6° |
+
+⇒ **Square 在这台相机上是「看得见」的任务，Threading 不是**（Threading 的插入对齐只能靠腕相机，
+而 §14e 实测腕相机在插入瞬间 0.0% 可见）。这条差异值得单独记住，它会决定 pixel 臂的难度排序。
+
+### 15f2. ★ source 专家已训出：**0.96**（2026-09-21，一次跑通）
+
+`TASK=square bash scripts/pipeline_realcell.sh`，全链路无人工干预。
+
+| 阶段 | 结果 | Threading RealCell 对照 |
+|---|---:|---:|
+| MimicGen 生成 1000 条 | 3.5 min（10 shard 并行） | — |
+| 转换 | 全部 `reward match? True`，均长 160 / 最长 171 | 均长 215 |
+| MLP BC prior（2000 epoch, 37 min） | 40 个 eval 点均 0.697、末 6 点均 **0.93**、**独立 final eval 0.95** | 0.81 |
+| IBRL 400k（2 h 42） | 稳态 190k–400k **0.959**（22 点 × 50 局） | — |
+| **独立重评 n=300, σ=0.1** | **0.96** | **0.957** |
+
+IBRL 曲线（每 10k 一点）：前 120k **全 0.00** → 140k 0.46 → 150k 0.90 → 190k 起稳在 0.92–1.00。
+⚠️ **前 120k 的 0.00 是 IBRL 的正常冷启动，不是故障**：Threading 同一 pipeline 也是前 50k 全 0.00、
+90k 才 0.42。机制 = critic 从零起步时 `act_method=ibrl` 的 argmax 会压过 prior（哪怕 prior 有 0.95）。
+判断窗口放在 **90k–150k**，之前的 0.00 没有信息量（铁律 #4）。
+⚠️ 别因此去开 `prior_margin` —— tasks §32 实测它会拉低 Square 的最终性能。
+
+⇒ **Square RealCell source 专家与 Threading RealCell 持平（0.96 vs 0.957）**，比 sim2sim 的
+Square rotw1（0.98）低约 2 点，与多出来的 base 位姿 DR（R1–R3）一致。
+
+`exps/mimicgen/square_realcell_{mlp_bc,ibrl}_seed1`，IBRL 每 25k 一个 snapshot（供 SimDist 采集）。
+
+### 15f3. `evaluate/eval.py` 的 `[EVAL ENV]` 会把 rotw1 报成 FULL —— 已修
+
+banner 原来只看 `init_dist.nut_z_rot` 这个旋钮，旋钮关着就印 `FULL(0-360)`。
+但 §15d 之后窗口是**类**带的 ⇒ 一个真跑在 120–180° 的 run 会被印成全 360°。
+**这正是铁律 #17 里废掉 §41 那张 2×2 的同一种错**（banner 是唯一的事后判据，它骗人就没救了）。
+已改为旋钮关着时回退去问类的 `NUT_Z_ROT`，印成 `120-180deg(class)`；
+拿不到类就仍印 `FULL(0-360)`，且**任何异常只降级这一行打印，绝不影响 eval**。
+回归：Threading_D0 与走旋钮的老 Square ckpt 输出均不变（后者无 `(class)` 后缀）。
+
+### 15g. 还没做 / 已知占位
+
+- ~~`object_rgb` 对方柱是占位值~~ **已确认（2026-09-21）**：真机方螺母与方柱和 Threading 零件
+  是同一种 burgundy PLA ⇒ 继承的 `object_rgb` 对两件都对，不需要逐件颜色。
+- **没有 target 域**：这条是 sim2real，target = 真机本身，不在 sim 里另定 shift
+  （区别于 §12/§13 的 sim2sim target）。
+- **腕相机**：继承的 `threading_real_cell.yaml` 里是注释掉的（用 sim 默认挂载），
+  与 Threading 的 demo 生成 / state IBRL 口径一致。等 pixel 阶段再做
+  `square_real_cell_calibrated_wrist.yaml` 继承 `threading_real_cell_calibrated_wrist.yaml`。
+- **strict_success 不适用**：Threading/Coffee 专用（§5c），Square 全线 false。
+- 一切 `*_RealCell` 类都要在**每个会建 env 的进程**里 import：已加到
+  `env/robosuite_wrapper.py`、`scripts/gen_realcell_demos.py`、`tools/dataset_states_to_obs.py`。
+
+### 15i. PIXEL stage-1 数据：与 Threading 的 `2cam_calibrated_v1` 逐项对齐（2026-09-21）
+
+> ⚠️ **数据已于 2026-09-23 删除（cell 大改）。** 本节的**方法与脚本仍然有效**，重采一遍即可；
+> 下面的数字属于旧 cell，别再引用。删除的是 `square_realcell_pixel_v1`(133 GB)、
+> `threading_realcell_pixel_v1`(211 GB)、`threading_realcell_source_diverse_v1`(6.9 GB)、
+> 两个 Threading pixel stage-1 run（日志存档在 `exps/mimicgen/_archive_realcell_pixel_stage1_20260921/`）。
+> 作废原因见 §15j。
+
+**配方 = §14e 原样**：agentview-only 采集（224²、JPEG q90、`--store_sim_state 1`）→
+用**同一块**校准腕相机从存下的 sim_state 补渲染 → 每 shard 取前 4500 条，8 shard = **36000 条双相机**。
+采集参数与 Threading 的 `realcell_pix_gpu{2,3}` 链相同：10 worker/GPU、`PER_WORKER_MIB 3300`、
+seed 基数 100、`HYBRID=1 SNAP_HYBRID=1`、p_expert 0.5、动作噪声 σ~U[0.05,0.2]、关节 σ 0.1、
+`MAX_LEN 400`、16 个 IBRL snapshot（25k–400k）。
+
+| | Threading | Square |
+|---|---|---|
+| 采集 cell | `threading_real_cell.yaml` | `square_real_cell.yaml`（inherit 前者） |
+| 训练/eval cell | `threading_real_cell_calibrated_wrist.yaml` | `square_real_cell_calibrated_wrist.yaml`（inherit 前者） |
+| 腕相机标定 | `2cam_calibrated_v1/calibration.json` | `wrist_calibration.json` = **同一个 `camera` 块逐字复制** |
+| 每 shard 采集 | 12500 | **4500** ← 唯一差异 |
+| 每 shard 进 stage-1 | 4500（`source_replay_num_data`） | 4500 |
+
+**唯一差异的理由**：`/user_data` 只剩 432 GB（97%），而 Threading 每 shard 采的 12500 条里
+stage-1 只读前 4500。所以训练可见的数据完全相同，还省下约 70 GB 用不到的数据。要更多就追加
+part（seed 不相交）。「前 4500 条」的组成也等价：merge 按 worker 分片拼接，截断截掉的是
+整个 worker，不存在按长度的偏置。
+
+**采集前的验证（全过）**
+- `scripts/test_rerender.py --run exps/mimicgen/square_realcell_ibrl_seed1`：两个相机重渲染
+  **逐字节相同**，跳过 `model_state` 还原后 mean |diff| 51 ⇒ 重放契约在 Square 上成立。
+- 用校准 cell 直接渲染 vs 数据集里补渲染的腕相机帧：mean |diff| **0.70**（JPEG 噪声），
+  即训练时 eval 与训练数据同源，与 Threading 的检查结果一致。
+- 校准 cell 相对采集 cell **只有 `cameras` 不同**，agentview 逐字段相同（gate §L 已加这条）。
+- 采集链的 `threading_real_cell.yaml` 哈希 `b9423238…` 与 Threading pixel_v1 快照**逐字节相同**。
+
+**★ 腕相机在插入阶段看得见 Square**（与 §14e 的 Threading 结果相反）
+成功 episode 的最后 20% 帧（n=173），把目标投影进校准腕相机：
+**螺母 96% 在画面内，方柱顶端 41%**；Threading 的环与针尖是 **0.0% / 0.0%**。
+再加上 agentview 的孔 14.5×17.6 px（Threading 3.9×6.0），**Square 在两个相机上都能解析对准**，
+Threading 两个相机都不能。pixel 臂的难度排序应该据此预期：同样的 pipeline 在 Square 上
+pixel 与 state 的差距应当小得多。⚠️ 这是 n=11 条 smoke episode 的数，量级可信，不作精确引用。
+预览：`figs/sim2real_square/pixel_smoke_sheet.png`（每对 = agentview | 校准腕相机；三行 = 开头/中段/结尾）。
+
+**产物**：`/user_data/Chenyang/ibrl_offload/release/data/mimicgen/square_realcell_pixel_v1/`
+`part{1..8}.hdf5`（agentview）→ `2cam_calibrated_v1/part*_2cam.hdf5`（stage-1 读这个）。
+同目录有 `cell_chain.sha256`（整条 inherit 链）+ 两个 `.snapshot`、`expert.sha256`、`git_*`。
+驱动：两条 `scripts/collect_threading_realcell_batches.sh` 链（`LOG_TAG=square_realcell_pix`，
+日志 `logs/square_realcell_pix_gpu{2,3}.log`）+ `scripts/square_realcell_pixel_after_collect.sh`
+（等两条链都结束 → 打开每个 part 校验 ≥4500 条且带 sim_state → `rerender_wrist_chunks.py`）。
+
+**结果（2026-09-21 完成，无人工干预）**：采集 75 min（2 条链 × 4 批）+ 补渲染腕相机 19 min。
+
+| | Threading `2cam_calibrated_v1` | Square `2cam_calibrated_v1` |
+|---|---:|---:|
+| episodes | 36000 | 36000 |
+| transitions | 6.53M | **5.36M** |
+| 采集成功率 | 73–74% | **78.9%** |
+| 平均长度 | ~181 | **149** |
+| 相机 | agentview + 校准腕相机 | 同 |
+| 大小 | 107 GB | 103 GB |
+
+⚠️ episode 数对齐，**transition 数不对齐**（Square 的 episode 更短，少 18%）。stage-1 的
+`seq_replay_max_transitions` 6.6M 上限在两边都不会触发；对照 §45 的 epoch 预算时要按
+transition 算，而不是按 episode 数。
+清理后 `/user_data` 剩 297 GB（98%）；agentview-only 的 `part*.hdf5`（8×3.9 GB）是补渲染
+的源数据，腕相机外参要是再改，靠它们重渲染，别删。
+
+**为此改的共享脚本**（Threading 行为不变）：`collect_threading_realcell_batches.sh` 加
+`LOG_TAG`（原来的批日志名写死，第二个任务会覆盖 Threading 的日志）和 inherit 链哈希；
+`rerender_wrist_chunks.py` 加 `--expert/--num_shards`（原来写死 Threading 专家 ——
+拿它重放 Square 的 state 会重建错的场景；非默认专家写进 manifest，混用时 resume 会被拒绝）；
+`test_rerender.py` 加 `--run`。
+
+### 15j. ★ cell 大改（2026-09-23）谁作废、谁不作废
+
+`threading_real_cell.yaml` 换了相机内参（fovy 60.84 → **50.3**）、桌面板（视觉 5×5 m → **实测
+0.753 m 方板** + offset）、颜色（按 ZED t=0 帧重新拟合：板 (219,220,218)、物体 (114,1,1)）、
+条形光 + 阴影、背景照片 DR、`hide_table_legs`，以及 Threading 的**显式摆放** `layout_needle_*` /
+`layout_tripod_*`。`square_real_cell.yaml` 是它的 2 键 override ⇒ 这些全部继承过来。
+
+**逐字段判定**（把新旧 cell 都 resolve 出来对比，而不是读 diff 猜）：
+
+| 作废 | 不作废 |
+|---|---|
+| **所有 pixel 数据**（两个任务）：相机 + 颜色 + 光照 + 背景全变 | **Square 的 state 线**：demo 1000 条、MLP BC prior、IBRL 专家 **0.96** |
+| **Threading 的 state 数据**：`layout_*` 改了复位分布 | Square 的 arena / `workspace_offset` / `init_qpos` / `dr_base_*` 均未变 |
+
+★ **为什么 Square 的 state 线活下来了**：对 Square 而言，改动**全是视觉项**。唯一的几何类改动
+`layout_*` 是**按物体名匹配**的（`cell_layout_bounds` 只给 needle/tripod 出 spec），两条应用路径
+——wrapper 的 hook（`env/sim2real.py:563`）和 `Threading_RealCell._get_initial_placement_bounds`
+——都只覆盖名字对得上的物体。Square 的 sampler 只有 `nut`，所以一条都不命中，仍走
+`workspace_offset`。已实测确认。
+⇒ **推论**：`layout_*` 现在是 Threading 专用的。哪天要给 Square 也做实测摆放，得新增
+`layout_nut_*` 并让 `Square_RealCell` 去读，不会自动生效。
+
+**重采 pixel 数据前要先做的事**：§15i 的脚本原样可用（`LOG_TAG` / `--expert` / inherit 链哈希
+都已参数化），但 **cell 稳定之前别开**——这批数据的成本是 1.6 h + 133 GB，而它把当时的相机与
+光照逐帧烘死。另外 Square 的 source 专家是在**旧 cell** 上训的：几何没变所以它依然有效，
+但如果之后 cell 动了几何（不是视觉），专家要重训。
+
+### 15k. ★ 方柱扰动 `dr_peg_xy` / `dr_peg_yaw_deg`（2026-09-23）
+
+**动机**：Square 的方柱是 arena 几何，任务自己的 sampler 从不碰它 ⇒ 每一局柱子都在同一个点。
+真机上柱子的摆放有公差，所以加一个小幅扰动。新旋钮在 `env/sim2real.py`，每次 reset 以
+`nominal` 为基准写 `body_pos`/`body_quat`（与 base DR 同构，不会跨局累积）。
+`body_pos`/`body_quat` 本来就在 `MODEL_STATE_FIELDS` 里 ⇒ **这次抽样会被 `model_state` 记下，
+pixel 事后重渲染能逐帧复现**（§14e 的重放契约）。
+
+**★ 这个扰动对两条线的性质不同 —— 引用收益时必须说明是哪条线**
+Square 的 23 维 obs = `SquareNut_pos/quat` + 到 eef 的相对量 + 本体感受，**方柱不在里面**
+（对比 Threading：tripod 是 sampler 物体，位姿进 obs）。⇒
+- **state 策略**：不可观测的**噪声**，只能靠动作容错吃掉，上限由间隙定；
+- **pixel 策略**：方柱在 agentview 里可见，是**可学的信息**。
+
+**间隙**（实测 geom）：孔 45.4 mm 见方（4 根方条内面 ±22.7 mm），柱 32 mm 见方
+⇒ yaw 对齐时每边 **6.7 mm**，yaw 偏 45° 时归零。
+
+**剂量-响应**（专家 `model0.pt`，n=200/格，σ=0.1，SE≈0.012）：
+
+| `dr_peg_xy` | yaw | score | Δ |
+|---:|---:|---:|---:|
+| 0 | 0° | **0.985** | — |
+| 2 mm | 0° | 0.970 | −0.015（噪声内） |
+| 5 mm | 0° | 0.970 | −0.015（噪声内） |
+| 5 mm | 3° | **0.990** | +0.005 |
+| 10 mm | 0° | 0.925 | **−0.060**（≈4 SE） |
+| 10 mm | 5° | 0.935 | −0.050 |
+
+拐点落在 5–10 mm，**和 6.7 mm 的间隙一致**（机制自洽，不是拟合出来的）。yaw 到 5° 免费 ——
+方柱转几度几乎不吃间隙。⇒ **选定 `dr_peg_xy: 0.005` + `dr_peg_yaw_deg: 3.0`**（两份 Square cell
+都写了；gate §L 检查两份只差 `cameras`，所以不会漂）。
+⚠️ n=200 单组 seed；<0.05 的差读不出来（铁律 #1），别把 0.985→0.970 当成真实退化。
+
+**想要更大的方柱变化怎么办**：小扰动不够，得把方柱位姿**加进 obs** —— 那会改状态维度，
+demo / BC prior / IBRL 专家三样全部重来，而且真机上要有方柱位姿的估计来源。是另一个量级的决定。
+
+### 15l. 相机视角的影响：state 为零，pixel 为全部
+
+- **state 线：严格为零。** obs 里没有像素。实证：cell 大改（fovy 60.84°→50°、颜色/光照/背景全换）
+  前后同一个专家 n=300 独立重评 **0.96 → 0.9667**。
+- **pixel 线：相机就是输入。** 这是 pixel 数据必须重采的原因。Square 的孔投影
+  14.5×17.6 px → **18.0×21.6 px**。
+- **`fovy: 50` 是为 Threading 选的**（环孔像素 vs 取景余量的拐点，留 62 mm 余量）。
+  Square 同口径实测（n=200，全 DR，螺母/柱底/柱顶到画面边）：**最差 44.8 px = 421 mm，
+  是 Threading 的 7 倍**。⇒ 对 Square 而言 50° 非常宽裕，**如果想要更多像素，Square 可以单独
+  裁得更紧**（它自己的 cell 键即可，代价是真机侧两个任务各用一套裁剪参数）。没有实测支持之前不要改。
+- 真机侧配套：50° = 以**主点** (622.555, 352.755) 为中心裁 497 px 再缩到 224，**不是图像中心**，
+  且要先去畸变。sim 与真机这一步不一致，pixel 策略直接错位。
+
+### 15m. ★ 重放契约在照片背景/软阴影下一度失效（2026-09-23，已修）
+
+开采前按 §14e 重跑 `test_rerender.py`，**直接崩在 A（max |diff| 212）**。两个独立的根因，
+都属于同一类："每局随机、但没被 `model_state` 捕获"的字段。
+
+| # | 字段 | 症状 | 修法 |
+|---|---|---|---|
+| 1 | 背景照片（写在 `tex_rgb`） | 重渲染画上**另一张**背景 ⇒ 212 | 采集端记录 `bg_index`（逐 episode attr），重渲染端重新画回同一张 |
+| 2 | `light_castshadow`（`dr_light_shadow_n` 每局挑哪几盏灯投影） | 阴影集不同 ⇒ 118 | 加进 `MODEL_STATE_FIELDS` |
+
+★ **1 的病根是链路只修了一半**：`apply_sim2real` 早就有 `bg_index` 参数、重渲染端也在用，
+**但采集端（`PixelRobosuite.reset`）从不传也不存**。代码里存在一个"可复现"的接口，却没有人
+在写入侧调用它 —— 铁律 #26 的同型（钩子在但没人调），而且因为 `tex_rgb` 不在 `MODEL_STATE_FIELDS`
+里，`restore_model_state` 看起来"什么都恢复了"，掩盖了它。
+⇒ 现在 `PixelRobosuite.last_bg_index` 暴露抽样结果，`generate_simdist_data` 两个写盘函数都落盘，
+`rerender_simdist_data` 默认读它重画（`--visual_dr` 时才另抽）。实测 400/400 条都带 `bg_index`。
+
+★★ **判据本身也得改：逐字节相同在开软阴影后不可能成立。** 修完两个 bug 仍剩 max |diff| 7。
+诊断方法是**让渲染器和自己比**：同一份源数据连续重渲染两次，彼此就差 max 4–6（0.01% 的像素）。
+⇒ gate A 改为**自校准**：要求「源 vs 重渲染」不差于「重渲染 vs 重渲染」（+2/255 松弛，且均值同量级）。
+现状 7 / 0.00008 vs 7 / 0.00007，无法区分；而真故障（212 / 118）仍差两个数量级会被抓住。
+⚠️ `MODEL_STATE_FIELDS` 一改，`model_state` 向量长度就变，新旧数据不能混用（`model_state_layout`
+会对不上）。这次能改是因为那一刻所有 pixel 数据都已删除。
+
+### 15n. 采集就绪状态与成本（2026-09-23 实测）
+
+| 项 | 值 |
+|---|---|
+| 专家（完整新 cell + 方柱扰动，n=300，σ=0.1） | **0.98** |
+| 吞吐（10 worker/GPU，agentview 224 JPEG q90 + 照片背景 + 阴影） | 400 条 / 152 s（含约 40 s 启动）≈ **3.6 条/s 稳态** |
+| 单 worker 显存 | ~1.15 GB（`PER_WORKER_MIB 3300` 仍然保守够用） |
+| 磁盘 | **2.29 MB/条** ⇒ 8×4500 agentview ≈ 82 GB，加 2cam 约 185 GB |
+| 采集成功率 | 77–78% |
+| 预计耗时 | 2 条链 × 4 批 ≈ **1.5 h**（与照片背景加入前持平，渲染成本没涨） |
+
+⚠️ **GPU 可用性是当前的硬约束**：GPU 2/3 被别的用户占着（各约 70 GB，已跑一天多），
+在上面起 10 worker **7 个直接 CUDA OOM**。GPU 0/1 目前空闲，100 条探针零 OOM。
+⇒ 开采前先 `nvidia-smi` 看一眼，并把 `GPU=` 指到真正空的卡；批脚本的 guard 用的是
+**整卡** used/total，别人占着时它会一直等而不是报错。
+
+### 15h. 怎么跑
+
+```bash
+# 一次性：MimicGen source demo（10 条 human）+ datagen_info
+python .../mimicgen/scripts/download_datasets.py --dataset_type source --tasks square \
+    --download_dir release/data/mimicgen
+python .../mimicgen/scripts/prepare_src_dataset.py \
+    --dataset release/data/mimicgen/source/square.hdf5 --env_interface MG_Square \
+    --env_interface_type robosuite
+
+# 预览（渲染 + 遮挡/分辨率报告）
+python scripts/preview_sim2real.py --task Square_RealCell_RotW1 \
+    --config release/cfgs/sim2real/square_real_cell.yaml --out figs/sim2real_square
+
+# gate（§L 是 Square 段）
+python scripts/test_sim2real.py
+
+# 全流程：生成 1000 条 -> 转换 -> MLP BC prior -> IBRL
+TASK=square setsid bash scripts/pipeline_realcell.sh \
+    > exps/mimicgen/pipeline_realcell_square.log 2>&1 < /dev/null & disown
+```

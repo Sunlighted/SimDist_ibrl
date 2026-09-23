@@ -66,6 +66,9 @@ def main():
     parser.add_argument("--image_size", type=int, default=96)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--max_attempt_factor", type=float, default=3.0)
+    # board reset jitter (env/peg_insertion.py); must match the BC/IBRL env
+    parser.add_argument("--board_pos_noise", type=float, default=0.0)   # m, uniform +- per axis
+    parser.add_argument("--board_yaw_noise", type=float, default=0.0)   # deg, uniform +-
     args = parser.parse_args()
 
     cameras = ["agentview", "robot0_eye_in_hand"]
@@ -83,6 +86,8 @@ def main():
         device=args.device,
         hand_init_perturb_joint_sigma=args.sigma,
         end_on_success=True,
+        env_kwargs=(dict(board_pos_noise=args.board_pos_noise, board_yaw_noise=args.board_yaw_noise)
+                    if (args.board_pos_noise or args.board_yaw_noise) else None),
     )
 
     accepted = []
@@ -123,6 +128,8 @@ def main():
         "env_name": "PegInsertion_D0",
         "domain_shift": dataclasses.asdict(env.domain_shift),
         "hand_init_perturb_joint_sigma": args.sigma,
+        "board_pos_noise": args.board_pos_noise,
+        "board_yaw_noise": args.board_yaw_noise,
         "init_distribution": None,
         "rl_image_size": None if args.state_only else args.image_size,
         "use_state": True,

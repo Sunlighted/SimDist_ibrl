@@ -98,6 +98,10 @@ class DatasetConfig:
     # demo, 0.1 → ~5× demo (still controllable; perturbs both pos + ori
     # consistently).
     hand_init_perturb_joint_sigma: Optional[float] = None
+    # PegInsertion board reset jitter for the EVAL env (see train_rl.py's
+    # fields of the same name). 0/0 = env_kwargs None = legacy.
+    board_pos_noise: float = 0.0
+    board_yaw_noise: float = 0.0
     # ---- IL co-training: mix a second (target) dataset with the primary
     # (source) `path`. When `cotrain_path` is set, train_bc builds a
     # CoTrainDataset that draws EACH batch as `cotrain_ratio` fraction from
@@ -371,6 +375,8 @@ class RobomimicDataset:
             ctrl_delta=bool(self.cfg.ctrl_delta),
             hand_init_perturb=cfg.hand_init_perturb,
             hand_init_perturb_joint_sigma=cfg.hand_init_perturb_joint_sigma,
+            env_kwargs=(dict(board_pos_noise=cfg.board_pos_noise, board_yaw_noise=cfg.board_yaw_noise)
+                        if (cfg.board_pos_noise or cfg.board_yaw_noise) else None),
         )
         if not build_env:
             # Co-training sub-dataset: env_params is still exposed, but the live
@@ -386,11 +392,14 @@ class RobomimicDataset:
     def _check_controller_cfg(self):
         assert self.env is not None
         ref_controller_cfg = self.cfg.env_config["env_kwargs"]["controller_configs"]
-        # rename for consistency
-        ref_controller_cfg["damping_ratio"] = ref_controller_cfg["damping"]
-        ref_controller_cfg["damping_ratio_limits"] = ref_controller_cfg["damping_limits"]
-        ref_controller_cfg.pop("damping")
-        ref_controller_cfg.pop("damping_limits")
+        # rename for consistency (official MimicGen datasets use the old
+        # robosuite key names; data generated with our robosuite already has
+        # the new ones)
+        if "damping" in ref_controller_cfg:
+            ref_controller_cfg["damping_ratio"] = ref_controller_cfg["damping"]
+            ref_controller_cfg["damping_ratio_limits"] = ref_controller_cfg["damping_limits"]
+            ref_controller_cfg.pop("damping")
+            ref_controller_cfg.pop("damping_limits")
         assert ref_controller_cfg == self.env.ctrl_config
         assert self.env.env.control_freq == self.cfg.env_config["env_kwargs"]["control_freq"]
 

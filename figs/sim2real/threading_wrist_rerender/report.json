@@ -1,0 +1,188 @@
+{
+  "shards": [
+    {
+      "file": "part1.hdf5",
+      "episodes": 12500,
+      "transitions": 2288089,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part2.hdf5",
+      "episodes": 12500,
+      "transitions": 2249061,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part3.hdf5",
+      "episodes": 12500,
+      "transitions": 2277021,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part4.hdf5",
+      "episodes": 12500,
+      "transitions": 2272888,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part5.hdf5",
+      "episodes": 12500,
+      "transitions": 2272331,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part6.hdf5",
+      "episodes": 12500,
+      "transitions": 2266066,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part7.hdf5",
+      "episodes": 12500,
+      "transitions": 2283944,
+      "model_dim": 1350,
+      "failures": []
+    },
+    {
+      "file": "part8.hdf5",
+      "episodes": 12500,
+      "transitions": 2278601,
+      "model_dim": 1350,
+      "failures": []
+    }
+  ],
+  "preview": [
+    {
+      "shard": "part1.hdf5",
+      "episode": "demo_0",
+      "indices": [
+        0,
+        200,
+        399
+      ],
+      "calibrated_std": 47.2231502235443
+    },
+    {
+      "shard": "part1.hdf5",
+      "episode": "demo_6250",
+      "indices": [
+        0,
+        82,
+        164
+      ],
+      "calibrated_std": 46.016334657841696
+    },
+    {
+      "shard": "part8.hdf5",
+      "episode": "demo_0",
+      "indices": [
+        0,
+        42,
+        83
+      ],
+      "calibrated_std": 48.137045260657665
+    },
+    {
+      "shard": "part8.hdf5",
+      "episode": "demo_6250",
+      "indices": [
+        0,
+        49,
+        97
+      ],
+      "calibrated_std": 49.97948139782857
+    }
+  ],
+  "cell_sha256": {
+    "/user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_pixel_v1/cell_snapshot.yaml": "b942323848ebdcd69664ec854c9a5ac3860f65fcf558a0877fea73a115e0fe06",
+    "release/cfgs/sim2real/threading_real_cell.yaml": "b942323848ebdcd69664ec854c9a5ac3860f65fcf558a0877fea73a115e0fe06"
+  },
+  "camera": {
+    "T_flange_camera_opencv": [
+      [
+        0.6480287105502096,
+        -0.717088358895261,
+        -0.25659905658348386,
+        0.03381751381506938
+      ],
+      [
+        0.7607693096156827,
+        0.6253449870495398,
+        0.17370579932428432,
+        -0.07539191031722887
+      ],
+      [
+        0.035900527148082284,
+        -0.30777903227626197,
+        0.9507803213369415,
+        0.015517698484807111
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "fovy": 45.65608667597142,
+    "note": "224 square, centered pinhole; native principal-point offset not modeled",
+    "T_sim_hand_reported_flange": [
+      [
+        0.7067582195396209,
+        -0.7074551710979098,
+        -1.0894931844187865e-07,
+        8.022549481439373e-09
+      ],
+      [
+        0.7074551710979111,
+        0.7067582195395841,
+        2.491076829007365e-07,
+        1.6004739570771456e-07
+      ],
+      [
+        -9.923169210631111e-08,
+        -2.531356611598651e-07,
+        0.9999999999999629,
+        0.0004999960281202842
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "T_sim_hand_camera_opencv": [
+      [
+        -0.08021056833251693,
+        -0.9492116030614398,
+        -0.3042426619350182,
+        0.07723720899797522
+      ],
+      [
+        0.9961312339860928,
+        -0.06534023465955173,
+        -0.0587640911780169,
+        -0.029359313368373177
+      ],
+      [
+        0.03590027026525329,
+        -0.30777911941547603,
+        0.9507803028285324,
+        0.016017710241538766
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  }
+}

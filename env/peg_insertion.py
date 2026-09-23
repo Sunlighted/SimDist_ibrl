@@ -227,6 +227,17 @@ class PegInsertion(SingleArmEnv_MG):
         cam_pos_noise=0.0,
         cam_rot_noise=0.0,
         light_noise=0.0,
+        # ★ 2026-09-23 defaults: the old ones (0.015 / None / None / None) let a
+        # policy score by wedging a TILTED peg ~8 mm into the soft default-contact
+        # walls just past the mouth (IBRL 0.86 "success", 0.14 without
+        # penetration). Measured with scripts/verify_peg_ibrl.py: under these
+        # values the scripted expert is 0.95 (n=60, <=0.43 mm, <=0.7 deg) and that
+        # same hacking policy drops to 0.04. Pass the old values to reproduce
+        # pre-fix runs.
+        insert_depth=0.030,          # of the 41 mm through-hole (11 mm above the table)
+        success_max_tilt=5.0,        # deg; the expert stays <= 2 deg
+        board_solref=(0.004, 1.0),   # 0.004 = 2x timestep, MuJoCo's stiffest stable value
+        board_solimp=(0.99, 0.999, 0.001),
         initialization_noise="default",
         table_full_size=MEASURED_TABLE_SIZE,
         table_friction=(1.0, 5e-3, 1e-4),
@@ -285,7 +296,18 @@ class PegInsertion(SingleArmEnv_MG):
         self.light_noise = float(light_noise)           # 0 = off, 1 = nominal band
         self.board_yaw_noise = float(board_yaw_noise)   # degrees, uniform +-
         # success = tip this far below the board top surface
-        self.insert_depth = 0.015
+        self.insert_depth = float(insert_depth)
+        # success also requires the peg's long axis within this many degrees of
+        # the board normal (None = no tilt check). A peg wedged in at an angle
+        # can have its tip inside the pocket column without being inserted.
+        self.success_max_tilt = None if success_max_tilt is None else float(success_max_tilt)
+        # CONTACT STIFFNESS of the 4 pocket walls (None = MuJoCo default soft
+        # contact, solref 0.02 / solimp 0.9-0.95, which lets a pushed peg sink
+        # several mm -- up to tens of mm -- into a wall). Applied to the walls
+        # only, with a large solmix so the peg-wall PAIR takes the wall's values
+        # while peg-finger contacts (the grasp) are untouched.
+        self.board_solref = None if board_solref is None else tuple(float(x) for x in board_solref)
+        self.board_solimp = None if board_solimp is None else tuple(float(x) for x in board_solimp)
 
         super().__init__(
             robots=robots,
@@ -466,6 +488,16 @@ class PegInsertion(SingleArmEnv_MG):
                 "quat", array_to_string(np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]))
             )
 
+        if self.board_solref is not None or self.board_solimp is not None:
+            for g in self.board.get_obj().iter("geom"):
+                if "wall_" not in (g.get("name") or "") or g.get("contype") == "0":
+                    continue
+                if self.board_solref is not None:
+                    g.set("solref", array_to_string(np.array(self.board_solref)))
+                if self.board_solimp is not None:
+                    g.set("solimp", array_to_string(np.array(self.board_solimp)))
+                g.set("solmix", "1000")
+
         self.peg = ScannedPegObject(name="peg_obj")
 
         self._get_placement_initializer()
@@ -562,11 +594,16 @@ class PegInsertion(SingleArmEnv_MG):
         b_pos = np.array(self.sim.data.body_xpos[bid])
         b_R = np.array(self.sim.data.body_xmat[bid]).reshape(3, 3)
         d = b_R.T @ (tip - b_pos)
-        return bool(
+        ok = bool(
             abs(d[0]) < self.board.hole_half_x
             and abs(d[1]) < self.board.hole_half_y
             and d[2] < self.board.half_z - self.insert_depth
         )
+        if ok and self.success_max_tilt is not None:
+            R = np.array(self.sim.data.body_xmat[self.obj_body_id["peg"]]).reshape(3, 3)
+            cos = abs(float(R[:, 2] @ b_R[:, 2]))
+            ok = np.degrees(np.arccos(min(1.0, cos))) <= self.success_max_tilt
+        return ok
 
     # ---------------------------------------------------------- observables
     def _setup_observables(self):
