@@ -89,4 +89,10 @@ viz/wrist_handeye/DISPUTED_*
 # is what separates a flat board from a flat patch of table) or before the scene
 # double-transform was found. Not quotable.
 !viz/objsplats/*.png
+!viz/peg_reset/*.png
+!viz/scene_diag/*.png
 viz/objsplats/superseded_*
+# real GELLO demos vs sim (scripts/compare_real_sim_demos.py): same-joint replay
+# stills/videos, phase grids, trajectory stats -- meant to be pulled and viewed.
+!viz/real_vs_sim/*.png
+!viz/real_vs_sim/*.mp4

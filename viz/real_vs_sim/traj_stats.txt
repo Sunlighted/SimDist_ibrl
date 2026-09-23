@@ -1,0 +1,9 @@
+REAL vs SIM demo statistics (EE = grip site, sim world frame via MuJoCo FK)
+
+demo            steps  dur s  path m  v mean  v p95  v max grasp s  z_min  start xyz
+episode_0001      650   32.5   1.623   0.050  0.199  0.406    10.3  1.008  [-0.181 -0.032  1.403]
+episode_0002      379   18.9   1.179   0.062  0.236  0.325     8.0  1.010  [-0.18  -0.038  1.402]
+SIM expert med     69    3.5   0.926   0.262  0.408  0.429     1.4  1.025  [-0.191 -0.037  1.42 ]
+  (sim: n=60 expert-only successful demos from /scratch/yifanr/simdist/data/peg_d0_src_splat224/shard_0/dataset.hdf5)
+  all successful sim demos: n=2517, length p5/p50/p95 = [ 59.  70. 129.] steps
+  sim episode_length cap = 300 steps (15.0 s)

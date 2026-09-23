@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=bg_cmp
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=0:24:00
+#SBATCH --output=logs/bg_cmp_%j.out
+#SBATCH --error=logs/bg_cmp_%j.out
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+export PYTHONPATH=$PYTHONPATH:/scratch/yifanr/realsim_survey/_GaussianRenderer/src:/scratch/yifanr/gsbench
+python - <<'WARM'
+import gsplat
+from gsplat.cuda._backend import _C
+WARM
+python /scratch/yifanr/gsbench/bg_compare.py
+echo "rc=$?"

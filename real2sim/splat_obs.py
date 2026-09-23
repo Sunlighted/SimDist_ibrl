@@ -41,15 +41,37 @@ DEFAULT_SEG_DIR = os.path.join(_REPO, "real2sim", "splats", "objsplats")
 DEFAULT_CALIB = os.path.join(DEFAULT_SEG_DIR, "obj_calib.json")
 DEFAULT_SCENE_PLY = os.path.join(_REPO, "real2sim", "splats",
                                  "scene_scan5_norobot_v2.ply")
+# ★ MUST be the SAME base solve the zedview camera was placed with.
+# `zed_sim_camera.json` (-> ZEDVIEW_POS/QUAT in env/peg_insertion.py) was built
+# from ground_run2_solved.json's T_base_board. This file used to point at
+# ground_transforms.json, whose base differs by 2.24 mm / 0.196 deg -- i.e. the
+# scene was anchored on one base solve and the camera looking at it on another,
+# a systematic 2.2 mm scene/camera offset baked into every rendered frame.
+# Neither solve is "the right one" (both are scan_run2, 14 poses); what matters
+# is that the scene and the camera agree, so the scene moves onto the camera's.
 DEFAULT_GROUND = os.path.join(_REPO, "real2sim", "scan_pipeline",
-                              "ground_transforms.json")
+                              "ground_run2_solved.json")
+
+
+def _load_base_in_board(ground_json):
+    """Robot base expressed in the board frame, from either ground-solve layout.
+
+    ground_run2_solved.json stores T_base_board (board <- expressed in base);
+    ground_transforms.json stores base.T_world_base directly. Accept both so an
+    older calibration can still be passed explicitly.
+    """
+    g = json.load(open(ground_json))
+    if "T_base_board" in g:
+        return _inv(np.array(g["T_base_board"]))
+    return np.array(g["base"]["T_world_base"])
 
 
 class SplatCompositor:
     def __init__(self, mj_model, mj_data, calib_path=DEFAULT_CALIB,
                  seg_dir=DEFAULT_SEG_DIR, scene_ply=DEFAULT_SCENE_PLY,
                  ground_json=DEFAULT_GROUND,
-                 skip_tokens=("peg_obj",), device="cuda"):
+                 skip_tokens=("peg_obj",), device="cuda",
+                 scene_opacity_min=0.35):
         import torch
         from scipy.spatial.transform import Rotation
         from gs_mujoco import MjSplatRenderer
@@ -68,7 +90,7 @@ class SplatCompositor:
         bq = mj_data.body_xquat[bid]
         T_sw_base = _T(Rotation.from_quat([bq[1], bq[2], bq[3], bq[0]]).as_matrix(),
                        mj_data.body_xpos[bid])
-        T_bw_base = np.array(json.load(open(ground_json))["base"]["T_world_base"])
+        T_bw_base = _load_base_in_board(ground_json)
         T = T_sw_base @ _inv(T_bw_base)
 
         g = load_ply(scene_ply)
@@ -76,7 +98,8 @@ class SplatCompositor:
         xyz = (g.xyz @ R.T + t).astype(np.float32)
         keep = ((np.abs(xyz[:, 0]) < 2.0) & (np.abs(xyz[:, 1]) < 2.0)
                 & (xyz[:, 2] > 0.2) & (xyz[:, 2] < 2.4)
-                & (g.scale.max(1) < 0.10) & (g.opacity.reshape(-1) > 0.35))
+                & (g.scale.max(1) < 0.10)
+                & (g.opacity.reshape(-1) > scene_opacity_min))
         q = g.rot[keep][:, [1, 2, 3, 0]]
         q = (Rotation.from_matrix(R) * Rotation.from_quat(q)).as_quat()[:, [3, 0, 1, 2]]
         tt = lambda a: torch.tensor(np.ascontiguousarray(a), dtype=torch.float32,

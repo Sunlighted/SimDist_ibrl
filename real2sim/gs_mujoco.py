@@ -122,8 +122,17 @@ class MjSplatRenderer:
             cx = (dR @ cx.reshape(E, C, 3, 3)).reshape(E, C, 9)
         return cp, cx
 
+    # ★ The v2 scene splat was TRAINED against this background (its meta records
+    # bg_rgb = the measured wall colour), so wherever coverage is thin the
+    # gaussians assume it shows through. Compositing on the default BLACK instead
+    # turns every thinly-reconstructed region into a hard black hole -- a strong
+    # artificial feature that is not in the real cell. render_zed_pov.py passes
+    # this colour, which is why CORRECT_zedpov_strip.png shows no such holes
+    # while our composites did.
+    BG_RGB = (0.8313725490196079, 0.8215686274509804, 0.8019607843137255)
+
     def render(self, mj_model, mj_data, cam_names, height, width,
-               cam_pos_sigma=0.0, cam_rot_sigma_deg=0.0, generator=None):
+               cam_pos_sigma=0.0, cam_rot_sigma_deg=0.0, generator=None, bg=None):
         cam_ids = [mj_model.camera_name2id(c) for c in cam_names]
         bp = torch.tensor(np.asarray(mj_data.xpos), dtype=torch.float32,
                           device=self.device).unsqueeze(0)
@@ -137,5 +146,8 @@ class MjSplatRenderer:
                           device=self.device).unsqueeze(0)
         cp, cx = self.jitter_cameras(cp, cx, cam_pos_sigma, cam_rot_sigma_deg, generator)
         fovy = np.asarray(mj_model.cam_fovy)[cam_ids][None, :].astype(np.float32)
-        rgb, _ = batch_env_render(gsb, cp, cx, height, width, fovy)
+        bg = self.BG_RGB if bg is None else bg
+        bg_imgs = torch.tensor(bg, dtype=torch.float32, device=self.device) \
+            .view(1, 1, 1, 1, 3).expand(1, len(cam_ids), height, width, 3).contiguous()
+        rgb, _ = batch_env_render(gsb, cp, cx, height, width, fovy, bg_imgs=bg_imgs)
         return rgb[0].clamp(0, 1).detach().cpu().numpy()

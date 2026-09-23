@@ -84,6 +84,9 @@ EXPERT_HYBRID="${EXPERT_HYBRID:-0}"
 SPLAT="${SPLAT:-0}"
 BOARD_POS_NOISE="${BOARD_POS_NOISE:-0.0}"   # metres, uniform +-
 BOARD_YAW_NOISE="${BOARD_YAW_NOISE:-0.0}"   # degrees, uniform +-
+CAM_POS_NOISE="${CAM_POS_NOISE:-0.0}"       # metres, ball radius
+CAM_ROT_NOISE="${CAM_ROT_NOISE:-0.0}"       # degrees, per-axis
+LIGHT_NOISE="${LIGHT_NOISE:-0.0}"           # 0 = off, 1 = nominal band
 
 if [ "$SPLAT" = "1" ]; then
   # the renderer lives outside the repo
@@ -120,6 +123,9 @@ python scripts/generate_simdist_data.py \
     --splat "$SPLAT" \
     --board_pos_noise "$BOARD_POS_NOISE" \
     --board_yaw_noise "$BOARD_YAW_NOISE" \
+    --cam_pos_noise "$CAM_POS_NOISE" \
+    --cam_rot_noise "$CAM_ROT_NOISE" \
+    --light_noise "$LIGHT_NOISE" \
     --snapshot_hybrid 1 \
     --save_values 1 \
     --rl_cameras "$RL_CAMERAS" \

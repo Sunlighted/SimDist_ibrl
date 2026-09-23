@@ -25,10 +25,12 @@ import numpy as np, cv2
 import env.peg_insertion  # noqa
 from env.robosuite_wrapper import PixelRobosuite
 
-SEG = "/scratch/yifanr/gsbench/objsplats"
-SCENE = ("/project/6101830/yifanr/SimDist_ibrl/real2sim/splats/"
-         "scene_scan5_norobot_v2.ply")
-GROUND = "/scratch/yifanr/gsbench/ground_transforms.json"
+from real2sim.splat_obs import (  # noqa: E402
+    DEFAULT_SEG_DIR, DEFAULT_SCENE_PLY, DEFAULT_GROUND)
+
+SEG = DEFAULT_SEG_DIR
+SCENE = DEFAULT_SCENE_PLY
+GROUND = DEFAULT_GROUND
 OUT = "/scratch/yifanr/gsbench/objsplat_shots"
 
 

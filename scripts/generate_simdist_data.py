@@ -62,6 +62,11 @@ import train_bc  # noqa: E402
 from env.robosuite_wrapper import PixelRobosuite  # noqa: E402
 from env.domain_shift import DomainShiftConfig  # noqa: E402
 from common_utils import ibrl_utils as utils  # noqa: E402
+# Repo-relative splat defaults, so another machine needs only the repo +
+# submodules. Module-level imports here are cheap (json/os/sys/numpy); the
+# renderer is only pulled in when a SplatCompositor is constructed.
+from real2sim.splat_obs import (  # noqa: E402
+    DEFAULT_CALIB, DEFAULT_SEG_DIR, DEFAULT_SCENE_PLY, DEFAULT_GROUND)
 
 
 def parse_args():
@@ -145,15 +150,20 @@ def parse_args():
     # honour. 0.0 = the original fixed board, byte-identical.
     p.add_argument("--board_pos_noise", type=float, default=0.0)   # metres, uniform +-
     p.add_argument("--board_yaw_noise", type=float, default=0.0)   # degrees, uniform +-
+    # CAMERA EXTRINSIC + LIGHTING DR (arm 3). §4 B calls camera-extrinsic DR
+    # mandatory: the external ZED is re-mounted between sessions. Lighting DR
+    # covers the strip being bumped / dimmed.
+    p.add_argument("--cam_pos_noise", type=float, default=0.0)     # metres, ball radius
+    p.add_argument("--cam_rot_noise", type=float, default=0.0)     # degrees, per-axis
+    p.add_argument("--light_noise", type=float, default=0.0)       # 0 = off, 1 = nominal band
     p.add_argument("--splat_calib", type=str,
-                   default="/scratch/yifanr/gsbench/objsplats/obj_calib.json")
+                   default=DEFAULT_CALIB)
     p.add_argument("--splat_seg_dir", type=str,
-                   default="/scratch/yifanr/gsbench/objsplats")
+                   default=DEFAULT_SEG_DIR)
     p.add_argument("--splat_scene_ply", type=str,
-                   default="/project/6101830/yifanr/SimDist_ibrl/real2sim/splats/"
-                           "scene_scan5_norobot_v2.ply")
+                   default=DEFAULT_SCENE_PLY)
     p.add_argument("--splat_ground", type=str,
-                   default="/scratch/yifanr/gsbench/ground_transforms.json")
+                   default=DEFAULT_GROUND)
     p.add_argument("--jpeg_quality", type=int, default=0,
                    help="0 = store raw uint8 arrays (legacy). 1-100 = JPEG-encode each "
                         "frame and store variable-length bytes; the loader decodes. "
@@ -585,10 +595,12 @@ def _load_all(args, ckpts):
                          scene_ply=args.splat_scene_ply, ground_json=args.splat_ground)
         print(f"[splat] photoreal obs ON: {splat_cfg}", flush=True)
     ek = None
-    if float(getattr(args, "board_pos_noise", 0)) or float(getattr(args, "board_yaw_noise", 0)):
-        ek = dict(board_pos_noise=float(args.board_pos_noise),
-                  board_yaw_noise=float(args.board_yaw_noise))
-        print(f"[board-jitter] {ek}", flush=True)
+    _dr = {k: float(getattr(args, k, 0) or 0) for k in
+           ("board_pos_noise", "board_yaw_noise", "cam_pos_noise",
+            "cam_rot_noise", "light_noise")}
+    if any(_dr.values()):
+        ek = dict(_dr)
+        print(f"[env-DR] {ek}", flush=True)
     env, env_params = build_source_env(cfg, args.hand_init_sigma,
                                        resolve_domain_shift(args, cfg),
                                        rl_cameras=_cams(args),

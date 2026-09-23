@@ -81,7 +81,16 @@ MEASURED_BASE_XY = (-0.489, -0.034)   # base wrt work-surface centre
 # the rotation carries a diag(1,-1,-1) flip).
 ZEDVIEW_POS = (-0.3536, 0.4803, 1.6911)
 ZEDVIEW_QUAT = (-0.47888, -0.13004, 0.36614, 0.78721)   # wxyz
-ZEDVIEW_FOVY = 60.763            # fy=1057.6, 1240-px principal-point-centred crop
+# ★ hd720 FACTORY intrinsics (unrectified) -- what publish_zed_uvc.py streams --
+# NOT the scan_run2 SDK-rectified HD2K values this used to carry. The ZED's modes
+# are NOT rescales of one another: hd1080 fx is 2.00x hd720, not 1.50x, so the FOV
+# genuinely differs per mode and must come from that mode's own K.
+# zed2i hd720: fx 532.445 fy 532.470 cx 622.555 cy 352.755
+#   -> principal-point square crop 705 px -> fovy 67.010
+# Assumes the publisher undistorts to a pinhole with newK = factory K, D = 0.
+# Verified: that square crop is 100% free of undistortion black border, so
+# getOptimalNewCameraMatrix(alpha=0) buys nothing (it would give 68.134).
+ZEDVIEW_FOVY = 67.010
 
 # The REAL wrist ZED Mini, expressed in robosuite's `robot0_right_hand` frame.
 #
@@ -108,7 +117,13 @@ ZEDVIEW_FOVY = 60.763            # fy=1057.6, 1240-px principal-point-centred cr
 # diag(1,-1,-1) flip baked into the value below.
 ZEDM_WRIST_POS = (0.077238, -0.029357, 0.015518)
 ZEDM_WRIST_QUAT = (0.092666, 0.671783, 0.723946, 0.126582)   # wxyz
-ZEDM_WRIST_FOVY = 45.028         # fy=1475.3, 1223-px principal-point-centred crop
+# zedm hd720: fx 771.808 fy 771.705 cx 652.745 cy 351.798 -> crop 703 px
+#   -> fovy 48.977   (alpha=0 alternative: 49.521)
+# ⚠️ T_ee_zedm was solved on SDK-RECTIFIED images, which also carry a small
+# stereo-rectification rotation that undistorting a single eye does NOT. At the
+# wrist's ~0.3 m working distance that is ~5 mm per degree -- larger than the
+# 2.2 mm hand-eye LOO -- so measure it from the stereo conf, do not assume.
+ZEDM_WRIST_FOVY = 48.977
 
 # Both FOVs are the VERTICAL fov of a square crop centred on the camera's
 # PRINCIPAL POINT, not on the image centre. MuJoCo renders a centred pinhole and
@@ -207,6 +222,9 @@ class PegInsertion(SingleArmEnv_MG):
         gripper_types="default",
         board_pos_noise=0.0,
         board_yaw_noise=0.0,
+        cam_pos_noise=0.0,
+        cam_rot_noise=0.0,
+        light_noise=0.0,
         initialization_noise="default",
         table_full_size=MEASURED_TABLE_SIZE,
         table_friction=(1.0, 5e-3, 1e-4),
@@ -251,6 +269,16 @@ class PegInsertion(SingleArmEnv_MG):
         # board_to_robot0_eef_*), so this does not make the task partially
         # observed for the state-based expert.
         self.board_pos_noise = float(board_pos_noise)   # metres, uniform +-
+        # CAMERA EXTRINSIC DR. The external ZED is re-mounted between sessions and
+        # the wrist bracket can shift; §4 B calls this mandatory. Position is
+        # sampled uniformly IN A BALL (not per-axis, which would bias corners).
+        # Applied to the MuJoCo camera so the splat composite and the MuJoCo
+        # render stay in agreement -- jittering only the splat renderer's own
+        # cam_pos_sigma would desync the two halves of every frame.
+        self.cam_pos_noise = float(cam_pos_noise)       # metres, ball radius
+        self.cam_rot_noise = float(cam_rot_noise)       # degrees, per-axis
+        # LIGHTING DR around the measured strip (STRIP_* above).
+        self.light_noise = float(light_noise)           # 0 = off, 1 = nominal band
         self.board_yaw_noise = float(board_yaw_noise)   # degrees, uniform +-
         # success = tip this far below the board top surface
         self.insert_depth = 0.015
@@ -289,6 +317,32 @@ class PegInsertion(SingleArmEnv_MG):
             reward *= self.reward_scale
         return reward
 
+    def _jitter_pose(self, pos, quat_wxyz):
+        """pos + uniform-in-BALL offset; quat + small random rotation.
+
+        Ball, not per-axis uniform: a per-axis cube biases toward the corners and
+        the radius would be sqrt(3) larger on the diagonals than advertised.
+        """
+        pos = np.asarray(pos, dtype=float).copy()
+        if self.cam_pos_noise > 0:
+            v = np.random.normal(size=3)
+            v /= max(np.linalg.norm(v), 1e-12)
+            r = self.cam_pos_noise * np.random.uniform() ** (1.0 / 3.0)
+            pos = pos + v * r
+        q = np.asarray(quat_wxyz, dtype=float).copy()
+        if self.cam_rot_noise > 0:
+            d = np.radians(np.random.uniform(-self.cam_rot_noise, self.cam_rot_noise, 3))
+            h = d / 2.0
+            dq = np.array([1.0, h[0], h[1], h[2]])       # small-angle quaternion
+            dq /= np.linalg.norm(dq)
+            w0, x0, y0, z0 = q; w1, x1, y1, z1 = dq
+            q = np.array([w0*w1 - x0*x1 - y0*y1 - z0*z1,
+                          w0*x1 + x0*w1 + y0*z1 - z0*y1,
+                          w0*y1 - x0*z1 + y0*w1 + z0*x1,
+                          w0*z1 + x0*y1 - y0*x1 + z0*w1])
+            q /= np.linalg.norm(q)
+        return pos, q
+
     def _add_strip_light(self, mujoco_arena):
         """Replace the arena's default overhead light with the real cell's strip.
 
@@ -300,17 +354,25 @@ class PegInsertion(SingleArmEnv_MG):
         for lt in list(wb.findall("light")):
             wb.remove(lt)
         x0, x1 = STRIP_X
+        n = self.light_noise
+        # one draw PER RESET shared by the whole strip: a real fixture moves and
+        # dims as a unit, so per-lamp independent noise would be the wrong model.
+        dy = np.random.uniform(-0.08, 0.08) * n
+        dz = np.random.uniform(-0.15, 0.15) * n
+        gain = 1.0 + np.random.uniform(-0.25, 0.25) * n
+        amb = 1.0 + np.random.uniform(-0.35, 0.35) * n
+        ddir = np.random.uniform(-0.10, 0.10, 2) * n
         for i in range(STRIP_N):
             x = x0 + (x1 - x0) * (i / max(STRIP_N - 1, 1))
             ET.SubElement(wb, "light", attrib={
                 "name": f"striplight{i}",
-                "pos": f"{x} {STRIP_Y} {STRIP_Z}",
-                "dir": "0 -0.35 -0.94",          # angled inward across the table
+                "pos": f"{x} {STRIP_Y + dy} {STRIP_Z + dz}",
+                "dir": f"{ddir[0]} {-0.35 + ddir[1]} -0.94",
                 "directional": "false",
-                "diffuse": " ".join([str(STRIP_DIFFUSE)] * 3),
+                "diffuse": " ".join([str(STRIP_DIFFUSE * gain)] * 3),
                 "specular": "0.12 0.12 0.12",
                 # one lamp carries the room-bounce ambient; N copies would stack
-                "ambient": " ".join([str(STRIP_AMBIENT if i == 0 else 0.0)] * 3),
+                "ambient": " ".join([str(STRIP_AMBIENT * amb if i == 0 else 0.0)] * 3),
                 "castshadow": "true" if i == STRIP_N // 2 else "false",
             })
 
@@ -329,6 +391,7 @@ class PegInsertion(SingleArmEnv_MG):
         )
         if hand is None:                      # non-Panda arm: nothing to attach to
             return
+        _wp, _wq = self._jitter_pose(ZEDM_WRIST_POS, ZEDM_WRIST_QUAT)
         name = model.correct_naming("zedm_wrist")
         if find_elements(root=model.root, tags="camera", attribs={"name": name}) is not None:
             return                            # already added on an earlier reset
@@ -338,8 +401,8 @@ class PegInsertion(SingleArmEnv_MG):
             attrib={
                 "mode": "fixed",
                 "name": name,
-                "pos": array_to_string(ZEDM_WRIST_POS),
-                "quat": array_to_string(ZEDM_WRIST_QUAT),
+                "pos": array_to_string(_wp),
+                "quat": array_to_string(_wq),
                 "fovy": str(ZEDM_WRIST_FOVY),
             },
         )
@@ -370,10 +433,11 @@ class PegInsertion(SingleArmEnv_MG):
         mujoco_arena.set_origin([0, 0, 0])
         self._add_agentview_full_camera(mujoco_arena)
         # a camera at the real external ZED's pose (see ZEDVIEW_* above)
+        _zp, _zq = self._jitter_pose(ZEDVIEW_POS, ZEDVIEW_QUAT)
         mujoco_arena.set_camera(
             camera_name="zedview",
-            pos=np.array(ZEDVIEW_POS),
-            quat=np.array(ZEDVIEW_QUAT),
+            pos=_zp,
+            quat=_zq,
             camera_attribs={"fovy": str(ZEDVIEW_FOVY)},
         )
         # a camera at the real WRIST ZED Mini's pose (see ZEDM_WRIST_* above).
