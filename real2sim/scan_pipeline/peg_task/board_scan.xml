@@ -5,11 +5,16 @@
   <worldbody>
     <body>
       <body name="object">
-        <geom pos="-0.00106 -0.06216 -8.23e-05" mesh="board_scan_visual_mesh" type="mesh" rgba="0.186 0.202 0.536 1" contype="0" conaffinity="0" group="1" mass="0"/>
-        <geom name="wall_left" type="box" pos="-0.05459 -0.0577 0.0" size="0.03566 0.09426 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
-        <geom name="wall_right" type="box" pos="0.0586 -0.0577 0.0" size="0.03967 0.09426 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
-        <geom name="wall_front" type="box" pos="0.0 -0.0825 0.0" size="0.01893 0.06946 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
-        <geom name="wall_back" type="box" pos="0.0 0.02479 0.0" size="0.01893 0.01176 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
+        <!-- Body origin = the CORNER RECTANGULAR pocket (the real task hole), measured
+             by slicing meshes/board.stl: centre (54.86, 58.36) mm in the mesh frame,
+             35.1 x 23.3 mm through-hole (+0.46 mm slice bias, calibrated on the oval
+             -> 35.56 x 23.77). Until 2026-09-23 this pocket sat on the OVAL's bounding
+             box (37.86 x 26.07), so every run before then targeted the wrong hole. -->
+        <geom pos="-0.05486 -0.05836 -8.23e-05" mesh="board_scan_visual_mesh" type="mesh" rgba="0.186 0.202 0.536 1" contype="0" conaffinity="0" group="1" mass="0"/>
+        <geom name="wall_left" type="box" pos="-0.08317 -0.05761 0.0" size="0.06539 0.09425 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
+        <geom name="wall_right" type="box" pos="0.02891 -0.05761 0.0" size="0.01113 0.09425 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
+        <geom name="wall_front" type="box" pos="0.00000 -0.08187 0.0" size="0.01778 0.06999 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
+        <geom name="wall_back" type="box" pos="0.00000 0.02426 0.0" size="0.01778 0.01238 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
       </body>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 -0.02049" name="bottom_site"/>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 0.02049" name="top_site"/>

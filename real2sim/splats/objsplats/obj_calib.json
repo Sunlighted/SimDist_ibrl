@@ -51,8 +51,8 @@
    ]
   ],
   "t": [
-   0.0,
-   0.0,
+   -0.0538,
+   0.0038,
    0.0
   ],
   "rms_m": 0.001578436159590294,
@@ -61,6 +61,6 @@
   "scale": 0.0644836306441588,
   "n_splat": 25400,
   "verdict": "OK",
-  "note": "similarity BAKED INTO the ply; calib R,t are identity"
+  "note": "similarity BAKED INTO the ply; calib R,t are identity; t = -(0.0538, -0.0038): body origin moved from the oval pocket to the corner rectangular pocket (2026-09-23)"
  }
 }

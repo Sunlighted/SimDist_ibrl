@@ -520,6 +520,25 @@ agentview+eye_in_hand@96 以备 pixel）。cfg：`peg_insertion_state_source_mlp
 `peg_insertion_state_ibrl_source.yaml`（σ=0.1 全对齐，demo 与 RL 同 init 分布 —— 比 Square
 的 0.02/0.1 错配更干净）。
 
+### §5a ★★★ 目标孔之前一直是错的（2026-09-23 发现并修复）
+**真实任务孔 = 板角上的长方形通孔**（从机器人看的板右上角）。`board_scan.xml` 里的碰撞 pocket
+（4 块隐形 box 墙之间唯一的空柱）却坐在**椭圆孔**上，尺寸 37.86×26.07 = 椭圆的包围盒
+（STL 切片：椭圆 37.4×25.6 @ 中心 (−4.5,−3.8)，旧 pocket 还偏了 4.5/3.8 mm）。
+⇒ 长方形 peg 在 sim 里"插进椭圆"：物理只认那个方柱，椭圆只是画上去的视觉 mesh。
+⇒ **2026-09-23 之前所有 peg run（IBRL 源专家 v2、三臂数据、stage-1）训练的都是错孔。**
+发现方式：真 GELLO demo 回放（`scripts/compare_real_sim_demos.py`）—— 操作员松手点离 sim 目标
+74–84 mm；`viz/real_vs_sim/{board_collision_vs_visual,hole_check_real_release}.png`。
+- 修复：body 原点 = 角孔中心（mesh 系 (54.86, 58.36) mm），墙按 mesh 的真实外廓重算
+  （旧墙相对视觉 mesh 还偏了 ~4 mm），`HOLE_HALF` = 35.56×23.77 mm（切片 35.1×23.3，贯穿
+  41 mm 全深，+0.46 mm 切片偏差按椭圆标定）。`board_xy` 平移同一量 ⇒ **物理板位置不变**；
+  board splat 的 `obj_calib.t` 同步 −(53.8, −3.8) mm。
+- ⚠️ **间隙从 2.4 降到 ~1.3 mm/边 = 正好在 findings §39 的 1.3 mm 地板上**（手机扫描 STL，
+  须用卡尺复核真孔与真 peg）。脚本专家仍 20/20（avg 190 步）。
+- 重训链（v3，`*_v3.yaml`，v2 cfg 保留以复现旧臂）：`demos_n1000_v3` → `peg_source_mlp_bc_n1000_v3`
+  → `peg_ibrl_source_v3`（2026-09-23 提交 5612729 → 5612730 → 5612731，~8 h）。
+- 教训：**"collision 从 STL 来"是错觉** —— 视觉 mesh `contype=0`，碰撞是手摆的 primitive。
+  改任务几何后必须**把碰撞体画出来叠在视觉上看一眼**，并在真 demo 上核对目标位置。
+
 ### §5b 提交链（**已提交 2026-09-15**：collect 5465185 → peg_bc 5465186 → peg_ibrl 5465187）
 ```bash
 J1=$(sbatch --parsable scripts/slurm/collect_peg_demos.slrm)

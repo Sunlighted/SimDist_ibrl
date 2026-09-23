@@ -1,9 +1,11 @@
 """Real2sim square peg-in-hole task (docs/real2sim.md Phase B).
 
 Geometry comes from the scanned real board/peg (real2sim/scan_pipeline/peg_task,
-2026-09-15): hole 37.9 x 26.1 mm, board 41 mm thick, peg 33.0 x 21.2 x 122.9 mm
-=> ~2.4 mm/side clearance on BOTH axes (above the 1.3 mm floor of findings §39,
-near the ~3 mm working point of Threading).
+2026-09-15): target = the CORNER rectangular pocket, 35.6 x 23.8 mm through-hole,
+board 41 mm thick, peg 33.0 x 21.2 x 122.9 mm => ~1.3 mm/side clearance on both
+axes -- AT the 1.3 mm floor of findings §39 (STL-sliced; caliper-check the real
+parts). ⚠️ Before 2026-09-23 the pocket was the OVAL's bounding box (37.9 x 26.1,
+2.4 mm/side): every earlier run trained on the wrong hole.
 
 Design decisions (docs/real2sim.md §3/§5):
 - Collision = box primitives only (4 walls + 1 peg box): exact collision and
@@ -43,11 +45,11 @@ from mimicgen.envs.robosuite.single_arm_env_mg import SingleArmEnv_MG
 # real2sim/scan_pipeline/peg_task/meshes/). The PHYSICAL model is the scanned
 # STL itself (visual mesh + its convex-decomposition hulls for collision);
 # these constants only parameterize the SUCCESS CHECK and the reset sampler.
-HOLE_HALF_X = 0.01893  # target pocket opening 37.86 mm
-HOLE_HALF_Y = 0.013035  # target pocket opening 26.07 mm
+HOLE_HALF_X = 0.01778  # corner pocket opening 35.56 mm (was the oval bbox, 37.86)
+HOLE_HALF_Y = 0.011885  # corner pocket opening 23.77 mm (was the oval bbox, 26.07)
 BOARD_HALF_Z = 0.02049  # board 41 mm thick
 PEG_HALF = (0.016524, 0.010622, 0.061471)  # peg 33.0 x 21.2 x 122.9 mm (bbox)
-# => clearance: x (37.86-33.05)/2 = 2.41 mm/side, y (26.07-21.24)/2 = 2.41 mm/side
+# => clearance: x (35.56-33.05)/2 = 1.26 mm/side, y (23.77-21.24)/2 = 1.26 mm/side
 
 # ---- MEASURED cell layout (real2sim/scan_pipeline/cell_layout.json, from the
 # scan5 splat + scan_run2 grounding; see docs/real2sim.md §2e) --------------
@@ -258,8 +260,10 @@ class PegInsertion(SingleArmEnv_MG):
         self.reward_shaping = reward_shaping
         self.use_object_obs = use_object_obs
 
-        # board pose on the table (hole center in table-frame xy)
-        self.board_xy = (0.0, -0.15)
+        # board pose on the table (hole center in table-frame xy). (0.0538,
+        # -0.1538) = the old (0, -0.15) + the oval->corner pocket shift, so the
+        # PHYSICAL board stays exactly where it was (and where the real one is).
+        self.board_xy = (0.0538, -0.1538)
         # BOARD RESET JITTER. The real board is placed by hand and will not land
         # in the same spot twice, so a fixed board teaches the policy a constant
         # it cannot rely on in the cell. Default 0.0 keeps every existing run

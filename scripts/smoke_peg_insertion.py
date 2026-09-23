@@ -242,7 +242,7 @@ def t2_on_table(env):
         assert abs(p[2] - (TABLE_Z + PEG_HALF[2])) < 0.005, p
         assert R[2, 2] > 0.99, "peg not upright at reset"
         assert -0.11 < p[0] < 0.11 and 0.09 < p[1] < 0.21, p
-        assert np.allclose(b[:2], [0.0, -0.15], atol=1e-6), b
+        assert np.allclose(b[:2], raw.board_xy, atol=1e-6), (b, raw.board_xy)
     print(f"[2] on-table reset OK: peg upright at z={p[2]:.4f}, board fixed")
 
 def t3_grasp(env):
