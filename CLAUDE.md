@@ -180,6 +180,17 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     头 ⇒ 正好撞在 findings §27 的天花板律上。**未决**：HD1080@30fps 抽到 20 Hz（要按该模式
     重读内参、crop 变 1078 px），还是按 15 Hz 重生成。
 
+38. ★ **训练用什么观测，eval 就必须用什么观测 —— 否则 loss 全正常、分数恒为 0。**
+    `train_simdist.py:398-413` 的 train/eval env 都是从 **config** 建的，而 `splat_obs`
+    当时只在生成侧按程序传 ⇒ 用 3DGS 合成帧训出来的 encoder 被拿去在**纯 MuJoCo** 画面上
+    评测，source 和 target 双双 **0.000**，而 consistency/policy/value 全在正常区间。
+    实测同一个 ckpt：**splat 0.960（48/50）vs MuJoCo 0.000（0/50）**。
+    ⚠️ 那 13 h 没白跑，只是 eval 瞎了；`splat_obs` 现在是 config 字段，两个 env 都吃。
+    ⇒ 推论：**「安全的默认值」在另一侧可能就是静默的分布错配**（这里 `splat_obs=None`
+    正是我为了让 MuJoCo 路径逐字节不变而特意加的）。
+    ⇒ 另：**别凭印象判断 loss「太小」**。我怀疑 consistency 0.0016 是 latent 塌了，
+    查了健康的 Threading pixel 臂是 0.0013 / 0.0022 —— 完全正常。先找同类基线再下判断。
+
 16b. **别假定 `aip-rhinehar` 更快 —— 每次都要量。** real2sim 那条「job 提交用
     `aip-rhinehar`（FairShare 远好于 aip-gigor）」只在写下它的那一刻成立。
     2026-09-15 实测同一个 200G/23:59 的 stage-1 chunk：**gigor 19:46 vs rhinehar 次日

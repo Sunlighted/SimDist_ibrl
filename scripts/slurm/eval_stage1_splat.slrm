@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --account=aip-gigor
+#SBATCH --job-name=s1_splateval
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpubase_interac
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=1:29:00
+#SBATCH --output=logs/s1_splateval_%j.out
+#SBATCH --error=logs/s1_splateval_%j.out
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source set_env_drac.sh
+python - <<'WARM'
+import gsplat
+from gsplat.cuda._backend import _C
+WARM
+python scripts/eval_stage1_splat.py --n 50
+echo "rc=$?"

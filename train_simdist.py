@@ -180,6 +180,13 @@ class MainConfig(common_utils.RunConfig):
     resume_step: int = 0
     use_wb: int = 0
     state_only_no_render: int = 0
+    # PHOTOREAL obs. MUST match how the source replay was generated: if the
+    # replay holds 3DGS composites and the eval env renders plain MuJoCo, the
+    # encoder is evaluated on a different image distribution and scores 0.000 on
+    # BOTH source and target while every loss looks healthy. That is exactly what
+    # the first peg photoreal run did -- 13 h of training whose eval numbers were
+    # meaningless. Empty = plain MuJoCo (unchanged).
+    splat_obs: int = 0
     # SOURCE (train) and TARGET (eval) domain shifts
     train_domain_shift: DomainShiftConfig = field(default_factory=lambda: DomainShiftConfig(mode="none"))
     eval_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
@@ -404,6 +411,14 @@ class Workspace:
             init_distribution=self.cfg.train_init_dist,
         )
         # TARGET (eval)
+        if int(getattr(self.cfg, "splat_obs", 0) or 0):
+            from real2sim.splat_obs import (DEFAULT_CALIB, DEFAULT_SEG_DIR,
+                                            DEFAULT_SCENE_PLY, DEFAULT_GROUND)
+            common_env["splat_obs"] = dict(
+                calib_path=DEFAULT_CALIB, seg_dir=DEFAULT_SEG_DIR,
+                scene_ply=DEFAULT_SCENE_PLY, ground_json=DEFAULT_GROUND)
+            print(f"[splat] train+eval envs render PHOTOREAL composites", flush=True)
+
         self.eval_env_params = dict(
             **common_env,
             domain_shift=self.cfg.eval_domain_shift,

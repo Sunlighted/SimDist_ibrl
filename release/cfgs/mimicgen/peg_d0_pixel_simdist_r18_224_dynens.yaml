@@ -29,6 +29,11 @@ seed: 1
 
 ### SIM2REAL 1: observation space = the real camera pair -------------------
 use_state: 0
+### ★ MUST be 1 whenever the source replay holds 3DGS composites. The eval env is
+### built from THIS config, so with splat_obs 0 the encoder trains on photoreal
+### frames and is evaluated on plain MuJoCo -- score 0.000 on source AND target
+### with every loss looking healthy. The first peg run lost its eval that way.
+splat_obs: 1
 ### `zedview` = external ZED2i; `robot0_zedm_wrist` = wrist ZED Mini, both at
 ### their CALIBRATED real poses (env/peg_insertion.py ZEDVIEW_* / ZEDM_WRIST_*,
 ### docs/real2sim.md §2d-z). NOT robosuite's `agentview` (clips the board out of
