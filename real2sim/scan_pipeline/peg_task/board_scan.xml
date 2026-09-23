@@ -9,7 +9,11 @@
              by slicing meshes/board.stl: centre (54.86, 58.36) mm in the mesh frame,
              35.1 x 23.3 mm through-hole (+0.46 mm slice bias, calibrated on the oval
              -> 35.56 x 23.77). Until 2026-09-23 this pocket sat on the OVAL's bounding
-             box (37.86 x 26.07), so every run before then targeted the wrong hole. -->
+             box (37.86 x 26.07), so every run before then targeted the wrong hole.
+             ⚠️ The board splat (real2sim/splats/objsplats/board_obj.ply) is in the
+             STL mesh frame: obj_calib.json board_obj.t MUST equal this geom's pos,
+             or the rendered board drifts off the physical one (it was 62 mm off in
+             +y until 2026-09-23). -->
         <geom pos="-0.05486 -0.05836 -8.23e-05" mesh="board_scan_visual_mesh" type="mesh" rgba="0.186 0.202 0.536 1" contype="0" conaffinity="0" group="1" mass="0"/>
         <geom name="wall_left" type="box" pos="-0.08317 -0.05761 0.0" size="0.06539 0.09425 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>
         <geom name="wall_right" type="box" pos="0.02891 -0.05761 0.0" size="0.01113 0.09425 0.02049" group="0" rgba="0.186 0.202 0.536 0" friction="0.8 0.005 0.001" density="2000"/>

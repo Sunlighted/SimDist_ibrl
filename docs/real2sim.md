@@ -539,6 +539,24 @@ agentview+eye_in_hand@96 以备 pixel）。cfg：`peg_insertion_state_source_mlp
 - 教训：**"collision 从 STL 来"是错觉** —— 视觉 mesh `contype=0`，碰撞是手摆的 primitive。
   改任务几何后必须**把碰撞体画出来叠在视觉上看一眼**，并在真 demo 上核对目标位置。
 
+### §5a-2 ★★ 「穿模」：两个独立的原因（2026-09-23，同事报告）
+**① board splat 相对物理板偏 ~62 mm (+y)**（PHOTOREAL 画面里 peg 插进"实心板"）。
+`board_obj.ply` 在 **STL mesh 系**（它的 ICP 标定对象就是 `board.stl`），所以 `obj_calib.t`
+必须等于 `board_scan.xml` 里视觉 mesh geom 的 `pos`。§5a 按"跟着 body 原点走"只改了 x：
+`t=(−53.8,+3.8)` 而正确值是 **(−54.86, −58.36, −0.08) mm**；修复前的 `t=0` 也是同样偏
+(1.06, 62.16) mm ⇒ **此前所有 PHOTOREAL peg 帧（§2d-w 的 source replay / stage-1）里渲染的板
+都不在物理板上**。暴力 IoU 拟合（splat 顶层 vs STL 顶面高度图）最优 t=(−55,−59) mm，
+IoU 0.288→0.438、落在板面上的 splat 50%→81%；`viz/real_vs_sim/board_splat_vs_collision.png`。
+已修（obj_calib + xml 注释要求两者同步）。⚠️ 未用 GPU 渲染复核，也未查 scene splat 里是否另有一块板。
+**② 软接触：重推下 peg 陷进板 2–4 cm（纯物理，MuJoCo 画面也可见，未修）。**
+peg 50 g，默认 `solref 0.02`；MuJoCo 的接触刚度按约束有效质量归一 ⇒ 被强 OSC 臂压在静止板上
+的轻物体会深陷。`a_z=−1` 撞板 120 步：peg↔墙 **23 / 33 / 44 mm**（实心面 / 被填实的星形孔 /
+离孔边 3 mm），掌心↔peg 21–32 mm，tip 最深到板顶下 29 mm。脚本专家推得轻，**0 mm**（所以
+20/20 从没暴露它），但 RL 策略会猛推，且孔边那格有"穿墙进孔"的 reward hacking 风险。
+peg 设 `solref="0.004 1"`（= 2·dt 下限）+ `priority` 后同一测试降到 **1–3.5 mm**。
+改它就是改任务物理 ⇒ 会作废 v3 链，**没提交**，等 owner 决定（并需重测脚本专家）。
+另：板的其余形状孔在碰撞里是实心的（只有目标孔是空柱），peg 会"浮"在那些可见孔上方 —— 有意为之。
+
 ### §5b 提交链（**已提交 2026-09-15**：collect 5465185 → peg_bc 5465186 → peg_ibrl 5465187）
 ```bash
 J1=$(sbatch --parsable scripts/slurm/collect_peg_demos.slrm)
