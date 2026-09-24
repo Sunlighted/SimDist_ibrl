@@ -84,7 +84,7 @@ def main():
             peg_geoms = {i for i in range(sim.model.ngeom) if sim.model.geom_bodyid[i] == peg_body}
 
             n_actor, n_steps, min_dist, t_succ, tilt, tip_b = 0, 0, 0.0, None, None, None
-            xml, states, acts = sim.model.get_xml(), [], []
+            xml, states, acts, actor_flags, tip_rel, a_bcs = sim.model.get_xml(), [], [], [], [], []
             depth = -np.inf   # deepest tip reach below the board top (m), while in the pocket column
             terminal = False
             ctl = {}
@@ -95,7 +95,10 @@ def main():
                     action = agent.act(obs, eval_mode=True)
                 if bc is not None and not args.expert:
                     a_bc = bc.act(obs, cpu=False)
-                    n_actor += int(not torch.allclose(action.flatten().cpu(), a_bc.flatten().cpu(), atol=1e-6))
+                    used_actor = int(not torch.allclose(action.flatten().cpu(), a_bc.flatten().cpu(), atol=1e-6))
+                    n_actor += used_actor
+                    actor_flags.append(used_actor)
+                    a_bcs.append(np.asarray(a_bc.cpu()).reshape(-1))
                 states.append(np.array(sim.get_state().flatten()))
                 acts.append(np.asarray(action.cpu()).reshape(-1))
                 obs, reward, terminal, success, _ = env.step(action)
@@ -105,6 +108,7 @@ def main():
                     if pair & peg_geoms and pair & wall_ids:
                         min_dist = min(min_dist, float(c.dist))
                 d = b_R0.T @ (raw._peg_tip_pos() - b_pos0)
+                tip_rel.append(float(d[2] - raw.board.half_z))    # tip height above board top (m)
                 if abs(d[0]) < raw.board.hole_half_x and abs(d[1]) < raw.board.hole_half_y:
                     depth = max(depth, raw.board.half_z - d[2])
                 if success and t_succ is None:
@@ -113,8 +117,11 @@ def main():
                     tilt = np.degrees(np.arccos(min(1.0, abs(R[2, 2]))))
                     tip_b = b_R0.T @ (raw._peg_tip_pos() - b_pos0)
             if args.save_states and ep < args.save_k:
-                saved.append(dict(states=np.stack(states), actions=np.stack(acts), xml=xml,
-                                  succ=t_succ is not None))
+                final_state = np.array(sim.get_state().flatten())   # after the last action
+                saved.append(dict(final_state=final_state, states=np.stack(states), actions=np.stack(acts), xml=xml,
+                                  succ=t_succ is not None, actor=np.array(actor_flags),
+                                  tip=np.array(tip_rel),
+                                  a_bc=np.stack(a_bcs) if a_bcs else np.zeros((0, 7))))
             rows.append(dict(
                 succ=t_succ is not None, t=t_succ or n_steps, actor=n_actor / max(n_steps, 1),
                 pen_mm=-min_dist * 1000, tilt=tilt if tilt is not None else np.nan,
@@ -174,9 +181,13 @@ def main():
             for i, d in enumerate(saved):
                 e = g.create_group(f"demo_{i}")
                 e.create_dataset("states", data=d["states"])
+                e.create_dataset("final_state", data=d["final_state"])
                 e.create_dataset("actions", data=d["actions"])
                 e.attrs["model_file"] = d["xml"]
                 e.attrs["success"] = int(d["succ"])
+                e.create_dataset("actor_chosen", data=d["actor"])
+                e.create_dataset("tip_height", data=d["tip"])
+                e.create_dataset("prior_actions", data=d["a_bc"])
         print("saved", len(saved), "episodes ->", args.save_states)
     if args.out:
         np.savez(args.out, succ=S, pen=pen, actor=act, bx=bx, by=by, byaw=byaw, tilt=tilt, tip=tip, t=t)

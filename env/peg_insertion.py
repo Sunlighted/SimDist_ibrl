@@ -238,6 +238,7 @@ class PegInsertion(SingleArmEnv_MG):
         success_max_tilt=5.0,        # deg; the expert stays <= 2 deg
         board_solref=(0.004, 1.0),   # 0.004 = 2x timestep, MuJoCo's stiffest stable value
         board_solimp=(0.99, 0.999, 0.001),
+        hole_clearance=None,         # m per side; None = the scanned pocket (1.26 mm/side)
         initialization_noise="default",
         table_full_size=MEASURED_TABLE_SIZE,
         table_friction=(1.0, 5e-3, 1e-4),
@@ -308,6 +309,11 @@ class PegInsertion(SingleArmEnv_MG):
         # while peg-finger contacts (the grasp) are untouched.
         self.board_solref = None if board_solref is None else tuple(float(x) for x in board_solref)
         self.board_solimp = None if board_solimp is None else tuple(float(x) for x in board_solimp)
+        # POCKET CLEARANCE per side (sim-only diagnostic knob; the real pocket is
+        # fixed). None = the scanned geometry. Moves the 4 collision walls' INNER
+        # faces (outer faces fixed) and the success-check pocket size together;
+        # the visual mesh is NOT changed, so rendered frames still show the scanned hole.
+        self.hole_clearance = None if hole_clearance is None else float(hole_clearance)
 
         super().__init__(
             robots=robots,
@@ -498,6 +504,9 @@ class PegInsertion(SingleArmEnv_MG):
                     g.set("solimp", array_to_string(np.array(self.board_solimp)))
                 g.set("solmix", "1000")
 
+        if self.hole_clearance is not None:
+            self._set_pocket_clearance(self.hole_clearance)
+
         self.peg = ScannedPegObject(name="peg_obj")
 
         self._get_placement_initializer()
@@ -574,6 +583,34 @@ class PegInsertion(SingleArmEnv_MG):
             np.array(sim.data.body_xmat[body0]).reshape(3, 3)
             @ np.array(sim.model.jnt_axis[jid0], dtype=float)
         )
+
+    def _set_pocket_clearance(self, c):
+        """Widen (c > scanned) or narrow the pocket to `c` m per side on both axes."""
+        ex = c - (HOLE_HALF_X - PEG_HALF[0])
+        ey = c - (HOLE_HALF_Y - PEG_HALF[1])
+        walls = {}
+        for g in self.board.get_obj().iter("geom"):
+            name = g.get("name") or ""
+            for side in ("wall_left", "wall_right", "wall_front", "wall_back"):
+                if name.endswith(side):
+                    walls[side] = g
+        assert len(walls) == 4, f"expected 4 pocket walls, found {sorted(walls)}"
+        for side, g in walls.items():
+            pos = np.array([float(v) for v in g.get("pos").split()])
+            size = np.array([float(v) for v in g.get("size").split()])
+            ax, sign = {"wall_left": (0, -1), "wall_right": (0, +1),
+                        "wall_front": (1, -1), "wall_back": (1, +1)}[side]
+            e = ex if ax == 0 else ey
+            # inner face moves out by e, outer face stays: centre shifts e/2, half-size shrinks e/2
+            pos[ax] += sign * e / 2
+            size[ax] -= e / 2
+            assert size[ax] > 0.001, f"{side} would vanish at clearance {c}"
+            if ax == 1:
+                size[0] += ex          # front/back span the pocket's x width: close the corners
+            g.set("pos", array_to_string(pos))
+            g.set("size", array_to_string(size))
+        self.board.hole_half_x = HOLE_HALF_X + ex
+        self.board.hole_half_y = HOLE_HALF_Y + ey
 
     # -------------------------------------------------------------- success
     def _peg_tip_pos(self):

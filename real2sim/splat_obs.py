@@ -66,6 +66,30 @@ def _load_base_in_board(ground_json):
     return np.array(g["base"]["T_world_base"])
 
 
+def _check_board_calib(mj_model, calib_path, tol=0.001):
+    """board_obj.ply lives in the board STL's MESH frame, so its calib t must equal
+    the visual mesh geom's pos in the compiled model (the transform MuJoCo applies
+    to the same mesh). The two are hand-synced files; when board_scan.xml moved the
+    body origin and the json did not follow, every photoreal frame drew the board
+    62-64 mm off and the peg looked like it was in the wrong hole (2026-09-24)."""
+    c = json.load(open(calib_path)).get("board_obj")
+    if c is None:
+        return
+    bid = mj_model.body_name2id(c["mj_body"])
+    vis = [g for g in range(mj_model.ngeom)
+           if mj_model.geom_bodyid[g] == bid and mj_model.geom_type[g] == 7   # mjGEOM_MESH
+           and mj_model.geom_contype[g] == 0]
+    assert len(vis) == 1, f"expected one visual board mesh geom, found {len(vis)}"
+    pos = np.array(mj_model.geom_pos[vis[0]])
+    t = np.array(c["t"], dtype=float)
+    err = np.abs(pos - t).max()
+    if err > tol:
+        raise ValueError(
+            f"board splat calib t={t.round(5).tolist()} != board visual mesh pos "
+            f"{pos.round(5).tolist()} (max err {err * 1000:.1f} mm). Update "
+            f"{calib_path} board_obj.t to the mesh pos in board_scan.xml.")
+
+
 class SplatCompositor:
     def __init__(self, mj_model, mj_data, calib_path=DEFAULT_CALIB,
                  seg_dir=DEFAULT_SEG_DIR, scene_ply=DEFAULT_SCENE_PLY,
@@ -79,6 +103,7 @@ class SplatCompositor:
         from gaussian_renderer.core.gaussiandata import GaussianData
         self._torch, self._GD = torch, GaussianData
 
+        _check_board_calib(mj_model, calib_path)
         self.r = MjSplatRenderer(mj_model, calib_path, seg_dir=seg_dir,
                                  overrides={t: "skip" for t in skip_tokens},
                                  device=device)

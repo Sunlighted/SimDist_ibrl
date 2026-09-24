@@ -30,12 +30,15 @@ def main():
     p.add_argument("--weight", default=None)
     p.add_argument("--n", type=int, default=30)
     p.add_argument("--seed", type=int, default=55000)
+    p.add_argument("--hole_clearance", type=float, default=0.0)   # m/side; 0 = scanned
     args = p.parse_args()
 
     env = PixelRobosuite(
         env_name="PegInsertion_D0", robots=["Panda"], episode_length=300, use_state=True,
         state_only_no_render=True, device="cuda", hand_init_perturb_joint_sigma=0.1,
-        end_on_success=True, env_kwargs=dict(board_pos_noise=0.01, board_yaw_noise=5.0))
+        end_on_success=True, env_kwargs=dict(board_pos_noise=0.01, board_yaw_noise=5.0,
+                                             **({"hole_clearance": args.hole_clearance}
+                                                if args.hole_clearance else {})))
     if args.kind == "bc":
         import train_bc
         policy, _, _ = train_bc.load_model(args.weight, "cuda", verbose=False)
@@ -74,6 +77,7 @@ def main():
             tilt = np.degrees(np.arccos(min(1.0, abs(Rp[2, 2]))))
             R.append((succ, lifted, xy_min * 1000, depth * 1000, tilt, t))
     S, L, XY, D, TL, T = (np.array(x) for x in zip(*R))
+    print(f"pocket clearance/side: x {(raw.board.hole_half_x - 0.016524) * 1000:.2f} mm")
     print(f"[{args.kind}] n={len(S)}  success {S.mean():.2f}   lifted {L.mean():.2f}")
     xy = XY[np.isfinite(XY)]
     if len(xy):

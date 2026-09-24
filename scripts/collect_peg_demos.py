@@ -69,6 +69,8 @@ def main():
     # board reset jitter (env/peg_insertion.py); must match the BC/IBRL env
     parser.add_argument("--board_pos_noise", type=float, default=0.0)   # m, uniform +- per axis
     parser.add_argument("--board_yaw_noise", type=float, default=0.0)   # deg, uniform +-
+    # pocket clearance per side in m (sim-only knob); 0 = the scanned 1.26 mm
+    parser.add_argument("--hole_clearance", type=float, default=0.0)
     args = parser.parse_args()
 
     cameras = ["agentview", "robot0_eye_in_hand"]
@@ -86,8 +88,10 @@ def main():
         device=args.device,
         hand_init_perturb_joint_sigma=args.sigma,
         end_on_success=True,
-        env_kwargs=(dict(board_pos_noise=args.board_pos_noise, board_yaw_noise=args.board_yaw_noise)
-                    if (args.board_pos_noise or args.board_yaw_noise) else None),
+        env_kwargs=({**(dict(board_pos_noise=args.board_pos_noise, board_yaw_noise=args.board_yaw_noise)
+                        if (args.board_pos_noise or args.board_yaw_noise) else {}),
+                     **(dict(hole_clearance=args.hole_clearance) if args.hole_clearance else {})}
+                    or None),
     )
 
     accepted = []
@@ -130,6 +134,7 @@ def main():
         "hand_init_perturb_joint_sigma": args.sigma,
         "board_pos_noise": args.board_pos_noise,
         "board_yaw_noise": args.board_yaw_noise,
+        "hole_clearance": args.hole_clearance or None,
         "init_distribution": None,
         "rl_image_size": None if args.state_only else args.image_size,
         "use_state": True,

@@ -332,6 +332,8 @@ class MainConfig(common_utils.RunConfig):
     # train and eval env. 0/0 = env_kwargs None = byte-for-byte legacy.
     board_pos_noise: float = 0.0
     board_yaw_noise: float = 0.0
+    # PegInsertion pocket clearance per side (m; env hole_clearance). 0 = scanned 1.26 mm.
+    hole_clearance: float = 0.0
     # SGFT (Simulation-Guided Fine-Tuning, Yin et al. ICLR 2025) on top of IBRL.
     # Path to a frozen source-domain QAgent checkpoint. When set, that agent is
     # reused for BOTH roles:
@@ -592,11 +594,15 @@ class Workspace:
         self._setup_replay()
 
     def _board_env_kwargs(self):
-        if self.cfg.board_pos_noise == 0 and self.cfg.board_yaw_noise == 0:
-            return None
-        print(f"[board jitter] pos +-{self.cfg.board_pos_noise} m, yaw +-{self.cfg.board_yaw_noise} deg")
-        return dict(board_pos_noise=self.cfg.board_pos_noise,
-                    board_yaw_noise=self.cfg.board_yaw_noise)
+        kw = {}
+        if self.cfg.board_pos_noise or self.cfg.board_yaw_noise:
+            print(f"[board jitter] pos +-{self.cfg.board_pos_noise} m, yaw +-{self.cfg.board_yaw_noise} deg")
+            kw.update(board_pos_noise=self.cfg.board_pos_noise,
+                      board_yaw_noise=self.cfg.board_yaw_noise)
+        if self.cfg.hole_clearance:
+            print(f"[pocket] clearance {self.cfg.hole_clearance * 1000:.2f} mm/side")
+            kw.update(hole_clearance=self.cfg.hole_clearance)
+        return kw or None
 
     def _setup_env(self):
         self.rl_cameras: list[str] = list(set(self.cfg.rl_cameras + self.cfg.bc_cameras))
@@ -1060,6 +1066,15 @@ def load_model(weight_file, device):
             source_agent.cfg.act_method = "ibrl"
             source_agent.prior_margin = 0.0
         agent.add_bc_policy(FrozenAgentBCPolicy(source_agent))
+
+    # prior_margin is a runtime attribute set by the training loop, not part of
+    # the state_dict, so a reloaded agent would silently act with margin 0 --
+    # a different argmax than the one it trained and was evaluated with.
+    # Restore the permanent floor (= the margin in force at the end of training).
+    # 0.0 for every run without a margin => unchanged.
+    if cfg.prior_margin_init > 0:
+        agent.prior_margin = float(cfg.prior_margin_final)
+        print(f"[load_model] restored prior_margin = {agent.prior_margin}")
 
     agent = agent.to(device)
     return agent, eval_env, eval_env_params

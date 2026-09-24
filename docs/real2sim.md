@@ -557,6 +557,19 @@ IBRL 报 **0.86**（独立 n=100），但几乎全是**斜着把 peg 楔进墙�
 - ⚠️ **2026-09-23 之前所有 peg 分数（含 v3 脚本链 IBRL 0.95）都是在旧判据+软墙下测的**，
   引用前先用 `verify_peg_ibrl.py` 复查。重跑链：`TAG=_hard bash scripts/pipeline_peg_mimicgen.sh`。
 
+### §5a3 ★★★ board splat 一直画偏了 62–64 mm（2026-09-24 发现并修复）
+photoreal 画面里 peg"插错孔"，但物理上是对的：`obj_calib.json` 的 board `t` 放错了。
+`board_obj.ply` 是对着 STL 在 **mesh 系**里配准的（`register_object_splats.py` 对 STL 做 ICP），
+所以 `t` 必须等于 `board_scan.xml` 里视觉 mesh geom 的 `pos`（MuJoCo 对同一个 mesh 用的变换）。
+- 9/23 之前 `t=0`，而 mesh pos=(−1.06, −62.16) mm ⇒ **y 偏 62 mm**；§5a 的"同步 −(53.8,−3.8)"
+  在这个错的基础上又平移一次，偏差仍是 64 mm。
+- 测量：只渲染 board splat、对 MuJoCo 视觉 mesh 的剪影做平移网格搜索（`scripts/fit_board_splat_offset.py`），
+  最优 = (−51.8, −60.2) mm，与 mesh pos (−54.86, −58.36) 差 <3 mm 且 IoU 相同 ⇒ 用 mesh pos。
+  修后 IoU 0.45–0.52 → **0.91–0.97**（`scripts/diag_splat_board_align.py`，jitter 开关一致）。
+- 防回归：`SplatCompositor` 初始化时 `_check_board_calib` 断言 `t` 与编译后模型里的视觉 mesh pos
+  差 ≤1 mm（旧值会报 61.5 mm 错）。
+- ⚠️ **9/24 之前所有 photoreal peg 数据（`peg_d0_src_splat224` 等）与训在其上的 stage-1 都看的是偏了的 board**，须重渲。
+
 ### §5b 提交链（**已提交 2026-09-15**：collect 5465185 → peg_bc 5465186 → peg_ibrl 5465187）
 ```bash
 J1=$(sbatch --parsable scripts/slurm/collect_peg_demos.slrm)

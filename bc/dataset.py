@@ -102,6 +102,7 @@ class DatasetConfig:
     # fields of the same name). 0/0 = env_kwargs None = legacy.
     board_pos_noise: float = 0.0
     board_yaw_noise: float = 0.0
+    hole_clearance: float = 0.0     # m per side; 0 = scanned pocket
     # ---- IL co-training: mix a second (target) dataset with the primary
     # (source) `path`. When `cotrain_path` is set, train_bc builds a
     # CoTrainDataset that draws EACH batch as `cotrain_ratio` fraction from
@@ -375,8 +376,10 @@ class RobomimicDataset:
             ctrl_delta=bool(self.cfg.ctrl_delta),
             hand_init_perturb=cfg.hand_init_perturb,
             hand_init_perturb_joint_sigma=cfg.hand_init_perturb_joint_sigma,
-            env_kwargs=(dict(board_pos_noise=cfg.board_pos_noise, board_yaw_noise=cfg.board_yaw_noise)
-                        if (cfg.board_pos_noise or cfg.board_yaw_noise) else None),
+            env_kwargs=({**(dict(board_pos_noise=cfg.board_pos_noise, board_yaw_noise=cfg.board_yaw_noise)
+                            if (cfg.board_pos_noise or cfg.board_yaw_noise) else {}),
+                         **(dict(hole_clearance=cfg.hole_clearance) if cfg.hole_clearance else {})}
+                        or None),
         )
         if not build_env:
             # Co-training sub-dataset: env_params is still exposed, but the live

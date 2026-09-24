@@ -51,6 +51,8 @@ def label(img, text, color=(255, 255, 255)):
 
 def render_demo(env, g, size):
     states = g["states"][()]
+    if "final_state" in g:   # policy rollouts: the state AFTER the last action (the success frame)
+        states = np.concatenate([states, g["final_state"][()][None]], axis=0)
     xml = g.attrs["model_file"]
     env.reset_to({"states": states[0], "model": xml})
     board = env.env.sim.data.body_xpos[env.env.obj_body_id["board"]].copy()
@@ -71,6 +73,8 @@ def main():
     p.add_argument("--num", type=int, default=6)
     p.add_argument("--size", type=int, default=320)
     p.add_argument("--fps", type=int, default=20)
+    # policy rollouts (verify_peg_ibrl.py --save_states) carry a `success` attr per episode
+    p.add_argument("--only_success", type=int, default=0)
     args = p.parse_args()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
@@ -80,7 +84,11 @@ def main():
     env_meta = json.loads(f["data"].attrs["env_args"])
     env = EnvUtils.create_env_from_metadata(
         env_meta=env_meta, render=False, render_offscreen=True, use_image_obs=False)
-    keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))[:args.num]
+    keys = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[1]))
+    if args.only_success:
+        keys = [k for k in keys if int(f[f"data/{k}"].attrs.get("success", 0))]
+        print(f"{len(keys)} successful episodes in {args.dataset}")
+    keys = keys[:args.num]
 
     writer = imageio.get_writer(args.out + ".mp4", fps=args.fps, macro_block_size=1)
     sheet_rows = []
