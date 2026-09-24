@@ -1,0 +1,73 @@
+{
+ "gain": [
+  0.940954327583313,
+  0.8383899927139282,
+  0.42753487825393677
+ ],
+ "offset": [
+  -0.11578267812728882,
+  -0.19541321694850922,
+  0.031995415687561035
+ ],
+ "source": "board_obj_phonescan_orig.ply",
+ "target_cam": "scene",
+ "target_mean": [
+  63.829193115234375,
+  50.0168571472168,
+  92.65642547607422
+ ],
+ "target_std": [
+  16.448749542236328,
+  16.266103744506836,
+  10.064223289489746
+ ],
+ "achieved_mean": [
+  64.84721374511719,
+  52.40693664550781,
+  92.673583984375
+ ],
+ "achieved_std": [
+  17.007238388061523,
+  15.547067642211914,
+  9.392925262451172
+ ],
+ "per_camera_target": {
+  "scene": [
+   63.829193115234375,
+   50.0168571472168,
+   92.65642547607422
+  ],
+  "wrist": [
+   70.24442291259766,
+   63.09183120727539,
+   91.75000762939453
+  ]
+ },
+ "per_camera_achieved": {
+  "scene": [
+   68.2621078491211,
+   57.32478713989258,
+   95.2336196899414
+  ],
+  "wrist": [
+   61.432315826416016,
+   47.48908233642578,
+   90.11354064941406
+  ]
+ },
+ "before": {
+  "scene": [
+   100.95156860351562,
+   120.61538696289062,
+   199.3447265625
+  ],
+  "wrist": [
+   95.37554931640625,
+   113.27947235107422,
+   191.2183380126953
+  ]
+ },
+ "why": "board_obj and the scene splat came from different phone captures; the board was brighter than the scene's exposure implied, inverting the blue ordering vs the real ZED and making the real->splat colour map unfittable. Target = real board through the deployed colour map.",
+ "script": "real2sim/scan_pipeline/reexpose_board_splat.py",
+ "original": "board_obj_phonescan_orig.ply is NOT tracked: it is byte-identical to the board_obj.ply of the commit preceding this one, so recover it with `git show <that commit>:real2sim/splats/objsplats/board_obj.ply`. The script refuses to run without it unless --force, to avoid a double correction."
+}

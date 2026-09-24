@@ -427,6 +427,22 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
 - **§17** SimDist 本体：world model 架构、stage-1 蒸馏配方、raw-state 对照臂、
   offline dynamics trainer。**五个稳定性坑的完整病历**（value 塌成 0、policy detach、
   采集噪声必须 ~0、latent 爆炸 → SimNorm、policy 与 dynamics 抢 encoder → `enc_pi`）。
+### 真机 (FR3 cell) —— 机器人工作站
+```
+Host tisl
+  HostName 100.66.83.240      # Tailscale; Killarney 登录节点可直连
+  User tisl-robotics
+  Port 2233
+```
+- 认证：密钥（owner 的 `~/.ssh/id_rsa`）或密码 —— **密码不进仓库**，问 owner。
+- 机器 `tisl-ws-22-5`，RTX 3090，Ubuntu 20.04。ROS 2 Humble 只在容器
+  `ros2_devcontainer-gello-ros2-1` 里（host 网络，**无 torch / 无 GPU**，`~/simdist/gello_software` 挂在 `/workspace`）。
+- 臂 = **FR3**（不是 Panda；运动学相同、关节限位不同），只经 `joint_impedance_controller`
+  控制：暂停 `gello_publisher`（SIGSTOP）后自己发 `/gello/joint_states`，100 Hz，**0.5 s 看门狗**。
+  范本 = 容器内 `scripts/reset_arm.py`。相机 = `publish_zed_uvc.py`，**原始未去畸变**帧 + 出厂 K,D。
+- 策略 runner：`real2sim/deploy/`（README），host 端部署在 `~/simdist/deploy_simdist`
+  （conda env `simdist`）。别往 host 已有的 conda env / 容器里装东西。
+
 - **§24** target adapt：stage-2 只训 policy 头、stage-3 只训 dynamics 头，encoder 全程冻结。
 - **§25** residual on frozen adapted base（ResFiT，base action 存进 buffer 而非重规划）
   + IBRL-with-same-base 对照臂。

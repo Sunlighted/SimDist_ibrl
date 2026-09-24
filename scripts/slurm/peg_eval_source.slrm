@@ -21,7 +21,7 @@ source set_env_drac.sh
 for CKPT in model0 latest; do
   echo "=== $CKPT ==="
   python evaluate/eval.py \
-      --weight exps/mimicgen/peg_ibrl_source_v2_seed1/$CKPT.pt \
+      --weight ${RUN:-exps/mimicgen/peg_ibrl_source_v2_seed1}/$CKPT.pt \
       --mode rl --num_game 500 --mp 10 \
       --hand_init_perturb_joint_sigma 0.1
 done
