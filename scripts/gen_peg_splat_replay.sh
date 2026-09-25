@@ -24,8 +24,10 @@ cd "$(dirname "$0")/.."
 source set_env.sh
 PY="${PY:-$(command -v python)}"
 export MUJOCO_GL=egl
-export CUDA_VISIBLE_DEVICES="${GPU:?set GPU}"
-export MUJOCO_EGL_DEVICE_ID="$GPU"
+# *_OVERRIDE: hosts whose EGL device order != nvidia-smi order (shannon: EGL id must
+# come from a map, and robosuite asserts the EGL id is a substring of CVD)
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_OVERRIDE:-${GPU:?set GPU}}"
+export MUJOCO_EGL_DEVICE_ID="${MUJOCO_EGL_DEVICE_ID_OVERRIDE:-$GPU}"
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"
 # ninja (pip-installed next to python) must be on PATH or gsplat's JIT build fails
 export PATH="$(dirname "$PY"):$CUDA_HOME/bin:$PATH"
