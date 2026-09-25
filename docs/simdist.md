@@ -2284,6 +2284,308 @@ disagreeing in sign), and the ensemble delta is +0.258 with both measures
 agreeing and 5/5 seeds positive. The open question has moved to the **anchor**,
 which no amount of extra stage-1 seeds on A/B would address.
 
+#### k. ★ PRE-REGISTERED FOLLOW-UP: shift-only rung C at 5 seeds (queued 2026-09-21)
+
+§48h leaves ONE question open: rung C fell from §47's **0.766** to a 5-seed mean
+of **0.363** (best seed 0.484). §48i listed three candidate causes; diffing has
+since eliminated two of them, so the question is now sharp.
+
+**What the diff established (all verified, not assumed):**
+- the adapt protocol is **byte-identical** between §47 rung C and §48 rung C,
+  except the newly-added `target_demo_offset: 0` field;
+- §48 seed 1 uses **the same draw `[0,20)`** §47 used;
+- the two stage-1 cfgs are identical — same `seed: 1`, `distill_steps: 150000`,
+  `source_replay_num_data: 4500`, 5 heads, H=5, `aug_shift_pad: 8` — **differing
+  ONLY in the three new aug knobs**.
+⇒ On a fully matched comparison the base arm barely moved (B **0.334 → 0.358**)
+while the anchored arm collapsed (C **0.766 → 0.342**). The whole gap localises
+to the **stage-1 checkpoint**.
+
+**Two candidates remain, and they are still collinear:**
+1. the three new augmentations destroyed what the anchor was exploiting;
+2. **stage-1 seed variance** — turning aug on changes RNG consumption, so the
+   realized trajectory diverges even at the same declared `seed: 1`. §47d flagged
+   its own stage-1 variance as unmeasured and it still is: one stage-1 per cell.
+
+**The arm:** rung C (`ANCHOR_COEF=1.0`) at **5 draws (0/20/40/60/80)** on §47's
+**existing** shift-only stage-1 `threading_pixel224_stage1_seed1` — rungs B and C
+share a stage-1, so this needs **no retrain** (~105 GPU-h, adapts + evals only).
+Protocol identical to §48 (`NUM_DEMO=20 MAX_TRANS=100000 INTERVAL=2000 EVAL_N=100
+DYN_ANCHOR_COEF=0.1`, ORIGINAL MPPI).
+
+**★ PRE-REGISTERED PREDICTIONS (written before any of it ran):**
+- **Seed 1 is a pure replication test of §47's 0.766** — same checkpoint, same
+  draw, same protocol, differing only in adapt-time RNG. If it lands near 0.766,
+  §47's number is real and the augmentation/stage-1 is implicated. **If it lands
+  near 0.35, §47's 0.766 was adapt-time noise on a single run and the
+  augmentation is exonerated entirely** — the anchor would never have been the
+  dominant pixel lever at all.
+- If the 5-seed shift-only C mean is **≳0.65**, cause (1) or (2) is real and the
+  anchor DOES work on a shift-only checkpoint.
+- If it is **≈0.35-0.45**, i.e. indistinguishable from §48's full-aug C, then the
+  augmentation changed nothing about the anchor and §47's cell was the outlier.
+⚠️ This arm does NOT separate (1) from (2) — both conditions still have ONE
+stage-1 each. Separating them needs multiple stage-1 seeds per aug condition.
+Report it as "shift-only checkpoint vs full-aug checkpoint", NOT as "augmentation
+caused it".
+⚠️ Rung B is NOT rerun here, so this yields **absolute C levels + the
+draw-paired augmentation contrast on C**, not a shift-only anchor delta. That is
+acceptable because B moved only 0.334 → 0.358 between the two checkpoints; if
+that turns out to be wrong, the 5 B runs can be added on the same checkpoint.
+
+#### l. ★★ A NEW NOISE FLOOR: single-run pixel adapt carries ~0.14 on the ANCHORED arm
+
+`aug48k_C_s1` is a **byte-identical rerun** of §47's rung C — same stage-1
+checkpoint (`threading_pixel224_stage1_seed1`), same demo draw `[0,20)`, same
+adapt cfg (verified by diff: the only difference is the newly-added
+`target_demo_offset: 0` field), same ORIGINAL MPPI recipe. The only uncontrolled
+variable is **adapt-time RNG** (stage-2 BC batching, stage-3 MPPI collection,
+eval sampling).
+
+| | window (75-100k, n=13) |
+|---|---:|
+| §47 rung C | **0.875** |
+| `aug48k_C_s1`, identical config | **0.732 ±0.057** |
+| **run-to-run gap at FIXED configuration** | **0.143** |
+
+★★ **0.143 is far larger than either run's own within-window SD (0.030 / 0.057),
+and larger than §38's replicate figure of ±0.027 — which was measured on the
+STATE arm and does not transfer here.** ⇒ **A single pixel adapt run on the
+anchored arm is worth ±~0.14, independent of demo draw and independent of
+stage-1 seed.** This is a THIRD noise source, on top of §38's draw sigma 0.092
+and eval sampling.
+⇒ It is also the quantitative explanation of §47's error: its +0.450 anchor
+delta came from one run that happened to land 0.143 high, against a paired
+5-seed truth nearer +0.28. Nothing was wrong with the measurement; the sample
+size was one.
+⇒ **Practical rule: never quote a single pixel adapt number to better than
+±0.15, and never build a ladder delta from one run per rung** — not even when
+the z-score against eval noise is +15, because that z is blind to this term
+(iron law #1's noise floor now has three scales on pixel, not two).
+
+⚠️ Note the direction is not a bias: 0.875 vs 0.732 is one draw of a
+distribution, and we have n=2 at this exact configuration. The claim is about
+the SPREAD, not about §47 being systematically high.
+
+#### m. ★★★ THE COMPLETE 2x2 — the anchor does NOTHING; the AUGMENTATION is the real effect
+
+20 adapt runs, 4 cells x 5 disjoint demo draws, every run at the full 100k, one
+demo draw shared across all four cells within a seed (paired), `[EVAL ENV]`
+identical throughout. Window means (75-100k, n=13 each):
+
+WINDOW (75-100k):
+
+| | anchor OFF | anchor ON | **anchor effect (paired)** |
+|---|---:|---:|---:|
+| **shift-only stage-1** | **L 0.714 ±0.183** | **K 0.711 ±0.100** | **−0.003 ±0.212 (0.0 sigma)** |
+| **full-aug stage-1** | **B 0.502 ±0.091** | **C 0.434 ±0.079** | **−0.068 ±0.064 (2.4 sigma)** |
+| **augmentation effect (paired)** | **−0.212 ±0.189** | **−0.277 ±0.149 (4.2 sigma)** | |
+
+INDEPENDENT n=500 (all 20 evals landed, one identical `[EVAL ENV]`):
+
+| | anchor OFF | anchor ON | **anchor effect (paired)** |
+|---|---:|---:|---:|
+| **shift-only stage-1** | L 0.562 ±0.162 | K 0.614 ±0.079 | **+0.052 ±0.173 (0.7 sigma)** |
+| **full-aug stage-1** | B 0.399 ±0.072 | C 0.363 ±0.088 | **−0.036 ±0.068 (1.2 sigma)** |
+| **augmentation effect (paired)** | — | **−0.252 ±0.143 (3.9 sigma)** | |
+
+★ **The two measures AGREE on every conclusion**: the anchor is null on both
+checkpoints (−0.003 / +0.052 shift-only; −0.068 / −0.036 full-aug — note the
+shift-only pair even disagree in SIGN, which is what a true zero looks like),
+and the augmentation penalty is 4.2 / 3.9 sigma. Per §47a the window SDs are
+comparable in every comparison (K 0.058 vs L 0.059; C 0.051 vs B 0.060), so the
+TopkSaver selection premium cancels and both measures are readable.
+
+Per-seed (window): `L 0.419/0.794/0.661/0.875/0.822`, `K 0.732/0.720/0.719/0.832/0.553`,
+`B 0.462/0.428/0.522/0.447/0.653`, `C 0.428/0.318/0.417/0.475/0.532`.
+
+#### ★★★ VERDICT (supersedes §48h's reading of the anchor)
+1. **THE ANCHOR HAS NO EFFECT, in EITHER augmentation condition.**
+   −0.003 on shift-only, −0.068 on full-aug. §48h reported the full-aug number
+   and read it as "the anchor does not reproduce"; the shift-only cell shows the
+   stronger and simpler truth — **there is nothing to reproduce on average.**
+2. ★★ **THE AUGMENTATION IS THE LARGE EFFECT, and it is a REGRESSION**:
+   **−0.212 on rung B and −0.277 on rung C**, i.e. a MAIN effect that hits both
+   rungs, not an interaction with the anchor (§48i's hypothesis is WRONG and is
+   withdrawn). Adding §44's colour jitter + Gaussian blur + proprio noise to a
+   stage-1 that already had random shift costs ~0.2-0.3 of final target score.
+3. **The ensemble delta (§48h, +0.258 / +0.156, 5/5 seeds positive) is untouched
+   by all of this** — it is measured on the full-aug checkpoints and remains the
+   one ladder result that reproduces the published number.
+
+#### ★★★ n. THE COMPLETE DECOMPOSITION OF §47's +0.450
+§47 is now fully explained, and **none of it was a bug**:
+
+| §47 quantity | §47 value | §48 replication | explanation |
+|---|---:|---:|---|
+| rung B, draw `[0,20)` | 0.425 | **Ls1 = 0.419** | ✅ replicates almost exactly |
+| rung C, draw `[0,20)` | 0.875 | **Ks1 = 0.732** | **+0.143 of single-run noise (§48l)** |
+| anchor delta | **+0.450** | **+0.312 at seed 1** | the rest is that same run noise |
+| anchor delta, mean over 5 draws | — | **−0.003** | **seed 1 is the OUTLIER draw** |
+
+⇒ **+0.450 = (+0.312 true for draw `[0,20)`) + (~0.138 single-run noise).** And
+`[0,20)` is the ONLY draw of five where the anchor helps: the other four give
+−0.074 / +0.058 / −0.043 / −0.268. §47 measured its one draw correctly and
+reported it as the effect.
+★★ **This is the cleanest demonstration in the project of why n=1 is worthless
+here, because BOTH failure modes are present and separable**: a run-level term
+(~0.14) AND a draw-level term whose per-seed deltas span **0.58** (+0.312 to
+−0.268). §38's sigma=0.092 is on SCORES; on a DELTA the draw term is far larger.
+⚠️ Note the `[0,20)` draw is also the one every previous pixel experiment used,
+because `rl/replay.py` took the first N episodes unseeded (iron law #25). **Every
+single-draw pixel result in this project sits on that same non-random draw.**
+
+#### o. What this costs §44/§45
+§45's fix order put "augmentation (free, the paper has it, we have zero)" FIRST.
+Measured: the three rows beyond random crop are **−0.21 to −0.28**, on a base
+that already had random crop. ⇒ **the augmentation row of §44 is not a free win
+and should not be carried forward as one.** Random shift/crop stays (it was
+already in every §47/§48 arm and is not what was tested here).
+⚠️ What is NOT established: WHICH of the three (jitter / blur / proprio noise)
+causes it, or whether the magnitudes chosen were simply too strong
+(jitter 0.3 = ColorJitter(.3,.3,.3,.1), blur sigma<=2.0 px at 224, prop 2 mm).
+A dose-response sweep on ONE of them is the obvious next step, not a blanket
+rejection of augmentation.
+⚠️ Also NOT separated: augmentation vs **stage-1 seed**. Each aug condition has
+ONE stage-1, and turning aug on changes the RNG stream. The effect is 4.2 sigma
+across 5 paired draws so it is not adapt noise, but stage-1 seed variance
+remains unmeasured in this project (§47d, still open). 2-3 stage-1 seeds per aug
+condition would close it.
+
+#### p. ★ PRE-REGISTERED: the anchor's λ was never tuned on pixel (queued 2026-09-23)
+
+`bc_anchor_coef` IS the KL coefficient (train_simdist_adapt.py:90-95: the MSE anchor
+= KL between N(pi,sigma^2 I) policies, 1/2sigma^2 absorbed into lambda). Its only
+tuning is §42's STATE sweep: inverted-U, peak lambda=1, effective range ~[0.1,3],
+lambda=10 back near lambda=0. §48 used lambda=1 on pixel UNCHANGED — iron laws #9
+and #16 say that value need not transfer. So §48m's "the anchor does nothing" is
+only established AT lambda=1; a null there could just be the wrong point on the curve.
+
+**The sweep:** lambda in {0.1, 0.3, 3} on §47's SHIFT-ONLY stage-1, draws
+seeds 1-3 (`[0,20)`, `[20,40)`, `[40,60)` — taken BY INDEX, not chosen on their
+§48 outcomes). lambda=0 and lambda=1 are reused from the L and K cells (same
+checkpoint, same draws, same protocol) => a 5-point curve, every delta paired
+within draw against lambda=0. 9 new runs, ~190 GPU-h, no retrain.
+
+**Predictions (written before any of it ran):**
+- If some lambda gives a paired delta vs lambda=0 of **>= +0.15 on all 3 draws**,
+  the §48m null was a tuning artifact and the anchor works on pixel at that lambda.
+- If every lambda is within the lambda=1 spread (per-draw deltas -0.27..+0.31),
+  the null is robust to lambda and the anchor is genuinely inert on pixel.
+⚠️ Power: 3 draws with a per-draw delta SD of ~0.21 gives SE ~0.12 per lambda — a
+SCREEN, not a measurement. Any lambda that looks good must be rerun at 5 draws
+before it is quoted (iron law #3: post-hoc winners need a fresh pre-registered run).
+⚠️ Seed 1 is the draw where lambda=1 helped most (+0.312). Using it is by index,
+but read the curve on seeds 2-3 as well, not the mean alone.
+
+#### q. ★★ λ SWEEP RESULT: no value of the KL coefficient makes the anchor work on pixel
+
+All 9 sweep runs + 9 evals complete at the full 100k, §47's SHIFT-ONLY stage-1,
+draws 1-3, every delta paired within draw against lambda=0 (the L cells):
+
+| lambda | window Δ (mean ±sd) | per draw | independent Δ | per draw |
+|---:|---:|---|---:|---|
+| 0.1 | +0.053 ±0.174 | +0.181 / −0.145 / +0.125 | +0.138 ±0.141 | +0.280 / −0.002 / +0.136 |
+| 0.3 | +0.130 ±0.225 | +0.380 / −0.055 / +0.065 | +0.153 ±0.258 | +0.444 / −0.046 / +0.060 |
+| 1   | +0.099 ±0.196 | +0.312 / −0.074 / +0.058 | +0.131 ±0.173 | +0.326 / −0.002 / +0.068 |
+| 3   | **−0.081** ±0.214 | +0.167 / **−0.200 / −0.208** | +0.001 ±0.184 | +0.212 / −0.082 / −0.126 |
+
+**VERDICT against the pre-registered bar (>= +0.15 on ALL 3 draws): NO lambda
+passes.** Draw 2 is <= 0 at every lambda on both measures. The curve has the
+same inverted-U SHAPE as §42's state sweep (rising to ~0.3, falling by 3) but its
+peak (+0.130 window) is well inside one SE (~0.13) — and lambda=3 is actively
+HARMFUL on 2 of 3 draws, earlier than on state (where lambda=10 only fell back to
+lambda=0). ⇒ **§48m's null is NOT a tuning artifact.** The anchor has no
+reliable average effect on pixel anywhere in lambda in [0.1, 3].
+⚠️ The independent means (+0.13..+0.15) read higher than the window because
+draw 1's lambda=0 independent eval is unusually low (0.286); the per-draw
+pattern — and the pass/fail verdict — is identical on both measures.
+
+★ **The one stable regularity is draw-dependence, and it is POST-HOC:** draw 1
+(the worst lambda=0 baseline, 0.419) gains at EVERY lambda including 3, while
+draw 2 (baseline 0.794) loses at every lambda. Across all 5 draws at lambda=1,
+Spearman(lambda=0 baseline, anchor gain) = **−0.70** (0.419→+0.312,
+0.661→+0.058, 0.794→−0.074, 0.822→−0.268, 0.875→−0.043).
+Reading: the anchor rescues a stage-2 policy spoiled by a BAD 20-demo draw and
+costs a little on a good one — §42's two competing conditions, at the level of
+the demo draw rather than the base. ⚠️ Not established: n=5, post-hoc (iron law
+#3), and regression to the mean can manufacture exactly this sign given the
+~0.14 single-run noise of §48l. Draw 1's low baseline did replicate across two
+independent runs (§47 0.425, §48 0.419), so it is not purely a noisy low run.
+A pre-registered test would pick draws by a PRE-adapt statistic (e.g. stage-2
+`policy_only` at lambda=0) and predict the anchor's sign before running.
+
+#### r. ★★★ CONSOLIDATED PIXEL SIM2SIM FINDINGS (2026-09-25)
+Threading_D0, r18@224 ImageNet ResNet-18, 20 target demos, 100k-transition
+adapt, ORIGINAL MPPI, strict, sigma=0.1. **34 adapt runs + 34 independent n=500
+evals**, 5 disjoint demo draws per cell (3 for the lambda sweep), every run at
+the full budget, one `[EVAL ENV]` line throughout.
+
+**ESTABLISHED (>= 5 draws, window and independent agree):**
+| # | finding | effect | evidence |
+|---|---|---:|---|
+| 1 | **dynamics ensemble** (5 heads, H=5 vs 1 head, H=3) | **+0.258** win / +0.156 ind | 5/5 draws positive; = published +0.249 (§48h) |
+| 2 | **§44's extra augmentations are a regression** (jitter 0.3 + blur 2.0 px + prop 2 mm, on top of random shift) | **−0.21 / −0.28** | both rungs, 4.2 sigma on C (§48m) |
+| 3 | **source anchor** has no reliable average effect | **~0** at λ=1; no λ in [0.1,3] passes; λ=3 harmful | 5 draws × 2 aug conditions + λ sweep (§48m, §48q) |
+| 4 | **three noise floors on pixel**: demo draw (per-draw deltas span 0.58), single-run at fixed config (~0.14), eval sampling | — | §48l, §48n |
+
+**Best measured configuration:** shift-only augmentation + dynens_h5, anchor
+off — **0.714 ±0.183 window / 0.562 ±0.162 independent** (5 draws; the same
+with λ=1: 0.711 / 0.614). ⚠️ Stage-1 here is 150k steps, so absolute levels are
+not comparable to the published 800k state ladder (§46j) — only deltas are.
+
+**WITHDRAWN (were single-draw artifacts of draw `[0,20)`):** §47's "ensemble
+does not reproduce", §47's "anchor is the dominant pixel lever (+0.450)", §48h's
+"anchor does not reproduce" as the explanation, and §48i's aug×anchor
+interaction. §47's +0.450 = +0.312 (real for its draw) + ~0.14 run noise (§48n).
+
+**HYPOTHESES (post-hoc — need a pre-registered test):**
+- anchor gain is set by the demo draw's λ=0 quality (Spearman −0.70, §48q);
+- WHICH augmentation causes #2, and whether the magnitudes were just too strong.
+
+**OPEN / UNRESOLVED — each one is load-bearing for the pixel recipe:**
+- **r18@224 vs vit96 is now UNRESOLVED.** §47b's +0.500 encoder gain lived
+  entirely in the +anchor row, i.e. in the +0.432 that §48n dissolved. At
+  anchor=0 on draw `[0,20)`: r18 rung B = 0.419 win / 0.286 ind (§48) vs vit96
+  0.338 ind (§47, n=1) — no r18 advantage on that draw, but `[0,20)` is r18's
+  WORST of five draws. Settling it needs vit96 × 5 draws.
+- **stage-1 seed variance: never measured** (one stage-1 per condition), so #2
+  cannot yet be separated from stage-1 seed luck (§48o).
+- **ensemble on the better checkpoint:** #1 was measured on the full-aug
+  stage-1s only; there is no shift-only rung A.
+
+#### s. RUN MANIFEST — where the raw data is, and the copy that survives a purge
+
+**Nothing is on wandb** (`--use_wb 0` in `adapt.slrm` and `pixel_stage1.slrm`).
+Every number in §48 is reproducible from two version-controlled files:
+
+| file | contents |
+|---|---|
+| **`docs/aug48_runs.csv`** | one row per run (34): cell, run dir, stage-1 ckpt, the stage-1's augmentation *read from its own cfg*, `bc_anchor_coef`, `demo_offset`, reached, window mean/sd/n, independent k/n, eval artifact path, `[EVAL ENV]` |
+| **`docs/aug48_curves.csv`** | every in-training eval point (1734): run, transitions, `target_score`, `policy_only` |
+
+Regenerate with `python scripts/aug48_export.py` from the `/scratch` working copy.
+Cells: `A`=plain_h3 full-aug · `B`=dynens full-aug λ0 · `C`=dynens full-aug λ1 ·
+`K`=dynens shift-only λ1 · `L`=dynens shift-only λ0 · `SW`=shift-only λ sweep.
+Reports: `scripts/aug48_report.py` (the 2×2 + ladder) and
+`scripts/aug48_lambda_report.py` (the λ curve).
+
+**Raw artifacts (checkpoints, full logs) — ⚠️ `/scratch` ONLY:**
+| what | where |
+|---|---|
+| adapt run dirs (`cfg.yaml`, `train.log`, `log.pkl`, `model0.pt`, `latest.pt`) | `/scratch/yifanr/simdist/repo/exps/mimicgen/{aug48_*,aug48k_*,aug48sw_*}` (11 GB) |
+| independent n=500 eval outputs | `/scratch/yifanr/simdist/eval_staging/aug48*_<jobid>.txt` (68) |
+| full-aug stage-1s | `/scratch/yifanr/simdist/thr_pix224_aug_{dynens,plainh3}_stage1` |
+| shift-only stage-1 (§47's) | `/project/.../exps/mimicgen/threading_pixel224_stage1_seed1` |
+| slurm logs | `/scratch/yifanr/simdist/repo/logs/`, `/scratch/yifanr/simdist/logs_project/` |
+| the dead first rung-A batch (disk-quota casualties, 8-10k transitions) | `/scratch/yifanr/simdist/exps_evacuated/dead_aug48_A_s*` |
+
+⚠️ **`/scratch` is purged on an inactivity timer (docs/setup.md:140).** The CSVs
+above are the durable record; the checkpoints are not. Copying the 34
+`model0.pt` files (~5.7 GB) to `/project` would preserve them — not done, because
+`/project` is a shared group quota that already filled to 6000/6000 GiB once
+during §48 and silently killed five runs.
+
 **Conditional Phase 2, pre-registered:** only if the ensemble delta lands
 ambiguous (|delta| < ~0.10, or the two measures disagree in sign as in §47), add
 **2 more stage-1 seeds per architecture** and rerun rungs **A and B only** (C is

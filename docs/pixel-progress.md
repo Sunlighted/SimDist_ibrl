@@ -1,6 +1,32 @@
 # PIXEL arm — progress log
 
-> ⚠️ **2026-09-02: every number below this line was measured on an OVER-FITTED
+> ## ★★★ CURRENT STATE (2026-09-25) — read this, not the tables below
+> Everything below this box predates §47/§48 and is **historical**. The
+> authoritative pixel result is `docs/simdist.md` **§48r** (34 adapt runs + 34
+> independent n=500 evals, 5 disjoint demo draws per cell, all at 100k).
+> **Raw data:** `docs/aug48_runs.csv` (one row per run) + `docs/aug48_curves.csv`
+> (every eval point); run paths and the `/scratch` purge caveat are in **§48s**.
+>
+> | lever (Threading_D0, r18@224, 20 demos) | effect | status |
+> |---|---:|---|
+> | **dynamics ensemble** (5 heads, H=5) | **+0.258** win / +0.156 ind | ✅ reproduces the published +0.249 |
+> | **§44's jitter + blur + prop-noise**, on top of random shift | **−0.21 to −0.28** | ✅ a regression — use shift-only |
+> | **source anchor** `bc_anchor_coef` (= the KL coef) | **~0**; λ ∈ {0.1,0.3,1,3} none pass; λ=3 harmful | ✅ no reliable effect |
+> | r18@224 vs vit96 | ? | ⚠️ **unresolved** — its +0.5 lived in the dissolved +anchor row |
+>
+> **Best config:** shift-only aug + dynens_h5, anchor off = **0.714 ±0.183
+> window / 0.562 ±0.162 independent** over 5 draws.
+>
+> **Before running ANY pixel comparison:** pass `DEMO_OFFSET` and use >= 5 draws
+> (iron law #25). Pixel has three noise floors — demo draw (per-draw deltas span
+> **0.58**), single run at fixed config (**~0.14**), eval sampling — so a
+> single-draw or single-run pixel number is worth ±~0.15 at best. **Every pixel
+> result before §48 sat on the same non-random draw `[0,20)`**, which turned
+> out to be the one draw of five where the anchor helps.
+
+---
+
+> ⚠️ **(historical) 2026-09-02: every number below this line was measured on an OVER-FITTED
 > stage-1** (pixel = 461 epochs over a 0.44M-transition replay that was the
 > partial output of a crashed job; state = 50 epochs over a 4.08M replay sized to
 > fit a 3 h queue tier). `docs/simdist.md` §45 explains why, and §46 records the

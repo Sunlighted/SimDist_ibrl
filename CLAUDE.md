@@ -7,7 +7,7 @@
 详细笔记按主题拆在 `docs/` 下，用到再读；已停止推进的分支在 `CLAUDE_ARCHIVE.md`。
 写新笔记时请写进对应的 `docs/*.md`，只有当结论会改变"下次该怎么做实验"时才回填这里。
 
-Last updated: 2026-09-18
+Last updated: 2026-09-25
 
 ---
 
@@ -16,7 +16,7 @@ Last updated: 2026-09-18
 | 文件 | 行数 | 什么时候读 |
 |---|---:|---|
 | **`docs/findings.md`** | ~1415 | **做任何改进决策前**。天花板律（§27）、dynamics ensemble 0.962（§31，⚠️ 末尾补了「增益与 anchor 不可加」）、value 悲观判死（§29）、value adapt 判死（§33）、latent vs raw（§30）、proposal（§36）、容错窗口旋钮（§39）。**里面有一整批已被实测判死的方向，别重复。** |
-| **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **★★★ §48 5-seed 重做（已完成）：ensemble 复现 +0.258（撤回 §47 的 null）、anchor 不复现 −0.068（撤回 §47 的 +0.432）；§44 三项增广已实现 + `DEMO_OFFSET`** |
+| **`docs/simdist.md`** | ~2700 | 改 SimDist pipeline 时。§17 本体 · §24 两阶段 target adapt · §25 residual/IBRL on frozen base · §26 省交互变体 · §42 stage-2 的 source 锚 `bc_anchor_coef` · **§43 anchor 形式轴已封闭(别再试换散度)** · **§44 anchor 的价值由 dynamics 精度定 + 唯一充分统计量是 `policy_only`** · **§44b 轴②(在哪些状态上锚)也封闭** · **§47 r18@224 梯子：anchor 复现(+0.432)、ensemble 没有；encoder 的 0.5 是交互；铁律 #14 的选择偏差补充** · **★★★ §48 pixel 定论（34 run，§48r 汇总）：ensemble +0.258 复现；§44 三项增广倒扣 0.2-0.3；anchor 在任何 λ 下 ≈0；r18 vs vit96 未决；pixel 有三个噪声地板** |
 | **`docs/demo-collection.md`** | ~430 | 要（重）采 stage-2 的 target demo 时。★ 先读 §38。 |
 | **`docs/tasks.md`** | ~1120 | 加新任务 / 动 Square·Coffee 时。§32 Square · §40 Coffee · §41 Square rotw1 全链条 · **★§41c 模型误差决定别的部件重不重要** · **★§41d 四任务 48 格复现（dynamics 12/12 正；target value 只在 Threading 崩；TPA 是反例；★`learned+V_tgt` 列被 decode 误差废掉）**。 |
 | **`docs/infra.md`** | ~915 | 查旋钮和 API 时。§3 domain shift · §4 flow BC · §5 eval 基础设施 · §5b BC baselines · §5c strict success · §6 配置表 · §7 已知坑 · §12 Threading target 定义 · **★§13 三个任务 target 的唯一真源（跑任何跨臂对比前必读）** · **§14 sim2real cell 与 real2sim 共用 arena（`arena_from_real2sim`）· §14d RealCell 全部随机化汇总 · ★§14e pixel 数据的重放契约（存 `sim_state`+`model_state` ⇒ 相机可事后重渲染）+ 校准腕相机 + 「腕相机在插入瞬间 0.0% 可见」** · **★§15 Square_RealCell（同一 bench 换任务）：cell yaml 的 `inherit`、`workspace_offset` 推导、rotw1 由类携带；★§15b Square 的 peg 是 arena 几何 ⇒ 抬桌会把柱子埋掉且不报错；★§15f2 source 专家 **0.96**（= Threading 的 0.957），IBRL 前 120k 全 0.00 是正常冷启动；§15f3 `[EVAL ENV]` 曾把 rotw1 印成 FULL；§15i Square pixel 数据的采集配方（★数据已随 09-23 的 cell 大改删除，方法仍有效）；**★§15j cell 大改后谁作废谁不作废：pixel 全废、Threading state 也废，但 Square 的 state 线（含 0.96 专家）不废 —— `layout_*` 按物体名匹配，Square 的 `nut` 不命中；★§15k 方柱扰动 `dr_peg_xy` 5mm/`dr_peg_yaw_deg` 3°（拐点与 6.7mm 间隙一致；**对 state 是不可观测噪声、对 pixel 才是信息**）；§15l 相机视角对 state 严格为零、对 pixel 是全部，Square 的取景余量是 Threading 的 7 倍；**★§15m 照片背景/软阴影让重放契约失效过：`tex_rgb` 与 `light_castshadow` 每局随机却没被捕获（212/118）；且逐字节判据已不可能，gate 改为「与渲染器自身的重复噪声比」**；§15n 采集就绪状态与成本（0.98 / 3.6 条每秒 / 2.29 MB 每条）**。 |
@@ -24,7 +24,7 @@ Last updated: 2026-09-18
 | **`docs/setup.md`** | ~165 | 装机 / 换机器 / 转数据集时。 |
 | **`docs/on-policy-adaptation.md`** | ~190 | **9 组同预算大对照（100k transitions）+ 总结论：on-policy 一致性是 model-based adaptation 的支配性质。** planning ≫ Dyna（同一 world model 0.813 vs 0.157）；value adapt 三种顺序全崩；dynamics 只在 policy 邻域可修；source 锚 +0.081 且方差收缩 4.3×。 |
 | `docs/flow_qc_ug.md` | ~110 | （早于本次拆分就存在）flow actor + Q-chunking + UG 的在线 model-free RL 方案书 —— "不再修 SimDist、改把 policy 做强"那条支线。 |
-| **`docs/pixel-progress.md`** | ~112 | **做 pixel/视觉版之前必读 —— 现在是完整实验日志。** 所有已测数字：stage-1 四个 checkpoint（pixel 0.968/0.980 ≥ state）、target adapt 的 2×2（state 0.540 / pixel 0.028；dynamics-only 0.393 vs 0.023）、demo-count 扫（pixel 0.08→0.24，**state 0.360→0.75**）、latent probe（含它**不能**支撑的结论）、编码器 bench、环境坑。 |
+| **`docs/pixel-progress.md`** | ~210 | **做 pixel/视觉版之前必读。★ 顶部的 CURRENT STATE 框是 09-25 的定论，框下的表都是 §48 之前的历史。** 所有已测数字：stage-1 四个 checkpoint（pixel 0.968/0.980 ≥ state）、target adapt 的 2×2（state 0.540 / pixel 0.028；dynamics-only 0.393 vs 0.023）、demo-count 扫（pixel 0.08→0.24，**state 0.360→0.75**）、latent probe（含它**不能**支撑的结论）、编码器 bench、环境坑。 |
 | `docs/pixel-gap-closing-prompt.md` | ~230 | 要接着推 pixel 的时候：交给 agent 的完整任务书（Phase A 增广 / B 数据对齐 state / C 224+ResNet-18），含活跃任务共用 checkout 的风险与回归门。
 | **`docs/real-teleop-requirements-EN.md`** | ~200 | **发给真机那边的英文需求书**（20 Hz、动作约定、两套栈的 EE 坐标系差异、相机原生内参与不裁剪、摆放、成功标注、逐次 checklist），含已收到 4 条数据的验收结论。 |
 | **`docs/real-teleop-stage2.md`** | ~140 | **真机采 stage-2 遥操作 demo 之前必读**：动作约定（20 Hz、相对实测 TCP、左乘、只看夹爪符号）、prop 的两个坑（世界系而非 base 系 / 位置是 TCP 姿态是 hand body）、相机裁剪、hdf5 契约；采完跑 `scripts/validate_real_demos.py`。 |
@@ -62,6 +62,8 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
    ⚠️ **但这个增益与 stage-2 的 source anchor 强互补、不可加**（simdist §44 的 2×2）：
    `anchor λ=0` 时 5 头集成只值 **+0.019**，λ=1 时值 +0.135；反过来 anchor 在 plain base 上
    只值 +0.055、在 dynens 上值 +0.172（交互 t=4.2）。**报任何一边的增益都要写清另一边是开还是关。**
+   ⚠️ **这是 state 的结论。pixel 上不成立**（§48）：anchor 关着时 5 头集成就值 **+0.258**，
+   而 anchor 在两种增广、四个 λ 下都 ≈0 ⇒ pixel 上没有「互补」可言，ensemble 单独就是杠杆。
 3. **value 不要动**（§33）：MPPI 的候选区分信号只有 `std_i(γ^H V)=0.0068`（量程的
    1.4%），任何离线重拟合的残差都同量级 ⇒ elite 被改写 ⇒ 崩。约束是"value 必须与
    **延续策略**一致"，不是绝对准确（§41 在 oracle dynamics 上独立复现）。
@@ -206,6 +208,10 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     ⚠️ `sbatch --test-only` 的估计**不可信**：它给过 09-16 00:34，真排进去后是 09-17 05:49。
     只有真正排队后的 `%S` 才有参考价值，而且它还会随 backfill 反复漂。
     ⇒ 扇出多个 job 时**跨账号交替提交**，别把整批押在一个队列上。
+    ⚠️ 此后又测了两次，**gigor 三连胜**：09-15 早 17 h、09-23 早 **11.7 h**（同一批 adapt，
+    22:00 vs 次日 09:41）⇒ 至少在 2026-09 这段时间 **gigor 是默认的快队列**，但仍然每次量。
+    ⇒ 最省事的量法：`scontrol update job=<id> Account=<另一个>` 挪一半过去、等 backfill
+    重估 `%S`、再挪回来 —— job id 不变，afterany 依赖链全部保留（已验证）。
 
 16. **SLURM 时限要卡在分层线以下**（Killarney：b1 ≤3:00:00 / b2 ≤12:00:00 / b3 ≤1-00:00:00
     / b4 ≤3-00:00:00）。刚好超线极贵：一个 9 分钟的活要了 4:00:00 → 落 b2 → 等了 15h23；
@@ -303,10 +309,31 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     ⚠️ `aug_prop_noise` 的单位是**米**（`prop` 未归一化，`pixel_obs_encoder.py:189` 直接拼接）
     ⇒ 0.002 = 2 mm 刚好在 ~1.8 mm 容错窗口之上；看起来很自然的 0.01 是 **1 cm**，直接淹掉信号。
 
-### ★★★ PIXEL 决定（2026-09-09 重写）：用 r18@224，但 **~0.5 是交互，不是编码器主效应**
+### ★★★ PIXEL 决定（2026-09-25 重写，依据 §48 的 34 个 5-draw run —— 取代 09-09 版）
 
-`enc_type: resnet18_pretrained` + `rl_image_size: 224`，且 **`bc_anchor_coef=1` 必须一起开**。
-ViT@96 已退役（只作历史记录）。
+**配方 = r18@224 + 只用 random shift 增广 + `dynens_h5` + anchor 可关。**
+`enc_type: resnet18_pretrained` · `rl_image_size: 224` · `aug_shift_pad: 8`，
+**`aug_color_jitter` / `aug_blur_sigma_max` / `aug_prop_noise` 全部 = 0** ·
+`num_dynamics_heads: 5` + `horizon: 5` · `bc_anchor_coef` 0（λ≤1 无害，**λ=3 有害**）。
+
+| 杠杆 | 效应（5 draw，窗口/独立一致） | 判决 |
+|---|---:|---|
+| dynamics ensemble | **+0.258** / +0.156 | ✅ 复现 published +0.249 —— pixel 上唯一的正向大杠杆 |
+| §44 的 jitter+blur+prop-noise | **−0.21 ~ −0.28** | ✅ **倒扣**，只留 random shift |
+| source anchor（= KL 系数） | **≈0**；λ∈{0.1,0.3,1,3} 无一过预注册门槛 | ✅ 无可靠效应（§48q） |
+| r18@224 vs vit96 | ? | ⚠️ **未决**（见下） |
+
+最好的实测配置：**0.714 ±0.183 窗口 / 0.562 ±0.162 独立**（shift-only + dynens，anchor 关）。
+⚠️ **r18@224 比 vit96 好不好现在是未决的**：下面那张 2×2 里 encoder 的 +0.500 **整个住在
++anchor 那一行**，也就是被 §48n 拆掉的那个 +0.432。anchor=0、draw `[0,20)` 上 r18 = 0.286
+（独立）vs vit96 0.338（n=1）⇒ 没有优势；但 `[0,20)` 恰好是 r18 五个 draw 里最差的。
+**要定论需 vit96 × 5 draw。** 在那之前继续用 r18（全部基础设施都按它建），但别再引用「encoder 值 0.5」。
+⚠️ 任何 pixel 对比：**必须传 `DEMO_OFFSET`、≥5 个 draw**（铁律 #25）——三个噪声地板
+（draw 使 delta 跨 **0.58**、固定配置单 run **±0.14**、eval 抽样），单 draw/单 run 的数只值 ±0.15。
+
+<details>（以下为 09-09 版，**已被 §48 推翻，保留作病历**）</details>
+
+~~用 r18@224，但 ~0.5 是交互~~；~~`bc_anchor_coef=1` 必须一起开~~ —— 两句都已作废。
 
 **完整 2×2 析因**（encoder × anchor，`dynens_h5` 固定，独立 n=500/格，同一 demo draw，strict/σ=0.1）：
 
@@ -327,21 +354,47 @@ ViT@96 已退役（只作历史记录）。
 | delta | §47 (n=1) | §48 (n=5，配对) | 判决 |
 |---|---|---|---|
 | ensemble B−A | +0.060 窗口 / −0.084 独立 | **+0.258 ±0.184 窗口 / +0.156 ±0.136 独立** | **复现**（5/5 seed 同号，两量度同号） |
-| anchor C−B | **+0.450 / +0.432** | **−0.068 ±0.064 / −0.036 ±0.068** | **不复现，且转负**（4/5 seed 为负） |
+| anchor C−B (full-aug) | **+0.450 / +0.432** | **−0.068 ±0.064** | **无效果** |
+| anchor K−L (shift-only) | — | **−0.003 ±0.212 (0.0σ)** | **无效果** |
+| anchor λ 扫 0.1/0.3/1/3 (§48q) | 从未在 pixel 上调过 | **+0.053/+0.130/+0.099/−0.081**，无一过门槛；λ=3 在 2/3 draw 有害 | **null 不是没调参** |
+
+★★★ **anchor 在两种增广条件下都是 0。** §48m 的完整 2×2（4 格 × 5 个互斥 draw，
+20 个 run 全部跑满 100k）：
+
+| | anchor OFF | anchor ON | anchor 效应 |
+|---|---:|---:|---:|
+| **shift-only stage-1** | 0.714 ±0.183 | 0.711 ±0.100 | **−0.003 (0.0σ)** |
+| **full-aug stage-1** | 0.502 ±0.091 | 0.434 ±0.079 | **−0.068 (2.4σ)** |
+| **增广效应** | **−0.212** | **−0.277 (4.2σ)** | |
+
+★★ **真正的大效应是增广，而且是负的：−0.21 ~ −0.28，两个 rung 都中招**（主效应，
+不是与 anchor 的交互）。⇒ §45 把"增广（免费、论文有、我们零）"排在修复顺序第一位，
+**实测是倒扣 0.2-0.3**。random shift/crop 不在此列（§47/§48 每条臂本来就有）。
+⚠️ 没测出来的是：三项（jitter / blur / prop-noise）里哪一项、以及是不是只是**强度选大了**
+（jitter 0.3 / blur σ≤2.0px@224 / prop 2mm）⇒ 下一步是单项剂量扫，不是全盘否定增广。
+⚠️ 也**没有**把"增广"与"stage-1 seed"分开（每个条件只有一个 stage-1）；4.2σ 排除了
+adapt 噪声，但 stage-1 seed 方差在本项目**仍然未测**（§47d 的老坑）。
+
+★★★ **§47 的 +0.450 已被完整拆解，而且它没有 bug**（§48n）：
+`rung B draw[0,20)` §47=0.425 vs 我们 Ls1=**0.419（几乎逐点复现）**；
+`rung C` §47=0.875 vs 我们 Ks1=**0.732（差 0.143 = §48l 的单次 run 噪声）**；
+⇒ **+0.450 = (+0.312 这个 draw 的真实效应) + (~0.138 单次 run 噪声)**，
+而 **+0.312 是 5 个 draw 里唯一为正的那个**（其余 −0.074/+0.058/−0.043/−0.268，均值 −0.003）。
+⇒ §47 把**一个 draw 上测得的正确数字**当成了效应本身。
+⚠️⚠️ 而 `[0,20)` 正是**本项目此前所有 pixel 实验用的那个 draw**（`rl/replay.py` 无 seed 取前 N，
+铁律 #25）⇒ **所有单 draw 的 pixel 结论都坐在同一个非随机抽样上。**
 
 - ensemble 的 +0.258 基本**正中** published 的 +0.249，也越过去偏差后的 +0.20–0.22；
   A/B 的窗口 SD 相近（0.053 vs 0.060）⇒ §47a 的可互换条件**成立**，两量度都能读。
   ⇒ **「ensemble 在 pixel 上没复现」作废** —— 那是 n=1 的假象（n=1 的 SE ≈ 0.19）。
-- **「anchor 是 pixel 上的支配杠杆」也作废。** 同一个 encoder 上从 +0.45 翻到 −0.07。
+- **「anchor 是 pixel 上的支配杠杆」也作废。** 5 draw 上均值 ≈ 0（shift-only −0.003 / full-aug −0.068）。
 - ⚠️ **教训：§47 里 z=+15.2 的那个"最稳"结论才是牺牲品。** z 是对着 **eval 抽样噪声**
   算的，它对 **draw / seed 方差一无所知**，而 §38 的 0.092 支配后两者。
   ⇒ **任何 n=1 的 z-score 都不能当作"稳"的证据**，无论它多大。
-- ⚠️ §48 的臂多了 jitter/blur/prop-noise（§47 只有 shift），且 stage-1 seed 不同 ⇒
-  anchor 崩掉的归因**三重共线**，铁律 #10 ⇒ **不要归因给增广**，§48 没有隔离它的臂。
-- ★ 可疑对象换人：我们的 anchor 效应（−0.068）≈ **§47b 的 vit96 格（−0.072）**，
-  而 §47b 的 r18 格是 +0.432 ⇒ **真正脆的很可能是 §47b 那个 encoder×anchor 交互
-  (+0.504)**，也就是下面这个 PIXEL 决定块赖以成立的那一行。**重跑它需要一条
-  vit96×5seed 臂，§48 没有。** 在那之前，下面的 2×2 只能当单 seed 结果读。
+- ✅ 已隔离（§48k/m，20 个 run 的 2×2）：**anchor 的 null 与增广无关**，两种增广条件下都是 0。
+- ⚠️ **§47b 的 encoder×anchor 交互 (+0.504) 仍未重跑，且现在更可疑**：它的 r18 格
+  (+0.432) 就是被 §48n 拆掉的那个数。下面这个 PIXEL 决定块赖以成立的正是那一行 ⇒
+  **在 vit96×5seed 臂跑出来之前，下面的 2×2 只能当单 draw 结果读。**
 
 ⇒ **r18 上的两个梯级结论与 vit96 正好互换**（§47，★ 已被 §48 撤回，保留作病历）：
 
@@ -402,6 +455,22 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
 
 ---
 
+### 真机 (FR3 cell) —— 机器人工作站
+```
+Host tisl
+  HostName 100.66.83.240      # Tailscale; Killarney 登录节点可直连
+  User tisl-robotics
+  Port 2233
+```
+- 认证：密钥（owner 的 `~/.ssh/id_rsa`）或密码 —— **密码不进仓库**，问 owner。
+- 机器 `tisl-ws-22-5`，RTX 3090，Ubuntu 20.04。ROS 2 Humble 只在容器
+  `ros2_devcontainer-gello-ros2-1` 里（host 网络，**无 torch / 无 GPU**，`~/simdist/gello_software` 挂在 `/workspace`）。
+- 臂 = **FR3**（不是 Panda；运动学相同、关节限位不同），只经 `joint_impedance_controller`
+  控制：暂停 `gello_publisher`（SIGSTOP）后自己发 `/gello/joint_states`，100 Hz，**0.5 s 看门狗**。
+  范本 = 容器内 `scripts/reset_arm.py`。相机 = `publish_zed_uvc.py`，**原始未去畸变**帧 + 出厂 K,D。
+- 策略 runner：`real2sim/deploy/`（README），host 端部署在 `~/simdist/deploy_simdist`
+  （conda env `simdist`）。别往 host 已有的 conda env / 容器里装东西。
+
 ## 章节索引（节号在拆分后保持不变，全局唯一）
 
 **`docs/findings.md`**
@@ -427,22 +496,6 @@ setsid python train_xxx.py ... > run.log 2>&1 < /dev/null & disown
 - **§17** SimDist 本体：world model 架构、stage-1 蒸馏配方、raw-state 对照臂、
   offline dynamics trainer。**五个稳定性坑的完整病历**（value 塌成 0、policy detach、
   采集噪声必须 ~0、latent 爆炸 → SimNorm、policy 与 dynamics 抢 encoder → `enc_pi`）。
-### 真机 (FR3 cell) —— 机器人工作站
-```
-Host tisl
-  HostName 100.66.83.240      # Tailscale; Killarney 登录节点可直连
-  User tisl-robotics
-  Port 2233
-```
-- 认证：密钥（owner 的 `~/.ssh/id_rsa`）或密码 —— **密码不进仓库**，问 owner。
-- 机器 `tisl-ws-22-5`，RTX 3090，Ubuntu 20.04。ROS 2 Humble 只在容器
-  `ros2_devcontainer-gello-ros2-1` 里（host 网络，**无 torch / 无 GPU**，`~/simdist/gello_software` 挂在 `/workspace`）。
-- 臂 = **FR3**（不是 Panda；运动学相同、关节限位不同），只经 `joint_impedance_controller`
-  控制：暂停 `gello_publisher`（SIGSTOP）后自己发 `/gello/joint_states`，100 Hz，**0.5 s 看门狗**。
-  范本 = 容器内 `scripts/reset_arm.py`。相机 = `publish_zed_uvc.py`，**原始未去畸变**帧 + 出厂 K,D。
-- 策略 runner：`real2sim/deploy/`（README），host 端部署在 `~/simdist/deploy_simdist`
-  （conda env `simdist`）。别往 host 已有的 conda env / 容器里装东西。
-
 - **§24** target adapt：stage-2 只训 policy 头、stage-3 只训 dynamics 头，encoder 全程冻结。
 - **§25** residual on frozen adapted base（ResFiT，base action 存进 buffer 而非重规划）
   + IBRL-with-same-base 对照臂。

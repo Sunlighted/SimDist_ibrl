@@ -29,7 +29,13 @@ from scripts.cmp_adapt_runs import curve  # single source of truth for the parse
 
 RUNGS = [("A", "plain_h3 (1 head, H=3)"),
          ("B", "dynens_h5 (5 heads, H=5)"),
-         ("C", "dynens_h5 + anchor lambda=1")]
+         ("C", "dynens_h5 + anchor lambda=1"),
+         # §48k: the SAME rung C, but adapted from §47's SHIFT-ONLY stage-1
+         # instead of the full-aug one. Pairs with C by draw, so C-vs-K isolates
+         # the stage-1 checkpoint (aug + its RNG divergence) with the adapt
+         # protocol, demo draw and architecture all held fixed.
+         ("K", "rung C on §47's SHIFT-ONLY stage-1"),
+         ("L", "rung B on §47's SHIFT-ONLY stage-1")]
 SEEDS = [1, 2, 3, 4, 5]
 OFFSET = {s: (s - 1) * 20 for s in SEEDS}
 EVAL_DIR = "/scratch/yifanr/simdist/eval_staging"
@@ -59,7 +65,15 @@ def window(run_dir):
         return (*st, reached, False) if st else None
     st = stats([s for _, s, _ in inwin])
     best = max(s for _, s, _ in c)
-    return (*st, reached, True, best)
+    # ★ A run that has merely ENTERED the window is NOT comparable to one that
+    # finished it. At INTERVAL=2000 a complete 75-100k window holds 13 points; a
+    # run at 76k holds ONE, and adapt curves are still climbing there (measured:
+    # Ls1 went 0.32 -> 0.49 over its last 12 points). Averaging such partial
+    # windows across seeds produced a rung mean of 0.744 when the completed
+    # seeds sat near 0.49 -- a 0.25 artifact that looked like a real result.
+    # Iron law #4: compare only once BOTH arms are in steady state.
+    complete = (reached >= HI)
+    return (*st, reached, complete, best)
 
 
 def independent(tag):
@@ -88,9 +102,11 @@ def main():
     W, I, ENVS = {}, {}, set()
     for rung, _ in RUNGS:
         for s in SEEDS:
-            d = f"exps/mimicgen/aug48_{rung}_s{s}"
+            _k = {"K": "aug48k_C", "L": "aug48k_B"}.get(rung)
+            d = (f"exps/mimicgen/{_k}_s{s}" if _k
+                 else f"exps/mimicgen/aug48_{rung}_s{s}")
             W[(rung, s)] = window(d) if os.path.isdir(d) else None
-            v, env, _f = independent(f"aug48_{rung}_s{s}")
+            v, env, _f = independent(f"{_k}_s{s}" if _k else f"aug48_{rung}_s{s}")
             I[(rung, s)] = v
             if env:
                 ENVS.add(env.strip())
@@ -111,8 +127,14 @@ def main():
             print(f"{bar} {rung} {bar} {s} {bar} {OFFSET[s]} {bar} {ws} "
                   f"{bar} {reach} {bar} {iv} {bar}")
         # per-rung aggregate
-        wm = stats([W[(rung, s)][0] for s in SEEDS if W[(rung, s)]])
+        _done = [W[(rung, s)] for s in SEEDS if W[(rung, s)] and W[(rung, s)][4]]
+        _part = [s for s in SEEDS if W[(rung, s)] and not W[(rung, s)][4]]
+        wm = stats([w[0] for w in _done])
         im = stats([I[(rung, s)] for s in SEEDS if I[(rung, s)] is not None])
+        if _part:
+            print(f"  ⚠️ rung {rung}: seeds {_part} have NOT finished the window "
+                  f"-- EXCLUDED from the mean below (partial windows are not "
+                  f"comparable; they are still climbing)")
         print(f"  -> rung {rung} ({label}): window "
               + (f"{wm[0]:.3f} ±{wm[1]:.3f} over {wm[2]} seeds" if wm else "n/a")
               + " | indep " + (f"{im[0]:.3f} ±{im[1]:.3f} (n={im[2]})" if im else "n/a"))
@@ -123,13 +145,27 @@ def main():
             ("ensemble (B-A)", "B", "A", "+0.249 published, but ~+0.20-0.22 de-selected "
              "(published dynens_h5 is score_best, a max over 4 pessimism coefs)"),
             ("anchor   (C-B)", "C", "B", "+0.081 published -- and measured on "
-             "dynens_h5_SLOW (0.898->0.979), not on dynens_h5")]:
+             "dynens_h5_SLOW (0.898->0.979), not on dynens_h5"),
+            ("anchor SHIFT-ONLY (K-L)", "K", "L", "the shift-only ladder's own "
+             "anchor delta, paired within seed -- compare to the full-aug "
+             "anchor delta (C-B) above; §47 had only n=1 here (B window 0.425)"),
+            ("aug on C (C-K)", "C", "K", "§48k: NEGATIVE = the full-aug stage-1 "
+             "is WORSE for the anchored arm. Seed 1 is a pure replication test "
+             "of §47's 0.766 (same ckpt, same draw, same protocol).")]:
         for measure, src in (("window", W), ("indep", I)):
             pairs = []
             for s in SEEDS:
                 x, y = src[(hi, s)], src[(lo, s)]
-                xv = x[0] if (measure == "window" and x) else x
-                yv = y[0] if (measure == "window" and y) else y
+                if measure == "window":
+                    # ★ both cells must have FINISHED the window. A pair built
+                    # from a still-climbing partial window is not a delta; it is
+                    # a comparison between a steady state and a transient
+                    # (iron law #4, and it produced a spurious rung mean here).
+                    if not (x and x[4] and y and y[4]):
+                        continue
+                    xv, yv = x[0], y[0]
+                else:
+                    xv, yv = x, y
                 if xv is not None and yv is not None:
                     pairs.append((s, xv - yv))
             st = stats([d for _, d in pairs])
