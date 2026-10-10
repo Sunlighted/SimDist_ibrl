@@ -80,3 +80,9 @@ viz/**/*.mp4
 viz/**/*.gif
 real2sim/scan_pipeline/scene.ply
 objects.jpg
+
+# Real-robot teleop dumps (episode_*.h5 + tarballs, ~3.8 GB) and the per-episode
+# QC frame dumps generated from them: local inputs, not repo content.
+realdata/
+figs/sim2real/atm_qc/
+figs/sim2real/t4_qc/
