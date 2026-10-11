@@ -13,6 +13,7 @@ the same order as the whole chain's 6.1 mm).
 | `scan_run2/pose_XXX/zedm_left.png` | **wrist** ZED Mini | hand-eye `T_ee_zedm`, wrist-camera pose |
 | `scan_run2/pose_XXX/zed2i_left.png` | **external** ZED2i | `T_board_zed2i` |
 | `scan_run2/{intrinsics,manifest}.json` | native 2208x1242 calibration | all of the above |
+| `calib_20261010/` | 2026-10-10 re-mounted cell: wrist ZED-M refitted intrinsics, scene + wrist extrinsics (two runs), a few raw HD720 PNGs + FR3 joints | `release/cfgs/sim2real/threading_real_cell_20261010.yaml`; see the README inside |
 | `Explorer_HD2K_*.png` | external-camera still, side-by-side stereo | independent `T_board_zed2i` check |
 
 ## What is NOT here (and where it lives)
