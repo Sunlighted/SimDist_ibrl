@@ -3,7 +3,8 @@
 Both cameras were re-mounted for the Threading sim2real redo (docs/threading-sim2real-camera-plan.md),
 and the real gripper is now a **Robotiq 2F-85** (the sim still has the Panda hand).
 Mode for both: **HD720 @ 30 fps**, raw (unrectified) left eye.
-The cell config built from this calibration is `release/cfgs/sim2real/threading_real_cell_20261010.yaml`.
+Everything from that day is in this folder: `data/` (calibration + a few raw photos), `tools/`,
+`figs/` (gate C overlays) and the cell config `threading_real_cell_20261010.yaml`.
 
 Only a few representative raw PNGs are committed (lossless, see ../README.md for why not JPEG).
 The full runs (73 wrist views, 48 robot poses) are on the robot workstation in `~/simdist/calib/`.
@@ -12,14 +13,14 @@ The full runs (73 wrist views, 48 robot poses) are on the robot workstation in `
 
 | path | what |
 |---|---|
-| `wrist_intrinsics.json` | ZED-M (SN 16478414) hd720 K, D, refitted from 73 views pooled over 3 runs (hand-held board + both robot runs). fx 778.8, cx 648.7, cy 357.7, D [-0.349, 0.171, -0.001, 0.001, -0.045]; bootstrap sd fx 3.5 / cx 2.6 / cy 3.8 px. |
-| `run_1010_2327/extrinsics.json` | **Current** extrinsics. `T_base_scene` (ZED 2i in `robot0_base`), `T_hand_wrist` (ZED-M in `robot0_right_hand`), OpenCV optical axes. |
-| `run_1010_2327/sample_011`, `sample_019` | scene + wrist PNG + FR3 joints (`state.json`, fr3_joint1..7). |
-| `run_1010/extrinsics.json` | First run, **old scene-camera pose** (the ZED 2i was moved afterwards). Its wrist pose used self-refitted intrinsics. |
-| `run_1010/sample_000`, `sample_016` | scene PNG + joints for that old pose. |
+| `data/wrist_intrinsics.json` | ZED-M (SN 16478414) hd720 K, D, refitted from 73 views pooled over 3 runs (hand-held board + both robot runs). fx 778.8, cx 648.7, cy 357.7, D [-0.349, 0.171, -0.001, 0.001, -0.045]; bootstrap sd fx 3.5 / cx 2.6 / cy 3.8 px. |
+| `data/run_1010_2327/extrinsics.json` | **Current** extrinsics. `T_base_scene` (ZED 2i in `robot0_base`), `T_hand_wrist` (ZED-M in `robot0_right_hand`), OpenCV optical axes. |
+| `data/run_1010_2327/sample_011`, `sample_019` | scene + wrist PNG + FR3 joints (`state.json`, fr3_joint1..7). |
+| `data/run_1010/extrinsics.json` | First run, **old scene-camera pose** (the ZED 2i was moved afterwards). Its wrist pose used self-refitted intrinsics. |
+| `data/run_1010/sample_000`, `sample_016` | scene PNG + joints for that old pose. |
 
 Gate C overlays (sim table edges / arm outline on the preprocessed real photo):
-`figs/sim2real/overlay_scene_20261010/`, made with `scripts/overlay_real_scene.py`.
+`figs/`, made with `tools/overlay_real_scene.py` (run from the repo root, MUJOCO_GL=egl).
 Both scene poses agree with the sim table to roughly 1–2.5 px at 224.
 
 ## Numbers
@@ -36,7 +37,7 @@ Both scene poses agree with the sim table to roughly 1–2.5 px at 224.
 
 - **ZED-M factory distortion is wrong** for this stream (factory k1 −0.10, fitted −0.35; factory fx 771.8, fitted 778.8).
   Anything that undistorts wrist frames with the factory D (`real2sim/deploy/preprocess.py`, the policy server)
-  feeds the policy a mis-rectified image. Use `wrist_intrinsics.json`.
+  feeds the policy a mis-rectified image. Use `data/wrist_intrinsics.json`.
 - **Intrinsics need steep views.** A hand-held set with max tilt 25° fitted at 0.3 px rms with fx anywhere in 743–832
   and cy 352–398 depending on the distortion model. `solve_intrinsics.py` now prints the tilt distribution and a
   model-swap check and warns when fx/cy are not pinned down.
@@ -51,7 +52,7 @@ Both scene poses agree with the sim table to roughly 1–2.5 px at 224.
 
 ## Reproduce
 
-Tools are in `real2sim/calib_tools/` (copies of the workstation scripts; they expect the `~/simdist` layout):
+Tools are in `tools/` (copies of the workstation scripts; they expect the `~/simdist` layout):
 
 ```
 # wrist intrinsics (hand-held board, no robot), then pool with the robot runs

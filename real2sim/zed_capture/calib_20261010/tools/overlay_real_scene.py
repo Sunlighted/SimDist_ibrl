@@ -8,9 +8,9 @@ pose, the fovy and the arena are right, they sit on the real table edge and arm.
 
 Expected mismatch: the sim hand is the Panda gripper, the real one is a Robotiq 2F.
 
-  MUJOCO_GL=egl ~/anaconda3/envs/simdist/bin/python scripts/overlay_real_scene.py \\
-      --config release/cfgs/sim2real/threading_real_cell_20261010.yaml \\
-      --samples real2sim/zed_capture/calib_20261010/run_1010_2327
+  MUJOCO_GL=egl ~/anaconda3/envs/simdist/bin/python real2sim/zed_capture/calib_20261010/tools/overlay_real_scene.py \\
+      --config real2sim/zed_capture/calib_20261010/threading_real_cell_20261010.yaml \\
+      --samples real2sim/zed_capture/calib_20261010/data/run_1010_2327
 """
 import argparse
 import dataclasses
@@ -25,7 +25,8 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# this file lives in real2sim/zed_capture/calib_20261010/tools/ -> repo root is 4 levels up
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 4))
 sys.path.insert(0, ROOT)
 # common_utils imports the compiled replay buffer (rela), which rendering never touches;
 # stub it so this runs on a workstation without the C++ build.

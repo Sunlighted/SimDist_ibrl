@@ -1,7 +1,8 @@
 # Camera calibration tools (2026-10-10)
 
 Copies of the scripts used on the robot workstation (`~/simdist/calib/`, `~/simdist/gello_software/simdist_runner/`).
-Paths inside expect that layout. Usage and results: `real2sim/zed_capture/calib_20261010/README.md`.
+Paths inside expect that layout. Usage and results: `../README.md`.
+`overlay_real_scene.py` (gate C) runs from the SimDist_ibrl repo root with conda `simdist`.
 
 | script | runs where | what |
 |---|---|---|
