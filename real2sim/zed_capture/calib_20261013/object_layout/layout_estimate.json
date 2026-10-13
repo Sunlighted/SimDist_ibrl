@@ -1,0 +1,67 @@
+{
+ "captured": "2026-10-13 18:13",
+ "q_last_known": [
+  0.006253588332119086,
+  -0.7822105569817522,
+  -0.0016595806598384982,
+  -2.3576245343266473,
+  -0.008477578475478541,
+  1.581483143943548,
+  0.773056025733377
+ ],
+ "q_note": "joint_tap had stopped 301 s before the photo; q equals the home pose, arm believed unmoved",
+ "table_plane_z_base": 0.0207,
+ "estimates_base_frame_m": {
+  "needle": {
+   "head": [
+    0.488,
+    -0.174
+   ],
+   "tip": [
+    0.358,
+    -0.188
+   ],
+   "centre": [
+    0.423,
+    -0.181
+   ],
+   "note": "pixels of the head-cube bottom and the tip back-projected onto the table plane; 130 mm apart"
+  },
+  "tripod": {
+   "front_feet": [
+    [
+     0.528,
+     0.238
+    ],
+    [
+     0.46,
+     0.176
+    ]
+   ],
+   "centre_est": [
+    0.512,
+    0.187
+   ],
+   "note": "back foot hidden; centre assumes an equilateral leg triangle behind the two front feet"
+  }
+ },
+ "accuracy": "~1 cm (scene pose LOO <= 1.4 mm / 0.12 deg; pixel picking dominates)",
+ "sim_layout_ranges_in_cell_yaml": {
+  "needle_x": [
+   0.36,
+   0.51
+  ],
+  "needle_y": [
+   -0.14,
+   -0.04
+  ],
+  "tripod_x": [
+   0.49,
+   0.55
+  ],
+  "tripod_y": [
+   0.23,
+   0.29
+  ]
+ }
+}
