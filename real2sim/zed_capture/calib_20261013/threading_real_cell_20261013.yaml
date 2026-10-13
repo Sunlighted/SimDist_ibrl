@@ -1,0 +1,131 @@
+# GENERATED from calib_20261010/threading_real_cell_20261010.yaml with the 2026-10-13 calibration.
+# Differs from it in `cameras` ONLY.  Lives in real2sim/zed_capture/calib_20261013/ (README there).
+# agentview: NEW ZED 2i, SN 31011113 (replaces SN 37597132), factory intrinsics (verified by a
+#   hand-held refit, see README). Solved from run_1013_1757: reprojection 0.33 px,
+#   leave-one-out moves it <= 1.4 mm / 0.12 deg. fovy 50.0 kept; this camera's largest square
+#   about its principal point is 65.82 deg, so 50 fits.
+# robot0_eye_in_hand: same ZED-M (SN 16478414), frame robot0_right_hand. This session: LOO
+#   <= 1.4 mm / 0.16 deg, BUT the pose drifted monotonically across sessions (roll about the
+#   optical axis -1.91 / -0.83 / 0 deg on 10-10 / 10-10 late / 10-13): the mount is likely
+#   loosening. randomize is false.
+# Real side: wrist uses calib_20261010/data/wrist_intrinsics.json (ZED-M factory D is wrong);
+#   scene uses the SN31011113 factory values in release/cfgs/sim2real/zed_factory_intrinsics.json.
+# Sim gripper is still the Panda hand; the real arm carries a Robotiq 2F-85.
+enabled: 1
+arena_from_real2sim: 1
+table_visual_half:
+- 0.3765
+- 0.3765
+table_visual_offset:
+- 0.011
+- 0.0755
+dr_background_image: /user_data/Chenyang/bg_textures/val_256
+dr_background_floor: 1
+table_rgb:
+- 0.85
+- 0.8507
+- 0.8403
+object_rgb:
+- 0.438
+- 0.0086
+- 0.0089
+workspace_offset:
+- 0.071
+- 0.066
+init_qpos:
+- 0.0
+- -0.7853981634
+- 0.0
+- -2.3561944902
+- 0.0
+- 1.5707963268
+- 0.7853981634
+cameras:
+- name: agentview
+  frame: base
+  pos:
+  - 0.23173
+  - 0.55526
+  - 0.52272
+  quat:
+  - 0.15479
+  - -0.29452
+  - 0.85353
+  - -0.40097
+  fovy: 50.0
+- name: robot0_eye_in_hand
+  frame: hand
+  randomize: false
+  pos:
+  - -0.07053
+  - -0.03118
+  - 0.01228
+  quat:
+  - 0.93013
+  - -0.14733
+  - 0.03582
+  - -0.33447
+  fovy: 49.014
+dr_table_rgb_tint: 0.02
+dr_table_rgb_gain:
+- 0.9
+- 1.1
+dr_object_rgb_tint: 0.025
+dr_object_rgb_gain:
+- 0.85
+- 1.15
+dr_background_gray:
+- 0.25
+- 0.85
+dr_light_diffuse:
+- 0.85
+- 1.15
+dr_light_ambient:
+- 0.02
+- 0.12
+dr_light_specular:
+- 0.4
+- 1.5
+dr_light_dir: 0.3
+dr_light_pos: 0.4
+dr_light_shadow_n: 3
+dr_cam_pos: 0.011
+dr_cam_rot_deg: 1.0
+dr_cam_fovy_deg: 1.0
+dr_base_height: 0.005
+dr_base_yaw_deg: 1.5
+dr_base_tilt_deg: 1.0
+dr_base_xy: 0.007
+layout_needle_x:
+- 0.36
+- 0.51
+layout_needle_y:
+- -0.14
+- -0.04
+layout_needle_z_rot_deg:
+- -120
+- -60
+layout_tripod_x:
+- 0.49
+- 0.55
+layout_tripod_y:
+- 0.23
+- 0.29
+layout_tripod_z_rot_deg:
+- -35
+- -25
+hide_table_legs: 1
+light_pos:
+- 0.122
+- 0.501
+- 3.0
+light_diffuse: 0.9953
+light_shadow_n: 5
+light_target:
+- 0.45
+- 0.08
+- 0.02
+light_directional: 0
+light_castshadow: 1
+light_line_n: 8
+light_line_len: 0.9

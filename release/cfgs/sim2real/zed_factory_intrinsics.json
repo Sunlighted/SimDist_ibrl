@@ -1,16 +1,16 @@
 {
   "_source": "Stereolabs factory calibration, downloaded by serial; ros2/zed_calibration/SN<serial>.conf",
   "_frame": "LEFT eye, UNRECTIFIED -- this is what publish_zed_uvc.py publishes, so the recorded frames carry the distortion below",
-  "_received": "2026-09-23",
+  "_received": "2026-09-23; scene replaced by SN31011113 on 2026-10-13",
   "scene": {
     "model": "ZED 2i",
-    "serial": 37597132,
+    "serial": 31011113,
     "distortion_k1k2p1p2k3": [
-      -0.0492,
-      0.0206,
-      0.0009,
-      -0.0006,
-      -0.0083
+      -0.0593442,
+      0.0310242,
+      0.000547329,
+      -0.000333487,
+      -0.0111621
     ],
     "modes": {
       "vga": {
@@ -18,44 +18,45 @@
           672,
           376
         ],
-        "fx": 266.223,
-        "fy": 266.235,
-        "cx": 326.777,
-        "cy": 183.877,
-        "v_fov_deg": 70.455,
-        "h_fov_deg": 103.218,
-        "max_centred_square_px": 367.8,
-        "max_centred_square_vfov_deg": 69.262
+        "fx": 267.425,
+        "fy": 267.4725,
+        "cx": 330.2125,
+        "cy": 180.61525,
+        "v_fov_deg": 70.205,
+        "h_fov_deg": 102.967,
+        "max_centred_square_px": 361.2,
+        "max_centred_square_vfov_deg": 68.06
       },
       "hd720": {
         "size": [
           1280,
           720
         ],
-        "fx": 532.445,
-        "fy": 532.47,
-        "cx": 622.555,
-        "cy": 352.755,
-        "v_fov_deg": 68.125,
-        "h_fov_deg": 100.483,
-        "max_centred_square_px": 705.5,
-        "max_centred_square_vfov_deg": 67.048
+        "fx": 534.85,
+        "fy": 534.945,
+        "cx": 629.425,
+        "cy": 346.2305,
+        "v_fov_deg": 67.878,
+        "h_fov_deg": 100.229,
+        "max_centred_square_px": 692.5,
+        "max_centred_square_vfov_deg": 65.824
       },
       "hd1080": {
         "size": [
           1920,
           1080
         ],
-        "fx": 1064.89,
-        "fy": 1064.94,
-        "cx": 928.11,
-        "cy": 528.51,
-        "v_fov_deg": 53.776,
-        "h_fov_deg": 84.069,
-        "max_centred_square_px": 1057.0,
-        "max_centred_square_vfov_deg": 52.789
+        "fx": 1069.7,
+        "fy": 1069.89,
+        "cx": 941.85,
+        "cy": 515.461,
+        "v_fov_deg": 53.562,
+        "h_fov_deg": 83.813,
+        "max_centred_square_px": 1030.9,
+        "max_centred_square_vfov_deg": 51.448
       }
-    }
+    },
+    "_note": "installed 2026-10-13, replacing SN37597132 (kept below as scene_SN37597132)"
   },
   "wrist": {
     "model": "ZED Mini",
@@ -109,6 +110,61 @@
         "h_fov_deg": 63.756,
         "max_centred_square_px": 1053.2,
         "max_centred_square_vfov_deg": 37.678
+      }
+    }
+  },
+  "scene_SN37597132": {
+    "model": "ZED 2i",
+    "serial": 37597132,
+    "distortion_k1k2p1p2k3": [
+      -0.0492,
+      0.0206,
+      0.0009,
+      -0.0006,
+      -0.0083
+    ],
+    "modes": {
+      "vga": {
+        "size": [
+          672,
+          376
+        ],
+        "fx": 266.223,
+        "fy": 266.235,
+        "cx": 326.777,
+        "cy": 183.877,
+        "v_fov_deg": 70.455,
+        "h_fov_deg": 103.218,
+        "max_centred_square_px": 367.8,
+        "max_centred_square_vfov_deg": 69.262
+      },
+      "hd720": {
+        "size": [
+          1280,
+          720
+        ],
+        "fx": 532.445,
+        "fy": 532.47,
+        "cx": 622.555,
+        "cy": 352.755,
+        "v_fov_deg": 68.125,
+        "h_fov_deg": 100.483,
+        "max_centred_square_px": 705.5,
+        "max_centred_square_vfov_deg": 67.048
+      },
+      "hd1080": {
+        "size": [
+          1920,
+          1080
+        ],
+        "fx": 1064.89,
+        "fy": 1064.94,
+        "cx": 928.11,
+        "cy": 528.51,
+        "v_fov_deg": 53.776,
+        "h_fov_deg": 84.069,
+        "max_centred_square_px": 1057.0,
+        "max_centred_square_vfov_deg": 52.789
       }
     }
   }
