@@ -101,6 +101,19 @@ Log: `data/robotiq_gripper_log.json` (pos + GELLO target `/gripper/gripper_clien
   closes fully at 0.786). Anything thinner than ~14 mm (the 10 mm needle shaft) cannot be pinched in the sim.
   Fine if the sim expert grasps the 40 mm handle (as the owner did on the robot); check the MimicGen grasp.
 
+## Home pose → DROID home (item 7)
+
+`[0, −π/5, 0, −4π/5, 0, 3π/5, 0]` = DROID's `reset_joints` (`~/droid/droid/robot_env.py:27`, used on this
+same FR3 + Robotiq for the pi0.5-DROID work). Owner's choice over the Franka ready pose
+`[0, −π/4, 0, −3π/4, 0, π/2, π/4]`, whose j7 = π/4 was meant for the Franka Hand and left the Robotiq turned 45°.
+- Real: reached via `run_teleop_session.py --start-pose ...` (its built-in reset; joints within 0.01 rad); the owner
+  confirmed the Robotiq is square. `START_POSE` changed in `run_teleop_session.py`, `reset_arm.py`, `collect_demos.py`
+  (diffs in `tools/gello_patch/`).
+- Sim: cell `init_qpos` = the same; a reset lands within ~0.03 rad of it (joint noise).
+- At this pose the **wrist camera does not see the needle**: the range centre projects to (82, 193) of the 224 wrist
+  crop, behind the fingers (`data/home_droid/policy_view.png`, needle on the target). Tilting j6 +0.15 / +0.30 would
+  lift it to row 146 / 101; the owner kept the plain DROID pose (gripper vertical), the scene camera localises the needle.
+
 ## ⚠️ Control rate: the owner runs the policy at 10 Hz
 
 20 Hz was too fast on the real robot; 10 Hz is stable. The sim (robosuite `control_freq`), the world model's
@@ -112,5 +125,4 @@ and the policy runner.
 ## Still open (from `../calib_20261013/README.md`)
 
 - Colour: render the sim under this cell and match it to `data/exposure_locked/` (render → measure → fix).
-- Home pose → DROID home with the Robotiq square to the table (item 7 TODO), real + sim together.
 - Deploy capture mode / fps (item 9); clutter (bowl) at the lower left of the scene view.

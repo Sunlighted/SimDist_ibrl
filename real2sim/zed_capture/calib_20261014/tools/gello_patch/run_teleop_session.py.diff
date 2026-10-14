@@ -1,6 +1,18 @@
 --- run_teleop_session.py.bak_20261014	2026-10-14 17:42:16.921651126 -0400
-+++ run_teleop_session.py	2026-10-14 17:42:16.945651522 -0400
-@@ -101,9 +101,10 @@
++++ run_teleop_session.py	2026-10-14 18:30:35.666822290 -0400
+@@ -72,7 +72,10 @@
+ MAX_ROBOT_RESTARTS = 3
+ 
+ # The Franka ready pose, mirrored from collect_demos.py.
+-START_POSE = (0.0, -math.pi / 4, 0.0, -3 * math.pi / 4, 0.0, math.pi / 2, math.pi / 4)
++# DROID home (2026-10-14): the Robotiq is square on the flange, so j7 = 0 keeps it square to the
++# table; the Franka ready pose (j7 = pi/4) was for the Franka Hand. Must equal the sim cell's
++# init_qpos (SimDist_ibrl real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml).
++START_POSE = (0.0, -math.pi / 5, 0.0, -4 * math.pi / 5, 0.0, 3 * math.pi / 5, 0.0)
+ 
+ 
+ @dataclass
+@@ -101,9 +104,10 @@
      camera_mode: str = "hd720"
      """Capture mode passed to publish_zed_uvc.py."""
  

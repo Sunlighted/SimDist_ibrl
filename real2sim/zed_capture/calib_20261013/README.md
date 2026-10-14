@@ -130,7 +130,7 @@ another visit.
 7. **Home / reset pose.** Confirm the real reset q equals `q_last_known` in
    `object_layout/layout_estimate.json`. Sim resets around it with joint σ 0.1. Note any
    difference.
-   - **TODO (owner, 2026-10-14): switch to the DROID home pose, with the Robotiq square
+   - **DONE 2026-10-14 (see ../calib_20261014/README.md): switch to the DROID home pose, with the Robotiq square
      ("正") to the table.** The current home (q ≈ [0.006, −0.783, 0.002, −2.360, −0.008,
      1.582, 0.775]) is not liked. Changing it moves the wrist view at reset, so it must be
      set on BOTH sides together: the real reset script and the sim cell's init qpos. Then

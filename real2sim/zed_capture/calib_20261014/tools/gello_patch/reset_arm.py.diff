@@ -1,0 +1,20 @@
+--- reset_arm.py.bak_20261014	2026-10-14 18:30:54.638953318 -0400
++++ reset_arm.py	2026-10-14 18:31:08.635050146 -0400
+@@ -45,7 +45,7 @@
+ SCRIPTS_DIR = Path(__file__).resolve().parent
+ ROBOT_CONFIG_DIR = SCRIPTS_DIR.parents[1] / "franka_fr3_arm_controllers" / "config"
+ 
+-START_POSE = (0.0, -math.pi / 4, 0.0, -3 * math.pi / 4, 0.0, math.pi / 2, math.pi / 4)
++START_POSE = (0.0, -math.pi / 5, 0.0, -4 * math.pi / 5, 0.0, 3 * math.pi / 5, 0.0)  # DROID home (2026-10-14), = run_teleop_session.py
+ 
+ IMPEDANCE_CONTROLLER = "joint_impedance_controller"
+ SERVICE_TIMEOUT_S = 10.0
+@@ -61,7 +61,7 @@
+ @dataclass
+ class Args:
+     pose: Tuple[float, ...] = START_POSE
+-    """Target joint pose in rad. Defaults to the Franka ready pose."""
++    """Target joint pose in rad. Defaults to the DROID home (START_POSE)."""
+ 
+     duration: float = 8.0
+     """Seconds for the move when the impedance controller is already active."""

@@ -1,5 +1,6 @@
 # 2026-10-14 cell (Threading, Robotiq). Lives in real2sim/zed_capture/calib_20261014/ (README there).
-# = calib_20261013/threading_real_cell_20261013.yaml (git 2d57392) with THREE changes, all measured
+# = calib_20261013/threading_real_cell_20261013.yaml (git 2d57392) with FOUR changes (4. init_qpos =
+#   the DROID home, see init_qpos), all measured
 #   on the robot 2026-10-14 (see README):
 #   1. agentview quat: the ZED 2i was bumped while re-plugging cables. Pure rotation measured from
 #      static features vs the 10-13 calibration frames: 0.30 deg (two frames agree to 0.015 deg,
@@ -74,14 +75,20 @@ object_rgb:
 workspace_offset:
 - 0.071
 - 0.066
+# 2026-10-14: DROID home [0, -pi/5, 0, -4pi/5, 0, 3pi/5, 0] (owner's choice): Robotiq vertical and
+#   square to the table (j7 = 0; the Robotiq sits square on the flange, so the old Franka-hand
+#   ready pose with j7 = pi/4 left it 45 deg turned). Real teleop resets here too
+#   (run_teleop_session.py START_POSE). At this pose the wrist camera does NOT see the needle
+#   (it projects behind the fingers); the scene camera localises it. Was the Franka ready pose
+#   [0, -pi/4, 0, -3pi/4, 0, pi/2, pi/4].
 init_qpos:
 - 0.0
-- -0.7853981634
+- -0.6283185307
 - 0.0
-- -2.3561944902
+- -2.5132741229
 - 0.0
-- 1.5707963268
-- 0.7853981634
+- 1.8849555922
+- 0.0
 cameras:
 - name: agentview
   frame: base

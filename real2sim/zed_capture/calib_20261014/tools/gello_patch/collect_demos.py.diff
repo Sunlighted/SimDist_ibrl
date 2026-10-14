@@ -1,0 +1,11 @@
+--- collect_demos.py.bak_20261014	2026-10-14 18:30:54.642953346 -0400
++++ collect_demos.py	2026-10-14 18:30:54.658953456 -0400
+@@ -59,7 +59,7 @@
+ ROBOT_LOST_S = 2.0
+ 
+ # The Franka ready pose, used as the default per-episode start pose.
+-START_POSE = (0.0, -np.pi / 4, 0.0, -3 * np.pi / 4, 0.0, np.pi / 2, np.pi / 4)
++START_POSE = (0.0, -np.pi / 5, 0.0, -4 * np.pi / 5, 0.0, 3 * np.pi / 5, 0.0)  # DROID home (2026-10-14), = run_teleop_session.py
+ 
+ RAW_IMAGE_ENCODINGS = {
+     "rgb8": ("RGB", 3),
