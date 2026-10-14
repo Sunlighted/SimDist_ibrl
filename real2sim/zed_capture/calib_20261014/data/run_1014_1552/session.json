@@ -1,0 +1,81 @@
+{
+ "kind": "extrinsics",
+ "mode": "hd720",
+ "size": [
+  1280,
+  720
+ ],
+ "eye": "left",
+ "rectified": false,
+ "board": {
+  "type": "charuco",
+  "squares": [
+   5,
+   7
+  ],
+  "dict": "DICT_5X5_50",
+  "square_m_nominal": 0.0424,
+  "marker_m_nominal": 0.031
+ },
+ "cameras": {
+  "scene": {
+   "serial": 31011113,
+   "K": [
+    [
+     534.85,
+     0.0,
+     629.425
+    ],
+    [
+     0.0,
+     534.945,
+     346.2305
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "D": [
+    -0.0593442,
+    0.0310242,
+    0.000547329,
+    -0.000333487,
+    -0.0111621
+   ],
+   "intrinsics_file": "/home/tisl-robotics/simdist/SimDist_ibrl/release/cfgs/sim2real/zed_factory_intrinsics.json"
+  },
+  "wrist": {
+   "serial": 16478414,
+   "K": [
+    [
+     778.8067362384131,
+     0.0,
+     648.7003253058932
+    ],
+    [
+     0.0,
+     778.7028022369095,
+     357.70265894877673
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "D": [
+    -0.34913996081307574,
+    0.17065065949603903,
+    -0.000983016978868448,
+    0.0008702829153177701,
+    -0.04543897957532176
+   ],
+   "intrinsics_file": "/home/tisl-robotics/simdist/calib/intr_1010_2258/intrinsics.json"
+  }
+ },
+ "joint_source": "/franka/joint_states via joint_tap.py",
+ "joint_order": "fr3_joint1..7",
+ "created": "2026-10-14 15:52:27"
+}

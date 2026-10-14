@@ -1,0 +1,151 @@
+{
+ "camera": "scene",
+ "serial": 31011113,
+ "size": [
+  1280,
+  720
+ ],
+ "mode": "hd720",
+ "eye": "left",
+ "K": [
+  [
+   540.0229679461303,
+   0.0,
+   624.2394973478382
+  ],
+  [
+   0.0,
+   540.1188867681457,
+   343.6714848666016
+  ],
+  [
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "D": [
+  -0.07884264041512197,
+  0.0795088122828476,
+  0.0006377582060006967,
+  -0.0025576133191099974,
+  -0.035771728045922054
+ ],
+ "rms_px": 0.4417979601033939,
+ "n_views": 27,
+ "views": [
+  "intr_scene_1013_1743/sample_000",
+  "intr_scene_1013_1743/sample_001",
+  "intr_scene_1013_1743/sample_002",
+  "intr_scene_1013_1743/sample_003",
+  "intr_scene_1013_1743/sample_004",
+  "intr_scene_1013_1743/sample_005",
+  "intr_scene_1013_1743/sample_006",
+  "intr_scene_1013_1743/sample_007",
+  "intr_scene_1013_1743/sample_008",
+  "intr_scene_1013_1743/sample_009",
+  "intr_scene_1013_1743/sample_010",
+  "intr_scene_1013_1743/sample_011",
+  "intr_scene_1013_1743/sample_012",
+  "intr_scene_1013_1743/sample_013",
+  "intr_scene_1013_1743/sample_014",
+  "intr_scene_1013_1743/sample_015",
+  "intr_scene_1013_1743/sample_016",
+  "intr_scene_1013_1743/sample_017",
+  "intr_scene_1013_1743/sample_018",
+  "intr_scene_1013_1743/sample_019",
+  "intr_scene_1013_1743/sample_020",
+  "intr_scene_1013_1743/sample_021",
+  "intr_scene_1013_1743/sample_022",
+  "intr_scene_1013_1743/sample_023",
+  "intr_scene_1013_1743/sample_024",
+  "intr_scene_1013_1743/sample_025",
+  "intr_scene_1013_1743/sample_026"
+ ],
+ "kfold_median_px": 0.31863582134246826,
+ "kfold_max_px": 0.6531628966331482,
+ "coverage": [
+  [
+   0,
+   0,
+   0,
+   1,
+   1,
+   1,
+   0,
+   0,
+   0,
+   0
+  ],
+  [
+   0,
+   1,
+   4,
+   6,
+   5,
+   6,
+   9,
+   4,
+   1,
+   0
+  ],
+  [
+   0,
+   2,
+   5,
+   7,
+   10,
+   13,
+   10,
+   8,
+   4,
+   1
+  ],
+  [
+   0,
+   2,
+   4,
+   7,
+   9,
+   13,
+   12,
+   8,
+   5,
+   1
+  ],
+  [
+   0,
+   2,
+   2,
+   4,
+   5,
+   4,
+   7,
+   6,
+   4,
+   0
+  ],
+  [
+   0,
+   0,
+   0,
+   0,
+   2,
+   3,
+   1,
+   4,
+   2,
+   0
+  ]
+ ],
+ "max_corner_radius_px": 601.8653963161098,
+ "tilt_max_deg": 85.4943437747804,
+ "n_views_tilt_ge35": 9,
+ "model_check_dfx_px": -0.7363720660327999,
+ "model_check_dcy_px": -0.15253066270690852,
+ "unstable": false,
+ "model": "OpenCV pinhole, fx=fy, k1 k2 p1 p2 k3; raw (unrectified) left eye",
+ "runs": [
+  "/home/tisl-robotics/simdist/calib/intr_scene_1013_1743"
+ ]
+}
