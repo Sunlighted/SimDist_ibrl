@@ -81,6 +81,26 @@ Where it is applied (the gello repo is an upstream clone, so the changes are kep
 - `real2sim/deploy/live_crop_view.py`: locks by default (`--auto_exposure` to opt out).
 - `~/simdist/calib/record_calib.py` / `snap_layout.py` still capture on auto (corner detection does not care).
 
+## Robotiq position → sim gripper joint (item 6)
+
+Real: `/gripper/joint_states` (`robotiq_85_left_knuckle_joint`, rad; the PickNik driver maps the position
+register linearly onto it), teleop with `--gripper robotiq --gripper-config example_fr3_config_robotiq.yaml`.
+Log: `data/robotiq_gripper_log.json` (pos + GELLO target `/gripper/gripper_client/target_gripper_width_percent`).
+
+| state | real knuckle (rad) | GELLO target width | sim driver joint (Threading_RealCellRobotiq) |
+|---|---|---|---|
+| fully open | **0.000** | 1.00 | 0.000 (pad gap ≈ 79 mm) |
+| grasping the needle by its 40 mm handle | **0.440** (≈ 56 % of stroke ≈ 38 mm) | 0.215 | ≈ 0.37 gives a 40 mm pad gap |
+| closed on nothing | **0.786** (pads touch) | 0.20 (trigger fully pressed) | **stalls at 0.52–0.556 with a 14–21 mm gap** |
+
+- Map by finger opening, not by angle: anchors (open, 40 mm handle) ⇒ **sim ≈ 0.83 × real** (0 → 0, 0.440 → 0.365).
+  The real side reports ONE knuckle; the sim obs has the 2 driver joints ⇒ feed the mapped value twice.
+- The GELLO trigger tops out at a 0.20 target but the gripper keeps closing until it meets something, so the
+  real gripper state is set by what it holds, not by how far the trigger is pressed.
+- ⚠️ The robosuite Robotiq85 does not close: it stalls at ~0.55 rad with ~14 mm between the pads (the real one
+  closes fully at 0.786). Anything thinner than ~14 mm (the 10 mm needle shaft) cannot be pinched in the sim.
+  Fine if the sim expert grasps the 40 mm handle (as the owner did on the robot); check the MimicGen grasp.
+
 ## ⚠️ Control rate: the owner runs the policy at 10 Hz
 
 20 Hz was too fast on the real robot; 10 Hz is stable. The sim (robosuite `control_freq`), the world model's
@@ -92,6 +112,5 @@ and the policy runner.
 ## Still open (from `../calib_20261013/README.md`)
 
 - Colour: render the sim under this cell and match it to `data/exposure_locked/` (render → measure → fix).
-- Robotiq position register → sim knuckle angle map (item 6): driver now installed.
 - Home pose → DROID home with the Robotiq square to the table (item 7 TODO), real + sim together.
 - Deploy capture mode / fps (item 9); clutter (bowl) at the lower left of the scene view.
