@@ -4,6 +4,15 @@ Written 2026-10-10. Scope: `Threading_RealCell` (pixel SimDist, r18@224, 2 camer
 Background: `docs/infra.md` §14–§14f, `docs/real-teleop-stage2.md`,
 `docs/real-teleop-requirements-EN.md`, `docs/simdist.md` §48.
 
+> **Status 2026-10-14: the real side of steps 2–3 is done.** Cameras re-mounted and calibrated
+> (`real2sim/zed_capture/calib_20261010/`, `calib_20261013/`, `calib_20261014/`), gate C passed, and the
+> real cell measured: scene re-pose after a bump, Robotiq length (+6.5 mm), work-surface height and tilt,
+> needle range for the fovy-50 crop, DROID home pose, locked exposure at HD720@30, Robotiq → sim gripper map.
+> Current cell: `real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml`.
+> **Before step 4, work through the sim-side checklist in `calib_20261014/README.md`**: switch the default
+> cell, decide the control rate (the owner runs the policy at 10 Hz, the sim is 20 Hz), the placement
+> sampler not re-sampling on `reset()`, the sim Robotiq not closing below ~14 mm, wrist-camera DR.
+
 ## 1. Why the previous transfer failed
 
 ### 1.1 Object placement on the bench did not match the sim — the schedule is stale
