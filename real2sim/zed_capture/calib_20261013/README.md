@@ -130,6 +130,12 @@ another visit.
 7. **Home / reset pose.** Confirm the real reset q equals `q_last_known` in
    `object_layout/layout_estimate.json`. Sim resets around it with joint σ 0.1. Note any
    difference.
+   - **TODO (owner, 2026-10-14): switch to the DROID home pose, with the Robotiq square
+     ("正") to the table.** The current home (q ≈ [0.006, −0.783, 0.002, −2.360, −0.008,
+     1.582, 0.775]) is not liked. Changing it moves the wrist view at reset, so it must be
+     set on BOTH sides together: the real reset script and the sim cell's init qpos. Then
+     re-check, with `real2sim/deploy/live_crop_view.py`, that the wrist crop still sees the
+     needle at reset.
 8. **Colour / lighting (still open).** Fix the ZED exposure, gain and white balance (auto off),
    and write the values down. Take one scene and one wrist frame with the lights as they will be
    during deployment. Also take one frame with the room lights off, to see the light-strip
@@ -143,3 +149,7 @@ another visit.
     - Check that both cameras enumerate at USB 3 (`.../speed` = 5000).
     - Make sure the next calibration yaml is built from the *current* cell yaml in this folder,
       not from git HEAD.
+
+> **2026-10-14:** items 1–5 were worked on during the next visit; results and a new cell
+> (scene quat after a bump, Robotiq length, needle range for the fovy-50 crop) are in
+> `../calib_20261014/README.md`.

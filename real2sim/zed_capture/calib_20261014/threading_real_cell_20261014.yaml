@@ -1,0 +1,206 @@
+# 2026-10-14 cell (Threading, Robotiq). Lives in real2sim/zed_capture/calib_20261014/ (README there).
+# = calib_20261013/threading_real_cell_20261013.yaml (git 2d57392) with THREE changes, all measured
+#   on the robot 2026-10-14 (see README):
+#   1. agentview quat: the ZED 2i was bumped while re-plugging cables. Pure rotation measured from
+#      static features vs the 10-13 calibration frames: 0.30 deg (two frames agree to 0.015 deg,
+#      residual 0.45 px => translation <~1 mm, pos kept). Checked: FK fingertips of 5 touch-off
+#      poses project onto the real fingertips within 1-2 px @1280.
+#   2. gripper_mount_z 0.007 -> 0.0135: the real flange->closed-fingertip length is ~174 mm (tape),
+#      the sim's was 167.5 mm; the touch-off agrees (+6.6 mm). With it the work surface comes out
+#      at base z 0.0286 = this cell's 0.0285, so table_top_dz is unchanged.
+#   3. needle layout re-centred on (0.55, -0.12, z_rot -100): the 10-13 placement was cut by the
+#      right edge of the fovy-50 scene crop. Same widths (+-75 / +-50 mm / +-30 deg); every corner
+#      of this range keeps >= 8 px @224 inside the crop. Real needle placed there: (0.553, -0.108)
+#      by the scene camera.
+# --- header of the 10-13 file follows ---
+# 2026-10-13 cell (Threading, Robotiq). Lives in real2sim/zed_capture/calib_20261013/ (README there).
+# Built from calib_20261010/threading_real_cell_20261010.yaml (table height, Robotiq + mount,
+#   cam_follow_base_dr) with: the 10-13 `cameras`, the white board re-fitted in the NEW scene
+#   camera, and the object layout re-centred on object_layout/ (2026-10-14).
+#   ⚠️ The first version of this file (commit 5e215c5) was generated from the COMMITTED 10-10 yaml,
+#   i.e. without any of the 10-11 fixes (Panda hand, mat height, inert board offset).
+# agentview: NEW ZED 2i, SN 31011113 (replaces SN 37597132), factory intrinsics (verified by a
+#   hand-held refit, see README). Solved from run_1013_1757: reprojection 0.33 px,
+#   leave-one-out moves it <= 1.4 mm / 0.12 deg. fovy 50.0 kept (largest square 65.82 deg);
+#   ⚠️ at 50 the needle range is partly cut at the right edge (see layout below).
+# robot0_eye_in_hand: same ZED-M (SN 16478414), frame robot0_right_hand. This session: LOO
+#   <= 1.4 mm / 0.16 deg, BUT the pose drifted monotonically across sessions (roll about the
+#   optical axis -1.91 / -0.83 / 0 deg on 10-10 / 10-10 late / 10-13): the mount is likely
+#   loosening. randomize is false. Layout photo: the board edge agrees to 0.5 deg, but the
+#   needle seen by the wrist sits 12 mm / 8 deg away from where the scene camera puts it.
+# Real side: wrist uses calib_20261010/data/wrist_intrinsics.json (ZED-M factory D is wrong);
+#   scene uses the SN31011113 factory values in release/cfgs/sim2real/zed_factory_intrinsics.json.
+# Sim gripper = Robotiq 2F-85 (gripper_types + mount, bottom of file), as on the real arm.
+enabled: 1
+arena_from_real2sim: 1
+# WORK SURFACE HEIGHT (2026-10-11). arena_from_real2sim gives the MAT at base z +0.0207
+#   (shared with PegInsertion_D0); the white board lies on it and was never modelled.
+#   Estimates of the board top, base frame: wrist-photo edges 0.0357 (sample_011) / 0.0213
+#   (sample_019), lines cross at 0.028 with a common -12 px hand-eye bias; tape 753 mm vs
+#   the scene-fitted size -> ~0.026; ChArUco on its clipboard 0.0329 minus the clipboard
+#   -> ~0.030. Nominal 0.0285 (= +7.8 mm), dr_base_height +-7.5 mm covers 0.021-0.036,
+#   i.e. every single estimate. A fingertip touch-off on the real board would replace this.
+table_top_dz: 0.0078
+# WHITE BOARD re-fitted 2026-10-14 in the NEW scene camera (object_layout/scene_left.png),
+#   on the work-surface plane (base z 0.0285). Three edges visible (far-right, far-left,
+#   robot side; the front one is behind the clutter), line rms 0.2-0.3 px.
+#   The 10-11 rectangle (fitted with the OLD camera, 4 edges, 2 photos) already lands within
+#   1.4 / 3.0 / 1.7 px rms of them -- two independent cameras agree, the board has not moved.
+#   Size kept from 10-11; centre + yaw re-fitted (dx -0.8 mm, dy +9.4 mm, dyaw -0.52 deg):
+#   residual 0.64 / 1.24 / 0.47 px rms per side at 1280x720 (< 0.6 px at 224).
+#   board in base frame: centre (0.5020, 0.0184), x[0.1273, 0.8767] y[-0.3631, 0.3999].
+#   This entry is an IMAGE match in the deployed camera, not a physical measurement.
+#   (10-11 values, old camera: offset 0.0138/-0.0250, yaw 0.756.)
+table_visual_half:
+- 0.3747
+- 0.3815
+table_visual_offset:
+- 0.0130
+- -0.0156
+table_visual_yaw_deg: 0.235
+# 1 = the offset/yaw actually move the rendered board (env/sim2real.py; before 2026-10-11 the
+#   offset was inert in every cell, so the OLD 0.011/0.0755 was never rendered either).
+table_visual_apply_pose: 1
+dr_background_image: /user_data/Chenyang/bg_textures/val_256
+dr_background_floor: 1
+table_rgb:
+- 0.85
+- 0.8507
+- 0.8403
+object_rgb:
+- 0.438
+- 0.0086
+- 0.0089
+workspace_offset:
+- 0.071
+- 0.066
+init_qpos:
+- 0.0
+- -0.7853981634
+- 0.0
+- -2.3561944902
+- 0.0
+- 1.5707963268
+- 0.7853981634
+cameras:
+- name: agentview
+  frame: base
+  pos:
+  - 0.23173
+  - 0.55526
+  - 0.52272
+  # 2026-10-14: rotated 0.30 deg (bump), pos unchanged. 10-13: [0.15479, -0.29452, 0.85353, -0.40097]
+  quat:
+  - 0.15341
+  - -0.29297
+  - 0.85476
+  - -0.40002
+  fovy: 50.0
+- name: robot0_eye_in_hand
+  frame: hand
+  randomize: false
+  # real side: undistort wrist frames with the REFITTED K/D (factory D is wrong)
+  real_intrinsics: ../calib_20261010/data/wrist_intrinsics.json
+  pos:
+  - -0.07053
+  - -0.03118
+  - 0.01228
+  quat:
+  - 0.93013
+  - -0.14733
+  - 0.03582
+  - -0.33447
+  fovy: 49.014
+dr_table_rgb_tint: 0.02
+dr_table_rgb_gain:
+- 0.9
+- 1.1
+dr_object_rgb_tint: 0.025
+dr_object_rgb_gain:
+- 0.85
+- 1.15
+dr_background_gray:
+- 0.25
+- 0.85
+dr_light_diffuse:
+- 0.85
+- 1.15
+dr_light_ambient:
+- 0.02
+- 0.12
+dr_light_specular:
+- 0.4
+- 1.5
+dr_light_dir: 0.3
+dr_light_pos: 0.4
+dr_light_shadow_n: 3
+dr_cam_pos: 0.011
+dr_cam_rot_deg: 1.0
+dr_cam_fovy_deg: 1.0
+# +-7.5 mm about the nominal work surface (see table_top_dz): the board-height uncertainty.
+# With cam_follow_base_dr the scene camera rides with the base, so this is the table
+# moving relative to robot + cameras, in physics AND in the image.
+dr_base_height: 0.0075
+cam_follow_base_dr: 1
+dr_base_yaw_deg: 1.5
+dr_base_tilt_deg: 1.0
+dr_base_xy: 0.007
+# OBJECT LAYOUT re-centred 2026-10-14 on the real placement photo (object_layout/): sim needle
+#   and tripod rendered in the scene camera and fitted to the red masks of the real ones
+#   (IoU, rendered at fovy 65 so the needle is not cut):
+#     needle (0.4271, -0.1558) z_rot -100.3 deg, IoU 0.854
+#     tripod (0.5269,  0.1758) z_rot  -40.6 deg, IoU 0.910 (next-best yaw -130 only 0.809)
+#   5 mm / 5 deg moves cost 0.04-0.15 IoU. The scene ray is oblique, so a table-height error
+#   dz moves the fit along it: needle y -0.170 .. -0.145, tripod y 0.169 .. 0.183 over
+#   dz -7.8 .. +7.5 mm (dr_base_height covers it). z_rot == the body yaw (checked on reset).
+#   Ranges = the previous widths, re-centred: needle +-75 / +-50 mm / +-30 deg, tripod
+#   +-30 mm / +-5 deg. Was: needle x[0.36,0.51] y[-0.14,-0.04] rot[-120,-60], tripod
+#   x[0.49,0.55] y[0.23,0.29] rot[-35,-25] -- the real tripod sat 5.4 cm toward -y of it.
+#   ⚠️ fovy 50: 13/27 corner poses of the needle range touch the right crop edge (min 102 px
+#   of needle left). Fully inside needs fovy ~62 (tripod 1482 -> 891 px). Not changed here.
+#   tripod z_rot -40.6 is inside the MimicGen-feasible band (-60..-15, infra.md §14f).
+# 2026-10-14: needle range re-centred on (0.55, -0.12, -100) so it fits the fovy-50 crop
+#   (the 10-13 centre (0.4271, -0.1558) put the range up to 33 px @224 outside it).
+layout_needle_x:
+- 0.475
+- 0.625
+layout_needle_y:
+- -0.17
+- -0.07
+layout_needle_z_rot_deg:
+- -130
+- -70
+layout_tripod_x:
+- 0.497
+- 0.557
+layout_tripod_y:
+- 0.146
+- 0.206
+layout_tripod_z_rot_deg:
+- -45.6
+- -35.6
+hide_table_legs: 1
+light_pos:
+- 0.122
+- 0.501
+- 3.0
+light_diffuse: 0.9953
+light_shadow_n: 5
+light_target:
+- 0.45
+- 0.08
+- 0.02
+light_directional: 0
+light_castshadow: 1
+light_line_n: 8
+light_line_len: 0.9
+# REAL GRIPPER: Robotiq 2F-85 (since 2026-10-10). Threading_RealCellRobotiq observes the 2
+#   driver joints only (state 37 / prop 9 unchanged), but nothing trained on the Panda-hand cells is compatible with this file.
+gripper_types: Robotiq85Gripper
+# Robotiq bolted square to the FR3 FLANGE (= robot0_right_hand + 45.03 deg) through a ~7 mm
+#   coupling; fitted to the wrist photos, finger-mask IoU 0.196 (robosuite mount) -> 0.86.
+gripper_mount_yaw_deg: 45.03
+# 2026-10-14: 0.007 -> 0.0135. Measured flange->closed fingertip ~174 mm vs the sim's 167.5 mm;
+#   the fingertip touch-off on the white board agrees (+6.6 mm). The 0.007 was fitted to the wrist
+#   photos, which barely constrain the length along the approach axis.
+gripper_mount_z: 0.0135
