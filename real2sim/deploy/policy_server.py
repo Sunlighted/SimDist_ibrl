@@ -4,8 +4,9 @@ The ROS side (robot_client.py, inside the gello ros2 container, no torch/GPU)
 streams raw observations here over localhost TCP and gets back joint targets.
 Everything that must match training lives on THIS side:
 
-  images  : raw ZED JPEG -> undistort (factory K, D, newK=K) -> principal-point
-            square crop -> 224 -> ZED->splat colour map  (real2sim/deploy/preprocess.py)
+  images  : raw ZED JPEG -> undistort (factory K, D or the cell's real_intrinsics,
+            newK=K) -> principal-point square crop at the SIM camera's fovy -> 224
+            -> ZED->splat colour map  (real2sim/deploy/preprocess.py)
   prop    : [eef_pos(3), eef_quat_xyzw(4), gripper_qpos(2)] computed by MuJoCo FK
             on the SAME PegInsertion_D0 model the policy was trained in: real joint
             angles in, sim-world grip-site pose out. This carries the measured base
@@ -42,8 +43,9 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _REPO)
 os.environ.setdefault("MUJOCO_GL", "egl")
 
-from real2sim.deploy.preprocess import (DEFAULT_COLOR_JSON, SIM_CAMERA, Rectifier,  # noqa: E402
-                                        apply_color, decode_jpeg_rgb, load_color)
+from real2sim.deploy.preprocess import (DEFAULT_COLOR_JSON, Rectifier,  # noqa: E402
+                                        apply_color, camera_intrinsics, decode_jpeg_rgb,
+                                        load_color, peg_fovy, sim_camera_map)
 
 # FR3 and Panda joint limits (rad); targets are clipped to the intersection.
 FR3_LO = np.array([-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159])
@@ -106,6 +108,7 @@ def load_agent(ckpt, device):
         task_name = raw["task_name"]
         rl_image_size = S
         rl_camera = raw["rl_camera"]
+        sim2real_cell = raw.get("sim2real_cell") or ""
         simdist = sd
     return agent, _Cfg
 
@@ -114,6 +117,12 @@ class ReferenceArm:
     """The training env's arm, used for FK (prop) and as the OSC action model."""
 
     def __init__(self, task):
+        # ⚠️ PegInsertion_D0 only: robots="Panda" with its 2-finger hand, no sim2real
+        # cell (arena, Robotiq + mount, init_qpos). On a RealCell policy the FK/prop
+        # and the OSC model here would be the WRONG robot -- port before deploying.
+        if not task.startswith("PegInsertion"):
+            raise NotImplementedError(
+                f"ReferenceArm is PegInsertion-only; {task} needs the cell's gripper/arena")
         import env.peg_insertion  # noqa: F401  registers PegInsertion_D0
         from env.robosuite_wrapper import PixelRobosuite
         import robosuite.utils.transform_utils as T
@@ -194,6 +203,8 @@ class Server:
         t0 = time.time()
         self.agent, self.cfg = load_agent(a.ckpt, a.device)
         self.S = int(self.cfg.rl_image_size)
+        self.cammap = sim_camera_map(self.agent.rl_cameras)    # ROS cam -> sim cam
+        self.fovy, self.cell_cam = self._sim_cameras()
         self.arm = ReferenceArm(self.cfg.task_name)
         self.color = {} if a.no_color else load_color(a.color_json)
         self.rect = {}
@@ -207,11 +218,36 @@ class Server:
             self.log = None
         self.n = 0
 
+    def _sim_cameras(self):
+        """sim camera -> (fovy it was trained with, its cell RealCameraConfig or None).
+        The fovy comes from the same place the training env got it: the cell yaml
+        recorded in the ckpt's cfg, else the task constants (PegInsertion_D0)."""
+        sims = list(self.cammap.values())
+        if self.cfg.sim2real_cell:
+            from env.sim2real import load_sim2real
+            cell = load_sim2real(self.cfg.sim2real_cell)
+            cams = {c.name: c for c in cell.cameras}
+            missing = [c for c in sims if c not in cams or cams[c].resolved_fovy() <= 0]
+            if missing:
+                raise ValueError(f"{self.cfg.sim2real_cell} sets no fovy for {missing}")
+            return ({c: cams[c].resolved_fovy() for c in sims}, {c: cams[c] for c in sims})
+        pf = peg_fovy()
+        return {c: pf[c] for c in sims}, {c: None for c in sims}
+
     def hello(self, h):
         for cam, ci in h["camera_info"].items():
-            self.rect[cam] = Rectifier(ci["K"], ci["D"], ci["width"], ci["height"], self.S,
-                                       reduce=self.a.jpeg_reduce)
-        missing = [c for c in SIM_CAMERA if c not in self.rect]
+            if cam not in self.cammap:
+                continue
+            sim = self.cammap[cam]
+            K, D = camera_intrinsics(self.cell_cam[sim], ci["K"], ci["D"],
+                                     ci["width"], ci["height"])
+            self.rect[cam] = Rectifier(K, D, ci["width"], ci["height"], self.S,
+                                       self.fovy[sim], reduce=self.a.jpeg_reduce)
+            src = getattr(self.cell_cam[sim], "real_intrinsics", "") or "camera_info (factory)"
+            print(f"[server] {cam} -> {sim}: fovy {self.fovy[sim]:.3f} deg, crop "
+                  f"{self.rect[cam].side * self.rect[cam].reduce} px (full res), "
+                  f"fy {K[1, 1]:.1f}, K/D from {src}", flush=True)
+        missing = [c for c in self.cammap if c not in self.rect]
         if missing:
             raise ValueError(f"no camera_info for {missing}")
         return {"ok": True, "S": self.S, "task": self.cfg.task_name,
@@ -235,7 +271,7 @@ class Server:
         prop = self.arm.prop(fingers)
         eef = self.arm.eef()
         torch = self.torch
-        obs = {SIM_CAMERA[c]: torch.from_numpy(np.ascontiguousarray(im.transpose(2, 0, 1)))
+        obs = {self.cammap[c]: torch.from_numpy(np.ascontiguousarray(im.transpose(2, 0, 1)))
                for c, im in ims.items()}
         obs["prop"] = torch.from_numpy(prop)
         t1 = time.perf_counter()
@@ -269,7 +305,7 @@ class Server:
             self.log.flush()
             if self.a.save_every and self.n % self.a.save_every == 0:
                 import cv2
-                row = np.concatenate([ims[c] for c in SIM_CAMERA if c in ims], 1)
+                row = np.concatenate([ims[c] for c in self.cammap if c in ims], 1)
                 cv2.imwrite(os.path.join(self.a.save_dir, f"obs_{self.n:05d}.png"), row[..., ::-1])
         self.n += 1
         return res

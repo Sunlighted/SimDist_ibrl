@@ -65,7 +65,7 @@ def main():
                            scene_ply=DEFAULT_SCENE_PLY, ground_json=DEFAULT_GROUND)
     bid = e.obj_body_id["board"]
     board_geoms = [g for g in range(sim.model.ngeom) if sim.model.geom_bodyid[g] == bid]
-    rows, A, B, IOU = [], [], [], []
+    rows, A, B, IOU, PER = [], [], [], [], {}
     for k in keys[:a.eps]:
         g = f[f"data/{k}"]
         skipped = restore_model_state(e, g["model_state"][()])
@@ -87,6 +87,7 @@ def main():
                 blue = ((hsv[..., 0] > 100) & (hsv[..., 0] < 135) & (hsv[..., 1] > 90)).astype(np.uint8)
                 iou = (blue & m).sum() / max((blue | m).sum(), 1)
                 A.append(a_); B.append(b_); IOU.append(iou if m.sum() > 200 else np.nan)
+                PER.setdefault(c, []).append((a_, b_, iou if m.sum() > 200 else np.nan))
                 ed = cv2.morphologyEx(m, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
                 ov = stored.copy(); ov[ed] = (255, 0, 0)
                 cv2.putText(ov, f"{k} t={i} {c.replace('robot0_', '')}", (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
@@ -96,6 +97,10 @@ def main():
     print(f"A |stored - fresh|        mean {np.mean(A):.2f}  max {np.max(A):.2f}")
     print(f"B |stored - fresh flipped| mean {np.mean(B):.2f}  min {np.min(B):.2f}   (must be >> A)")
     print(f"C board IoU (stored frame vs MuJoCo silhouette) mean {np.nanmean(IOU):.2f}  min {np.nanmin(IOU):.2f}")
+    for c, v in PER.items():
+        v = np.array(v, dtype=float)
+        print(f"  [{c}] A mean {v[:, 0].mean():.2f} max {v[:, 0].max():.2f} | B min {v[:, 1].min():.2f} | "
+              f"board IoU mean {np.nanmean(v[:, 2]) if np.isfinite(v[:, 2]).any() else float('nan'):.2f}")
     imageio.imwrite(a.out, np.concatenate(rows, 0))
     print("wrote", a.out)
 

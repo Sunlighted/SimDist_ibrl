@@ -632,6 +632,43 @@ that region is defined over all the states the world model was fit on.
 
 \subsection{Sim-to-real experiments}
 
+% Three panels, ONE caption and ONE number: the sub-panels are deliberately
+% unlabelled ((a)/(b)/(c)) and are referred to as left/middle/right in the
+% caption, so the whole row is cited as a single figure.
+% The two photographs are not in figs/ yet; \taskpanel draws a labelled grey box
+% with the missing path in it, so this compiles today and turns into the picture
+% the moment the file is dropped in. \taskpanelht is raised inside the group
+% only, leaving the main task-panel row (Fig.~\ref{fig:main-sim2sim}) untouched.
+\begin{figure}[t]
+\centering
+\begingroup
+\setlength{\taskpanelht}{3.1cm}
+\begin{minipage}[c]{0.32\linewidth}\centering
+  \taskpanel{figs/square_sim.png}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.32\linewidth}\centering
+  \taskpanel{figs/square_real_photo.png}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.32\linewidth}\centering
+  \parbox[c][\taskpanelht][c]{\linewidth}{\centering
+    \includegraphics[width=\linewidth,height=\taskpanelht,keepaspectratio]%
+      {figs/square_real.pdf}}
+\end{minipage}
+\endgroup
+\caption{%
+  \textbf{Square peg insertion on the real robot.}
+  \emph{Left:} the task in simulation. \emph{Middle:} the same task on the real
+  robot. \emph{Right:} success rate against the number of target episodes
+  consumed; the policy is updated every $10$ episodes and each point is an
+  evaluation over $50$ trials. Shading is $\pm 1$ standard deviation across
+  seeds, and the grey dash-dotted line is the zero-shot source expert.
+  [TODO: the curves are currently the sim-to-sim Threading runs of the same
+  three arms, plotted as a placeholder until the real-robot runs finish.]
+}
+\label{fig:square-real}
+\end{figure}
+
+
 
 
 \section{Limitation and discussion}
@@ -761,6 +798,8 @@ We alternate collection and dynamics fitting in rounds. In each round the agent 
 \subsection{Model Structure}
 
 In state-based sim-to-sim tasks, the encoder maps the raw state to a $512$-dimensional latent normalized by SimNorm~\citep{hansen2024td} (softmax over groups of $8$), which prevents magnitude drift during multi-step rollouts. The dynamics module is an ensemble of $K$ MLP heads over this shared encoder, each predicting the next SimNorm'd latent; planning rolls out on their mean. The reward and value heads predict distributions over $101$ bins via two-hot cross-entropy rather than scalars, and the planner uses the expected value. The policy head maps the latent to an action with the cloning gradient stopped before the encoder. A decoder trained on detached encodings inverts the encoder for reconstruction but is not used by the planner in the default configuration.
+
+For pixel-based observations, only the encoder changes; the latent space, the dynamics ensemble, and the reward, value and policy heads are the same as in the state-based setting. Each step observes two $224\times224$ RGB views, a third-person \texttt{agentview} camera and a wrist camera, together with the $9$-dimensional proprioceptive state (end-effector position, orientation quaternion and gripper joint positions). The $28$ object-state dimensions, such as the needle and tripod poses, must therefore be inferred from pixels. Each view has its own ImageNet-pretrained ResNet-18 trunk (\texttt{conv1}--\texttt{layer4}, no pooling), whose $7\times7\times512$ feature map is flattened and compressed to $256$ dimensions by a Linear--LayerNorm--ReLU layer. BatchNorm statistics are kept frozen at their ImageNet values, and the trunk is trained at $0.3\times$ the base learning rate. The two view features are concatenated with the raw proprioceptive state and projected by the same MLP trunk to the $512$-dimensional SimNorm latent. Two further changes follow from the move to pixels. There is no image decoder, and the cloning gradient is allowed to reach the encoder at the first rollout step ($i=0$) of Eq.~\ref{eq:simdist-distill}, while later steps remain stopped as in the state-based setting. During stage-1 training every sample is augmented with a random shift of up to $8$ pixels, color jitter of strength $0.3$ (brightness, contrast and saturation in $[0.7,1.3]$, hue within $\pm0.1$), Gaussian blur with $\sigma\le2$ pixels, and Gaussian noise of $2$\,mm on the proprioceptive state. The augmentation parameters are drawn independently for each sample and each camera, but are held fixed across the $H{+}1$ frames of one training sequence, so the dynamics targets remain consistent. The world model is distilled for $150$k steps with batch size $256$ from $4{,}500$ rendered source trajectories. SimADEPT uses $K=5$ dynamics heads with horizon $H=5$. The SimDist baseline uses its released single-head configuration ($K=1$, $H=3$), with an otherwise identical encoder and training recipe. Adaptation uses the same $20$ target demonstrations and a $100$k-transition budget as the state-based setting, with the dynamics updated every $2{,}000$ transitions.
 
 \subsection{Hyperparameter}
 

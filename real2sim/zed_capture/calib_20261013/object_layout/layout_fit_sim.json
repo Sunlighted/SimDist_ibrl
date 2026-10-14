@@ -1,0 +1,47 @@
+{
+ "method": "sim needle/tripod rendered in the calibrated scene camera (Threading_RealCellRobotiq, DR off, arm at q_last_known), fitted to the red HSV masks of object_layout/scene_left.png by IoU; rendered + rectified at fovy 65 so the needle is not cut; work surface base z 0.0285",
+ "needle": {
+  "xy_base": [
+   0.4271,
+   -0.1558
+  ],
+  "z_rot_deg": -100.3,
+  "iou": 0.854
+ },
+ "tripod": {
+  "xy_base": [
+   0.5269,
+   0.1758
+  ],
+  "z_rot_deg": -40.6,
+  "iou": 0.91,
+  "next_best_yaw": {
+   "deg": -129.9,
+   "iou": 0.809
+  }
+ },
+ "sensitivity": "5 mm / 5 deg moves cost 0.04-0.15 IoU",
+ "table_height_coupling": {
+  "dz_mm": [
+   -7.8,
+   7.5
+  ],
+  "needle_y": [
+   -0.1701,
+   -0.1446
+  ],
+  "tripod_y": [
+   0.1689,
+   0.1833
+  ]
+ },
+ "wrist_only_needle_fit": {
+  "xy_base": [
+   0.4289,
+   -0.1679
+  ],
+  "z_rot_deg": -92.1,
+  "iou": 0.811,
+  "note": "12 mm / 8 deg from the scene fit; no common table height reconciles the two (joint fit); board edge in the wrist view agrees to 0.5 deg"
+ }
+}

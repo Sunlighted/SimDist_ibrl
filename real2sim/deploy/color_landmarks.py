@@ -34,7 +34,7 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, "scripts"))
 import real2sim.splat_obs  # noqa: F401,E402  import-order fix for gs_mujoco
 import cv2  # noqa: E402
-from real2sim.deploy.preprocess import (DEFAULT_COLOR_JSON, SIM_CAMERA, Rectifier,  # noqa: E402
+from real2sim.deploy.preprocess import (peg_fovy, DEFAULT_COLOR_JSON, SIM_CAMERA, Rectifier,  # noqa: E402
                                         apply_color, decode_jpeg_rgb, load_color)
 from compare_real_sim_demos import Real, SimReplay  # noqa: E402
 
@@ -286,7 +286,7 @@ def main():
 
     reals = [Real(p) for p in sorted(glob.glob(f"{a.real_dir}/*.h5"))]
     rp = SimReplay(a.S)
-    rects = {c: Rectifier(reals[0].K[c], reals[0].D[c], 1280, 720, a.S) for c in SIM_CAMERA}
+    rects = {c: Rectifier(reals[0].K[c], reals[0].D[c], 1280, 720, a.S, peg_fovy()[SIM_CAMERA[c]]) for c in SIM_CAMERA}
     cur = load_color(DEFAULT_COLOR_JSON)
 
     per_ep = []

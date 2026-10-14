@@ -133,7 +133,8 @@ MIMICGEN_D0_TASKS = [
 for _t in MIMICGEN_D0_TASKS:
     STATE_KEYS[_t] = DEFAULT_STATE_KEYS
 # Threading-family variants (D1, Enlarged, RealCell) share Threading_D0's spec.
-for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged", "Threading_RealCell"]:
+for _t in ["Threading_D1", "Threading_D2", "Threading_Enlarged", "Threading_RealCell",
+           "Threading_RealCellRobotiq"]:
     STATE_KEYS[_t] = DEFAULT_STATE_KEYS
 # real2sim peg insertion (env/peg_insertion.py): 9 prop + 28 object (peg/board
 # pos+quat, absolute and eef-relative) = 37, same layout as Threading_D0.
@@ -145,6 +146,8 @@ STATE_SHAPE["Threading_D1"] = (37,)
 STATE_SHAPE["Threading_D2"] = (37,)
 STATE_SHAPE["Threading_Enlarged"] = (37,)
 STATE_SHAPE["Threading_RealCell"] = (37,)
+# Robotiq cell: gripper_qpos is cut to the 2 driver joints in the class => still 37
+STATE_SHAPE["Threading_RealCellRobotiq"] = (37,)
 # Register the custom Threading variants with robosuite in EVERY process that
 # builds this wrapper. A dataset converted from Threading_RealCell demos stores
 # that env_name, and train_bc's in-training eval (including the mp eval worker
@@ -268,6 +271,12 @@ class PixelRobosuite:
         self._splat_cfg = splat_obs
         self._splat = None
 
+        env_kwargs = dict(env_kwargs or {})
+        if sim2real is not None and sim2real.enabled and sim2real.gripper_types:
+            # construction-time cell field (env/sim2real.py): the real cell's gripper
+            assert env_kwargs.get("gripper_types", sim2real.gripper_types) == sim2real.gripper_types, \
+                "env_kwargs.gripper_types disagrees with the sim2real cell"
+            env_kwargs["gripper_types"] = sim2real.gripper_types
         self.env = robosuite.make(
             env_name=env_name,
             robots=robots,
@@ -280,7 +289,7 @@ class PixelRobosuite:
             camera_widths=image_size,
             horizon=episode_length,
             initialization_noise=init_noise,
-            **(env_kwargs or {}),
+            **env_kwargs,
         )
         self.env_name = env_name
         self.rl_cameras = rl_cameras if isinstance(rl_cameras, list) else [rl_cameras]
@@ -373,7 +382,8 @@ class PixelRobosuite:
                     f"{env_name} has no `table_offset`; sim2real.table_above_base "
                     "only works on the MimicGen table envs")
                 print(f"[sim2real] table_offset {self.env.table_offset} -> {off} "
-                      f"(top {self.sim2real.table_above_base:+.4f} m vs base origin)")
+                      f"(top {self.sim2real.work_surface_above_base():+.4f} m vs base origin, "
+                      f"table_top_dz {self.sim2real.table_top_dz:+.4f})")
                 self.env.table_offset = off
 
         # ---- domain shift + strict success ----

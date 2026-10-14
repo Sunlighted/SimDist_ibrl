@@ -709,6 +709,79 @@ def test_square_realcell():
               - 360.0) < 1e-6)
 
 
+def test_robotiq_cell():
+    """2026-10-11: Threading_RealCellRobotiq + table_top_dz + cam_follow_base_dr."""
+    print("Robotiq cell (Threading_RealCellRobotiq):")
+    import dataclasses
+    import robosuite
+    import env.threading_variants as tv
+    from env.sim2real import load_sim2real
+    cell = load_sim2real(tv.REAL_CELL_ROBOTIQ_YAML)
+    top_want = cell.table_above_base + cell.table_top_dz
+    # the generation path: robosuite.make from the env name, no wrapper
+    raw = robosuite.make("Threading_RealCellRobotiq", robots="Panda", has_renderer=False,
+                         has_offscreen_renderer=False, use_camera_obs=False)
+    np.random.seed(0)
+    o = raw.reset()
+    m, d = raw.sim.model, raw.sim.data
+    check("robosuite.make gives the Robotiq", type(raw.robots[0].gripper).__name__ == "Robotiq85Gripper")
+    check("gripper_qpos is the 2 driver joints (state stays 37)",
+          o["robot0_gripper_qpos"].shape == (2,) and o["object-state"].shape == (28,))
+    check("gripper starts open", np.abs(o["robot0_gripper_qpos"]).max() < 1e-6,
+          str(np.round(o["robot0_gripper_qpos"], 4)))
+    tid, bid = m.geom_name2id("table_collision"), m.body_name2id("robot0_base")
+    top = d.geom_xpos[tid][2] + m.geom_size[tid][2] - d.body_xpos[bid][2]
+    check("work surface = table_above_base + table_top_dz without the wrapper",
+          abs(top - top_want) < 1e-6, f"{top:+.4f} vs {top_want:+.4f}")
+    rid = m.body_name2id("gripper0_robotiq_85_adapter_link")
+    h = np.radians(cell.gripper_mount_yaw_deg) / 2
+    check("mount is in the compiled model",
+          np.allclose(m.body_pos[rid], [0, 0, cell.gripper_mount_z])
+          and np.allclose(m.body_quat[rid], [np.cos(h), 0, 0, np.sin(h)]))
+    try:
+        robosuite.make("Threading_RealCellRobotiq", robots="Panda", gripper_types="PandaGripper",
+                       has_renderer=False, has_offscreen_renderer=False, use_camera_obs=False)
+        check("a Panda hand on the Robotiq cell is refused", False)
+    except AssertionError:
+        check("a Panda hand on the Robotiq cell is refused", True)
+    # the wrapper on top: same mount, 37/9, base-frame camera rides with the base DR
+    nocam = dataclasses.replace(cell, dr_cam_pos=0.0, dr_cam_rot_deg=0.0)
+    env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                         camera_names=["agentview"], rl_cameras=["agentview"], use_state=True,
+                         obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                         hand_init_perturb_joint_sigma=0.0, sim2real=nocam)
+    cp = np.array([c for c in cell.cameras if c.name == "agentview"][0].pos)
+    tops, err = [], []
+    for seed in range(8):
+        np.random.seed(seed)
+        ob, _ = env.reset()
+        m, d = env.env.sim.model, env.env.sim.data        # hard reset: re-fetch
+        bid, cid = m.body_name2id("robot0_base"), m.camera_name2id("agentview")
+        tid = m.geom_name2id("table_collision")
+        tops.append(d.geom_xpos[tid][2] + m.geom_size[tid][2] - d.body_xpos[bid][2])
+        R = d.body_xmat[bid].reshape(3, 3)
+        err.append(np.abs(R.T @ (d.cam_xpos[cid] - d.body_xpos[bid]) - cp).max())
+    check("wrapper: state 37 / prop 9", tuple(ob["state"].shape) == (37,) and tuple(ob["prop"].shape) == (9,))
+    tops = np.array(tops)
+    check("dr_base_height spreads the work surface around its nominal",
+          np.abs(tops - top_want).max() <= cell.dr_base_height + 1e-6 and tops.std() > 1e-3,
+          f"[{tops.min():+.4f}, {tops.max():+.4f}] nominal {top_want:+.4f}")
+    check("cam_follow_base_dr: scene camera stays at its base-frame extrinsic",
+          max(err) < 1e-6, f"max {1000 * max(err):.3f} mm")
+    legacy = dataclasses.replace(nocam, cam_follow_base_dr=0)
+    env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                         camera_names=["agentview"], rl_cameras=["agentview"], use_state=True,
+                         obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                         hand_init_perturb_joint_sigma=0.0, sim2real=legacy)
+    np.random.seed(1)
+    env.reset()
+    m, d = env.env.sim.model, env.env.sim.data
+    bid, cid = m.body_name2id("robot0_base"), m.camera_name2id("agentview")
+    R = d.body_xmat[bid].reshape(3, 3)
+    e = np.abs(R.T @ (d.cam_xpos[cid] - d.body_xpos[bid]) - cp).max()
+    check("cam_follow_base_dr=0 keeps the legacy (world-fixed) camera", e > 1e-3, f"{1000 * e:.1f} mm")
+
+
 def main():
     test_default_off()
     test_geometry()
@@ -723,6 +796,7 @@ def main():
     test_background_image()
     test_dr_ranges()
     test_square_realcell()
+    test_robotiq_cell()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"FAILED ({len(FAILED)}):")

@@ -734,7 +734,7 @@ def apply_three_piece_shift(
 # startswith("Threading") would silently admit a future variant with different
 # objects. Threading_RealCell differs from D0 only in table height and where the
 # parts are placed (env/threading_variants.py).
-THREADING_BINDING_CLASSES = ("Threading_D0", "Threading_RealCell")
+THREADING_BINDING_CLASSES = ("Threading_D0", "Threading_RealCell", "Threading_RealCellRobotiq")
 
 
 def resolve_peg_insertion_bindings(env) -> dict:

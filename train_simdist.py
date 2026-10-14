@@ -195,6 +195,12 @@ class MainConfig(common_utils.RunConfig):
     # the first peg photoreal run did -- 13 h of training whose eval numbers were
     # meaningless. Empty = plain MuJoCo (unchanged).
     splat_obs: int = 0
+    # PegInsertion board reset jitter for the train + eval envs (env/peg_insertion.py;
+    # m uniform +- per axis / deg uniform +-). MUST match the source replay's
+    # generation (scripts/gen_peg_splat_replay.sh uses 0.01 / 5), or the source eval
+    # measures a narrower distribution than the data. 0/0 = env_kwargs None = legacy.
+    board_pos_noise: float = 0.0
+    board_yaw_noise: float = 0.0
     # SOURCE (train) and TARGET (eval) domain shifts
     train_domain_shift: DomainShiftConfig = field(default_factory=lambda: DomainShiftConfig(mode="none"))
     eval_domain_shift: DomainShiftConfig = field(default_factory=DomainShiftConfig)
@@ -409,6 +415,11 @@ class Workspace:
             # old rendering path byte-for-byte.
             state_only_no_render=bool(self.cfg.state_only_no_render),
         )
+        if self.cfg.board_pos_noise or self.cfg.board_yaw_noise:
+            common_env["env_kwargs"] = dict(board_pos_noise=self.cfg.board_pos_noise,
+                                            board_yaw_noise=self.cfg.board_yaw_noise)
+            print(f"[board jitter] pos +-{self.cfg.board_pos_noise} m, "
+                  f"yaw +-{self.cfg.board_yaw_noise} deg (train + eval envs)", flush=True)
         if self.cfg.sim2real_cell:
             import hashlib
             from env.sim2real import load_sim2real

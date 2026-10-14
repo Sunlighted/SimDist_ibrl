@@ -19,7 +19,7 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, "scripts"))
 import real2sim.splat_obs  # noqa: F401,E402  import-order fix for gs_mujoco
 import cv2  # noqa: E402
-from real2sim.deploy.preprocess import (DEFAULT_COLOR_JSON, SIM_CAMERA, Rectifier,  # noqa: E402
+from real2sim.deploy.preprocess import (peg_fovy, DEFAULT_COLOR_JSON, SIM_CAMERA, Rectifier,  # noqa: E402
                                         apply_color, decode_jpeg_rgb, load_color)
 from compare_real_sim_demos import Real, SimReplay  # noqa: E402
 
@@ -49,7 +49,7 @@ def main():
     S = a.tile
     rp = SimReplay(S)
     color = load_color(DEFAULT_COLOR_JSON)
-    rects = {c: Rectifier(real.K[c], real.D[c], 1280, 720, S) for c in SIM_CAMERA}
+    rects = {c: Rectifier(real.K[c], real.D[c], 1280, 720, S, peg_fovy()[SIM_CAMERA[c]]) for c in SIM_CAMERA}
     ts = a.frames or list(np.linspace(0, real.T - 1, 4).astype(int))
     print(f"[src] {os.path.basename(path)}  T={real.T}  frames={ts}  tile={S}", flush=True)
 

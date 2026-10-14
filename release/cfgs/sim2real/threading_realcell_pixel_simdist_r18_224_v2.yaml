@@ -84,7 +84,7 @@ seq_replay_max_transitions: 6600000
 ### double-counted alongside its workers).
 ### REALCELL: the 2-camera re-rendered subset (agentview collected, wrist
 ### re-rendered from the stored sim_state). part*_2cam.hdf5, 8 shards.
-source_replay_path: /user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_pixel_v2/part*.hdf5
+source_replay_path: /user_data/Chenyang/ibrl_offload/release/data/mimicgen/threading_realcell_pixel_v2/2cam_bg_v1/part*_2cam.hdf5
 ### ★ MUST be set when source_replay_path is a SHARD SET with a cap.
 ### `-1` loads all 17.8M transitions and `_evict_for_transitions` pops from the
 ### FRONT, so the cap would keep only the LAST shards -- measured: 6 of 8 seeds

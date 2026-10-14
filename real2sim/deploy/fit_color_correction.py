@@ -28,7 +28,7 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, "scripts"))
 import real2sim.splat_obs  # noqa: F401,E402  import-order fix for gs_mujoco
 import cv2  # noqa: E402
-from real2sim.deploy.preprocess import Rectifier, SIM_CAMERA, apply_color, decode_jpeg_rgb  # noqa: E402
+from real2sim.deploy.preprocess import peg_fovy, Rectifier, SIM_CAMERA, apply_color, decode_jpeg_rgb  # noqa: E402
 from compare_real_sim_demos import Real, SimReplay  # noqa: E402
 
 OUT_JSON = os.path.join(_REPO, "real2sim", "deploy", "color_correction.json")
@@ -116,7 +116,7 @@ def main():
     reals = [Real(p) for p in sorted(glob.glob(f"{a.real_dir}/*.h5"))]
     assert len(reals) >= 2, "need >= 2 episodes (one is held out)"
     rp = SimReplay(a.S)
-    rects = {c: Rectifier(reals[0].K[c], reals[0].D[c], 1280, 720, a.S) for c in SIM_CAMERA}
+    rects = {c: Rectifier(reals[0].K[c], reals[0].D[c], 1280, 720, a.S, peg_fovy()[SIM_CAMERA[c]]) for c in SIM_CAMERA}
 
     per_ep = []
     for r in reals:

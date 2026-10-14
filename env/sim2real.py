@@ -138,6 +138,13 @@ class RealCameraConfig:
     fovy: float = 0.0               # 0 = leave the sim value alone
     fy: float = 0.0                 # pixels, from calibration
     res: int = 0                    # image height the fy was calibrated at
+    # REAL-side intrinsics: JSON {"K": 3x3, "D": [...], "size": [w, h]} that the
+    # real frames of THIS camera must be undistorted with, instead of the camera's
+    # factory camera_info. "" = factory. Relative paths resolve against the cell
+    # yaml. Read by the real side only (real2sim/deploy/preprocess.py
+    # camera_intrinsics: policy_server + scripts/convert_real_teleop.py); the sim
+    # never looks at it. The 2026-10-10 back-of-hand ZED-M needs it (factory D wrong).
+    real_intrinsics: str = ""
 
     def resolved_fovy(self) -> float:
         """0 => do not touch the camera's fovy."""
@@ -195,6 +202,14 @@ class Sim2RealConfig:
     #       would silently walk the robot.
     arena_from_real2sim: int = 0
     table_full_size: Optional[tuple] = None
+    # Extra height of the WORK SURFACE over table_above_base, metres: e.g. a board
+    # lying on the bench mat that real2sim measured (arena_from_real2sim takes the
+    # MAT height, shared with PegInsertion_D0, which has no board). Moves the
+    # collision table, the visual table and the reset distribution (table_offset)
+    # up together; the robot and its cameras stay. Read it through
+    # work_surface_above_base(), never add it by hand. 0 = legacy.
+    # Threading 2026-10-10 cell: the white board top is ~9 mm above the mat.
+    table_top_dz: float = 0.0
     base_xy: Optional[tuple] = None
     # OBJECT LAYOUT on this bench, in BASE frame metres / degrees. None = keep the
     # task's own reset distribution (shifted by workspace_offset, the legacy path).
@@ -212,6 +227,24 @@ class Sim2RealConfig:
     layout_tripod_x: Optional[tuple] = None
     layout_tripod_y: Optional[tuple] = None
     layout_tripod_z_rot_deg: Optional[tuple] = None
+    # GRIPPER model, as robosuite's `gripper_types` (e.g. "Robotiq85Gripper").
+    # None = the task's default (the Panda hand). CONSTRUCTION-time, unlike every
+    # other field here: PixelRobosuite passes it to robosuite.make. The real cell
+    # carries a Robotiq 2F-85 since 2026-10-10.
+    # ⚠️ Not a visual swap: Robotiq85 has 6 gripper joints vs the Panda's 2, so
+    # robot0_gripper_qpos (prop, state) grows 2 -> 6, and the grip site / TCP
+    # depth moves. Every expert, demo set and stage-1 built on the Panda hand is
+    # incompatible with a cell that sets this.
+    gripper_types: Optional[str] = None
+    # Mount of the gripper on robot0_right_hand: yaw about the hand z axis (deg)
+    # and an offset along it (m), applied to the gripper's root body. 0/0 = the
+    # robosuite mount (byte-for-byte legacy). robosuite bolts the gripper to
+    # robot0_right_hand, which sits 45.03 deg about z from the FR3 flange (iron law
+    # #27); the real Robotiq is bolted square to the FLANGE through a coupling.
+    # Fitted 2026-10-11 to the run_1010_2327 wrist photos (finger-mask IoU 0.196 at
+    # 0/0 -> 0.86 at 45.03 deg / +7 mm). Moves grip_site too, i.e. the TCP.
+    gripper_mount_yaw_deg: float = 0.0
+    gripper_mount_z: float = 0.0
     # Robot reset joint configuration (7 arm joints, rad). None = robosuite's
     # default, which was designed for a table 112 mm BELOW the base: on the
     # measured cell (table 20.7 mm ABOVE) it leaves the grip site only 78 mm over
@@ -236,6 +269,21 @@ class Sim2RealConfig:
     # real scene camera). Rendering white over the whole surface would put white
     # where the real cell has a green mat.
     table_visual_offset: tuple = (0.0, 0.0)
+    # ⚠️ Until 2026-10-11 table_visual_offset NEVER REACHED THE RENDER. The geom
+    # compiles with geom_sameframe=1 (it sits at its body's origin), so MuJoCo's
+    # kinematics copies the body pose and ignores geom_pos/geom_quat: every frame
+    # ever rendered from a cell with a non-zero offset shows the board centred on
+    # the COLLISION table (base (0.489, 0.034)), not where the yaml says.
+    # The fix is opt-in so those datasets keep matching their configs:
+    #   0 = legacy (offset written to geom_pos but inert; yaw must be 0)
+    #   1 = clear geom_sameframe, so table_visual_offset/_yaw_deg really move it.
+    table_visual_apply_pose: int = 0
+    # Yaw of the VISUAL table about the table-frame z axis, degrees (about its own
+    # centre); needs table_visual_apply_pose=1. The white board is placed by hand
+    # and is not square to the robot base (2026-10-11 photo fit: 0.76 deg); with an
+    # axis-aligned box the edge misfit is ~2 px at 1280x720. Visual only: the
+    # collision table stays axis-aligned.
+    table_visual_yaw_deg: float = 0.0
     # The arena's four steel table legs. They were invisible while the visual
     # table was a 5 m plane; with the table cut down to the real white board they
     # show up as two grey pillars that have no counterpart in the real cell (an
@@ -343,6 +391,15 @@ class Sim2RealConfig:
     dr_background_image: str = ""
     dr_background_floor: int = 1        # also repaint the floor texture
     dr_base_height: float = 0.0         # +- metres on the robot base z
+    # 1 = cameras with frame "base" follow the RANDOMISED base pose (the camera is
+    # calibrated against the base, so base<->table error moves the camera with the
+    # robot: dr_base_height then IS a table-height DR in the image too).
+    # 0 = legacy: they were placed off the base pose from BEFORE this episode's
+    # base DR (body_xpos not yet recomputed), i.e. fixed in the world/table frame
+    # while the robot moved -- the base DR never reached the scene image and
+    # instead jittered camera<->robot by up to ~20 mm. Before 2026-10-11 every
+    # cell ran with 0.
+    cam_follow_base_dr: int = 0
     # Residual base<->table misregistration (docs/infra.md §14a R1-R3). All of
     # them perturb the ROBOT BASE pose, never the table: what matters physically
     # is the relative pose, and tilting the table would unseat objects already
@@ -382,6 +439,12 @@ class Sim2RealConfig:
             self.dr_cam_fovy_deg, self.any_base_dr(), self.any_peg_dr(),
             bool(self.dr_background_image)])
 
+    def work_surface_above_base(self) -> Optional[float]:
+        """Height of the surface the objects sit on, above the base origin."""
+        if self.table_above_base is None:
+            return None
+        return float(self.table_above_base) + float(self.table_top_dz)
+
     def any_base_dr(self) -> bool:
         """True when the robot base pose is randomised (the OSC must re-latch)."""
         return bool(self.enabled) and any([
@@ -410,7 +473,7 @@ def table_offset_for(cfg: Sim2RealConfig, base_world_z: float) -> Optional[np.nd
     free. Returns None when the height is not being matched."""
     if not cfg.enabled or cfg.table_above_base is None:
         return None
-    return np.array([0.0, 0.0, float(base_world_z) + float(cfg.table_above_base)])
+    return np.array([0.0, 0.0, float(base_world_z) + cfg.work_surface_above_base()])
 
 
 def apply_cell_arena(env, cfg: Sim2RealConfig) -> None:
@@ -679,6 +742,13 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
             gp = m.geom_pos[gid].copy()
             m.geom_pos[gid] = np.array([float(cfg.table_visual_offset[0]),
                                         float(cfg.table_visual_offset[1]), gp[2]])
+        if cfg.table_visual_yaw_deg:
+            assert cfg.table_visual_apply_pose, (
+                "table_visual_yaw_deg is inert without table_visual_apply_pose=1")
+            h = np.radians(float(cfg.table_visual_yaw_deg)) / 2
+            m.geom_quat[gid] = np.array([np.cos(h), 0.0, 0.0, np.sin(h)])
+        if cfg.table_visual_apply_pose:
+            m.geom_sameframe[gid] = 0     # else geom_pos/geom_quat are ignored
         if cfg.table_rgb is not None:
             rgb = np.asarray(cfg.table_rgb, dtype=np.float64)
             if cfg.dr_table_rgb_tint:
@@ -694,6 +764,17 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
             if nm.startswith("table_leg") and nm.endswith("_visual"):
                 rgba = m.geom_rgba[gi].copy(); rgba[3] = 0.0
                 m.geom_rgba[gi] = rgba
+
+    if cfg.gripper_mount_yaw_deg or cfg.gripper_mount_z:
+        hid = _body_id(m, "robot0_right_hand")
+        roots = [b for b in range(m.nbody) if int(m.body_parentid[b]) == hid
+                 and (m.body_id2name(b) or "").startswith("gripper0_")]
+        assert len(roots) == 1, f"sim2real: gripper root under robot0_right_hand: {roots}"
+        h = np.radians(float(cfg.gripper_mount_yaw_deg)) / 2
+        # absolute, not incremental: the root sits at the hand origin with identity
+        # quat in every robosuite gripper, so this stays idempotent across resets
+        m.body_pos[roots[0]] = np.array([0.0, 0.0, float(cfg.gripper_mount_z)])
+        m.body_quat[roots[0]] = np.array([np.cos(h), 0.0, 0.0, np.sin(h)])
 
     # ---- task objects ------------------------------------------------------
     if cfg.object_rgb is not None:
@@ -902,6 +983,8 @@ def apply_sim2real(env, cfg: Sim2RealConfig, rng=None, nominal: Optional[dict] =
                 m.body_quat[bid] = mat2quat_wxyz(Rz @ quat_wxyz2mat(q0))
 
     # ---- cameras -----------------------------------------------------------
+    if cfg.cam_follow_base_dr and cfg.any_base_dr():
+        sim.forward()                 # body_xpos of the base as moved above
     for cam in cfg.cameras:
         if cam.is_inert():
             continue
@@ -1288,6 +1371,12 @@ def load_sim2real(path) -> Sim2RealConfig:
     for i, c in enumerate(raw.pop("cameras", []) or []):
         unknown = set(c) - set(RealCameraConfig.__dataclass_fields__)
         assert not unknown, f"{path}: cameras[{i}] has unknown keys {sorted(unknown)}"
+        if c.get("real_intrinsics") and not os.path.isabs(c["real_intrinsics"]):
+            c = dict(c, real_intrinsics=os.path.join(
+                os.path.dirname(os.path.abspath(path)), c["real_intrinsics"]))
+        if c.get("real_intrinsics"):
+            assert os.path.exists(c["real_intrinsics"]), (
+                f"{path}: cameras[{i}].real_intrinsics {c['real_intrinsics']} not found")
         cams.append(RealCameraConfig(**{
             k: (tuple(v) if isinstance(v, list) else v) for k, v in c.items()}))
 

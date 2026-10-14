@@ -88,6 +88,9 @@ class Square_RealCell(Square_D0):
         return self._cell_cache
 
     def _table_top_z(self):
+        # Square's pegs are arena geometry at fixed world z (docs/infra.md §15b):
+        # raising the work surface would bury them without an error.
+        assert not self._cell().table_top_dz, "Square_RealCell does not support table_top_dz"
         return _ASSUMED_BASE_Z + float(self._cell().table_above_base)
 
     # ---------------------------------------------------------------- layout

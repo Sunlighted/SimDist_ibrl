@@ -1,0 +1,1154 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2027_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{caption}      % for \captionof inside minipage
+\usepackage{subcaption}   % for \subcaptionbox / subfigure
+\usepackage{pifont}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{wrapfig}
+\usepackage{xspace}
+\newcommand{\ph}[1]{\textcolor{gray}{#1}}  
+\newcommand{\CMSCALE}{0.85}
+\newcommand{\NOSCALE}{0.78}
+\newcommand{\yes}{\scalebox{\CMSCALE}{\ding{51}}}
+\newcommand{\no}{\textcolor{black!35}{\scalebox{\NOSCALE}{\ding{55}}}}
+\newcommand{\na}{\textcolor{black!35}{---}}
+% placeholder numbers
+\newcommand{\pmsd}[1]{{\scriptsize\ensuremath{\pm}#1}}
+\newcommand{\twoknob}[2]{\begin{tabular}[c]{@{}l@{\quad}l@{}}#1 & #2\end{tabular}}
+\newlength{\taskpanelht}\setlength{\taskpanelht}{2.45cm}
+\newcommand{\taskpanel}[1]{%
+  \parbox[c][\taskpanelht][c]{\linewidth}{\centering
+    \IfFileExists{#1}%
+      {\includegraphics[width=\linewidth,height=\taskpanelht,keepaspectratio]{#1}}%
+      {\fboxsep2pt\fbox{\parbox[c][\dimexpr\taskpanelht-2\fboxsep-2\fboxrule\relax][c]%
+        {\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+        {\centering\scriptsize\textcolor{gray}{#1}}}}}}
+
+
+%%NR.09.24 "demystifying" or "delving into" are better than "rethinking", as rethinking might suggest that the authors of prior work didn't think hard enough (which may or may not be true but we don't want to say that)
+\title{Demystifying Cross-Domain Policy Adaptation with World Models}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+
+\author{Antiquus S.~Hippocampus, Natalia Cerebro \& Amelie P. Amygdale \thanks{ Use footnote for providing further information
+about author (webpage, alternative address)---\emph{not} for acknowledging
+funding agencies.  Funding acknowledgements go at the end of the paper.} \\
+Department of Computer Science\\
+Cranberry-Lemon University\\
+Pittsburgh, PA 15213, USA \\
+\texttt{\{hippo,brain,jen\}@cs.cranberry-lemon.edu} \\
+\And
+Ji Q. Ren \& Yevgeny LeNet \\
+Department of Computational Neuroscience \\
+University of the Witwatersrand \\
+Joburg, South Africa \\
+\texttt{\{robot,net\}@wits.ac.za} \\
+\AND
+Coauthor \\
+Affiliation \\
+Address \\
+\texttt{email}
+}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+\newcommand{\DomainADEPT}{\textsc{DomainADEPT}\xspace}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+Cross-domain policy adaptation seeks to reuse source-domain knowledge under dynamics shifts with limited target-domain interaction. Model-based methods address this problem by adapting source-pretrained world models, but their apparent sample-efficiency advantage may partly arise from value transfer: model-based methods often retain source-trained value functions, while model-free baselines learn critics from scratch. When we give model-free baselines the same source-trained critic, they initially adapt faster than their Dyna-style counterparts. Further analysis identifies that dynamics ensembles and prior-guided data collection jointly improve Dyna-style adaptation, allowing it to outperform the model-free baseline on average. Guided by these findings, we propose \DomainADEPT, which improves model-based planning both with a dynamics ensemble to improve its accuracy and with ``tethered'' proposal policy fine-tuning to limit policy drift during data collection. Across four contact-rich manipulation tasks and one locomotion task, \DomainADEPT achieves the highest average final performance among the evaluated methods under matched target-domain interaction budgets, improving average success by 25 percentage points over the strongest baseline.
+\end{abstract}
+
+\section{Introduction}
+\label{intro}
+Policies trained with reinforcement learning (RL) can suffer substantial performance degradation when deployed under dynamics that differ from those encountered during training~\citep{eysenbach2020off, liu2022dara}. Even when the task remains unchanged, differences in contact dynamics, friction, or actuator response can cause a previously successful policy to fail, particularly in contact-rich manipulation. Sim-to-real transfer is one important instance of this problem, where discrepancies between simulated and physical dynamics hinder deployment~\citep{tobin2017domain, peng2018sim, james2019sim, akkaya2019solving, andrychowicz2020learning}. We study cross-domain policy adaptation under such dynamics shifts: given abundant interaction in a source domain but only a limited interaction budget in a target domain, how can we best exploit source-domain knowledge to learn an effective target-domain policy?
+
+Existing approaches to addressing the dynamics gap, such as domain randomization~\citep{tobin2017domain, peng2018sim} and system identification~\citep{ramos2019bayessim, memmel2024asid}, rely on a specified parametric family of dynamics. When this family does not adequately capture the target domain, a mismatch remains that parameter tuning alone can not solve. Model-based adaptation addresses this limitation by fine-tuning a source-pretrained world model using limited target domain data, emerging as a promising paradigm for cross-domain policy adaptation~\citep{levy2026simulation}.
+
+Recent work has attributed the sample efficiency of model-based methods in part to their ability to adapt the world model using limited target domain data~\citep{wang2021domain, levy2026simulation, lanier2026adapting, yang2026rise}. However, these comparisons often differ in another important aspect. In latent model-based methods, the dynamics model and value function operate over a shared learned representation, allowing the source-trained value function to be retained while the dynamics are adapted to the target domain. Model-free baselines, in contrast, are often trained with critics from scratch. It is unclear how much of the observed performance gap is attributable to the world model and how much comes from the value transfer in model-based methods.
+
+In our work, we ask this question using a controlled sim-to-sim benchmark that isolates value transfer from world-model adaptation. We find that a substantial portion of the apparent sample-efficiency advantage of model-based adaptation comes from reusing the source value function, which model-free methods can also exploit. Initializing model-free baselines with the source critic allows them to adapt faster than their Dyna-style counterparts~\citep{sutton1991dyna, feinberg2018model}, suggesting that world models alone do not necessarily provide higher sample efficiency.
+
+We next evaluate when a world model provides additional benefits after controlling for value transfer. Our Dyna-style experiments highlight two complementary factors: dynamics accuracy and prior-guided data collection. Combining a dynamics ensemble with a preference for the source policy allows Dyna-style adaptation to outperform its model-free counterpart on average. Model-based planning offers another way to use the world model while retaining prior behavior through a proposal policy~\citep{hansen2022temporal, hansen2024td}. It has a strong initial adaptation rate, but adaptation slows or even plateaus in later stages. To identify what limits planner performance, we examine the value function, dynamics model, and proposal policy separately. We find that dynamics error is the main limiting factor, while the value-update methods we test consistently reduce performance. Fine-tuning the proposal policy on target demonstrations improves adaptation, with further gains from regularizing it toward the source policy.
+
+Based on these findings, we build \DomainADEPT: \textbf{Domain} \textbf{A}daptation with \textbf{D}ynamics \textbf{E}nsembles and \textbf{P}olicy \textbf{T}ethering. Following SimDist~\citep{levy2026simulation}, we transfer a source-pretrained world model while freezing the value head during adaptation. \DomainADEPT introduces two targeted modifications: (1) a dynamics ensemble to reduce predictive error, and (2) ``tethered'' policy fine-tuning, which incorporates target-domain information into the proposal policy while encouraging the planner to search regions supported by the training data of the dynamics and value functions. Under a unified interaction budget, \DomainADEPT adapts fastest and achieves the highest success rates across all tasks among all model-free and model-based baselines, reaching an average $70\%$ success rate with a budget of 50k transitions.
+
+To summarize, our contributions to the problem setting of learned control in the presence of dynamics gaps are as follows. (1) We disentangle value transfer from the world model and show that transferring the source critic substantially improves model-free adaptation, allowing it to outperform the unmodified Dyna-style method, highlighting value transfer as an important confound in model-based comparisons.
+(2) We show that dynamics ensembles and action sampling biased towards an adapted prior policy, i.e., obtained by fine-tuning the source policy on target-domain demonstrations, provide complementary benefits in Dyna-style adaptation.
+(3) We propose \DomainADEPT, which adds a dynamics ensemble and tethered proposal policy fine-tuning to model-based planning while leaving the value head frozen. Under the same target domain interaction budget, \DomainADEPT improves success by $25\%$ percentage points over SimDist~\citep{levy2026simulation}. 
+
+\section{Related Work}
+\label{relatedwork}
+
+\subsection{Off-dynamics and cross-domain policy adaptation}
+\label{sec:rela-sim2real}
+
+Cross-domain policy adaptation addresses transition mismatches between source and target domains while keeping the task unchanged. Domain randomization perturbs source-domain dynamics during training to produce robust policies~\citep{tobin2017domain, peng2018sim, tiboni2023dropo, tiboni2024domain}. Its effectiveness depends on the choice of randomization range: a broad range may include implausible configurations, while a narrow one may fail to cover the target dynamics. Another approach uses target-domain data to correct for dynamics mismatch. \citet{eysenbach2020off} use domain classifiers to modify rewards and penalize transitions that are inconsistent across domains. \citet{liu2022dara} and \citet{niu2022trust} apply related ideas to offline and hybrid offline-online RL. Other methods filter or reweight source-domain samples using value functions~\citep{xu2023cross} or learned representations~\citep{lyu2024cross}. Model-based adaptation instead updates a source- pretrained world model using limited target-domain data~\citep{yin2025rapidly, levy2026simulation}. Our work investigates what the world model contributes after controlling for value transfer and identifies the conditions under which it improves adaptation.
+
+
+% System identification estimates real-world parameters and rebuilds them inside the simulator~\citep{ramos2019bayessim, chebotar2019closing, memmel2024asid, xu2026deal}. However, phenomena such as contact transients, nonlinear friction, and actuator thermal effects cannot be easily captured by any fixed parameterization, so identification errors propagate directly into the transferred policy. An alternative is to adapt the policy directly through interaction in the real world~\citep{torne2024reconciling}. Sim-real co-training learns in both domains simultaneously but requires continuous real-world interaction~\citep{maddukuri2025sim, shi2026beyond}, and online correction relies on human intervention during execution~\citep{pmlr-v270-jiang25a}. Both are inapplicable under a bounded target budget without human supervision. Model-based adaptation avoids these constraints by pretraining a world model in simulation and spending only a small budget to correct the dynamics in the real world~\citep{yin2025rapidly, levy2026simulation}. This paper investigates what the world model contributes after controlling other components such as the value function, and identifies the conditions under which that contribution materializes.
+
+\subsection{Model-based reinforcement learning}
+\label{sec:mbrl}
+
+Model-based RL learns dynamics in a latent space and uses them for decision-making~\citep{atkeson1997comparison, oh2017value, ha2018recurrent, hafner2019learning, zhang2019solar, hafner2020mastering, hafner2023mastering, hansen2022temporal, hansen2024td, fujimoto2025towards}. They can be categorized into Dyna-style methods and model-based planning. Dyna-style methods generate imagined rollouts to augment the data for policy and value learning~\citep{sutton1991dyna, janner2019trust, feinberg2018model, buckman2018sample}. Model-based planning methods instead query the model at test time, using model predictive control (MPC) to search for the best action at each step~\citep{williams2015model, nagabandi2018neural, ebert2018visual, chua2018deep, lowrey2018plan, wang2019exploring, chang2026surprising}.
+These two approaches have not been systematically compared under dynamics shifts, particularly against model-free RL when the target interaction budget is limited.
+
+
+
+\section{Problem Formulation}
+\label{sec:preliminary}
+
+We model each domain as a Markov decision process (MDP) $\mathcal{M} = (\mathcal{S}, \mathcal{A}, p, r, \gamma, \rho_0)$ with state space $\mathcal{S}$, action space $\mathcal{A}$, transition kernel $p(s' | s, a)$, reward function $r$, discount $\gamma \in [0,1)$ and initial state distribution $\rho_0$~\citep{sutton1998reinforcement}. Among the components of this tuple, the transition kernel (environmental dynamics) $p$ encodes physics into the problem, including inertia, friction, contact stiffness and actuator response. The remaining components specify the task ($r$, $\gamma$, $\rho_0$) or the agent's interface to it ($\mathcal{S}$, $\mathcal{A}$). A policy $\pi(a | s)$ interacting with $p$ induces the discounted return $J_{p}(\pi) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^t r_t]$, the value functions $V^{\pi}_{p}(s) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^{t} r_t \,|\, s_0 = s], Q^{\pi}_{p}(s,a) = \mathbb{E}_{\pi,p}[\sum_{t\ge0} \gamma^{t} r_t \,|\, s_0 = s, a_0 = a]$. $\left(\mathcal{T}^\pi_{p}\,Q\right)(s,a) = r(s,a) + \gamma\,
+\mathbb{E}_{s' \sim p(\cdot \mid s,a)}\!\left[\,Q\!\left(s',
+\pi(s')\right)\right]$ is the Bellman operator under $p$.
+
+Our problem setting is to hold the task fixed and perturb only $p$. Following~\citet{kearns2002near, lobel2024optimal}, we instantiate two MDPs that share $(\mathcal{S}, \mathcal{A}, r, \gamma, \rho_0)$ and differ in their dynamics $p_s, p_t$. In a source domain with $p_s$, the interactions are cheap and unlimited, while a target domain with $p_t$ is sparse. Suppose we have access to the optimal policy $\pi_s^*$ and optimal value function under the environmental dynamics $p_s$. Since $\pi_s$ was optimized against $\mathcal{T}_{p_s}$ and the contact physics it presumes, executing it under $p_t$ generally incurs a performance drop: $\mathrm{gap}(\pi_s) = J_{p_s}(\pi_s) - J_{p_t}(\pi_s) > 0$, which we refer to as the dynamics gap. The goal is to obtain a near-optimal target policy $\pi^*_t$ by transferring the source policy and value function, using only a limited rollout budget in the target domain.
+
+We mainly compare three ways to leverage source domain data and consume target domain interaction data: (i) \textbf{Model-free value-based RL}: Off-policy RL methods can reuse data stored in their replay buffer. They fit the critic directly on collected transitions: $\min_{Q} \mathbb{E}_{\mathcal{D}} [ (Q(s,a) - r - \gamma \bar{Q}(s', \pi(s')))^2]$, where $\bar{Q}$ is the target value, and improve policy $\pi$ against it. (ii) \textbf{Dyna-style model-based RL}: Dyna-style methods additionally learn a dynamics model $\hat{p}_\theta(z' \mid z,a)$ in the latent space to generate data for RL training. They fit an approximate model $\hat{p}_\theta$ and use synthetic rollouts from $\hat{p}_\theta$ to supply extra transitions to the same value/policy update. (iii) \textbf{Model-based planning}: Model-based planning also learns a dynamics model $\hat{p}_\theta$ but uses it for action selection rather than for generating training data. The planner rolls out candidate action sequences, scores them using $\hat{r}_\phi$ and terminal value $\hat{V}_\omega$, and optimizes them with MPPI or CEM~\citep{williams2015model}. Candidates are initialized from a proposal policy $\hat{\pi}_\eta$, and only the first optimized action is executed.
+
+%%NR.09.24: This table appears too far from its first mention in hte text. Ideally, tables and figures show up on the same page that they're first mentioned.
+
+\section{Empirical Analysis of Bridging the Dynamics Gap}
+\label{empirical}
+
+To study adaptation under dynamics shifts, we establish a controlled benchmark across four contact-rich manipulation tasks from MimicGen~\citep{pmlr-v229-mandlekar23a} with sparse rewards. The source and target domains share the same task and success predicate but differ in selected physical parameters. This setup supports low-cost evaluation of running hundreds of episodes for different methods. Moreover, it keeps the state and visual features the same across domains, allowing us to focus on adaptation to the dynamics gap.
+
+To ensure a fair comparison of target domain adaptation efficiency, all methods can use source domain interaction to obtain their initial policies, while the target domain interaction budget is held fixed across methods. Each method is also provided with 20 demonstrations in the target domain collected by a scripted expert. We evaluate each method over at least 100 episodes and report the resulting success rate.
+
+\subsection{Model-Free vs. Model-Based Adaptation: Do World Models Necessarily Lead to Improvements?}
+\label{sec:mf-vs-mb}
+
+\begin{table*}[t]
+\centering
+\caption{%
+  % \textbf{Value transfer strengthens model-free adaptation, while Dyna-style adaptation requires both a preference margin and a dynamics ensemble to surpass it. Model-based planning adapts fastest early on but shows little further improvement afterward.} Each row is identified by which of the three components it carries: $Q_{\text{source}}$ = the source critic is transferred rather than learned from scratch, margin = a value threshold that the learned actor must exceed the prior policy in the IBRL argmax, dyn ens. = the dynamics ensemble. ``--'' marks a component that does not apply to that family. SR is the success rate at the matched adaptation budget of $50$k target transitions. $N_{n}$ is the target steps needed to first reach $n\%$ success, measured on runs deliberately continued to $300$k. ``$>$300k'' in those columns means the threshold is never reached even there. TPA is reported at $N_{20}$ because no run reaches $50\%$ on it. Cumulative success $\Sigma\,\text{SR}_{50k} = \sum_{t \in \{0, 10\text{k}, \dots, 50\text{k}\}} \text{SR}(t)$ sums the success rate over the six evaluations within the budget. Every run starts from a zero-shot
+  % policy and receives the same $20$ target demonstrations.
+ \textbf{Value transfer strengthens model-free adaptation, while Dyna-style adaptation requires both a preference margin and a dynamics ensemble to surpass it. Model-based planning adapts fastest initially but shows limited further improvement.} Rows indicate the included components: $Q_{\text{source}}$ = transferred source critic; margin = value threshold the IBRL actor must exceed; dyn. ens. = dynamics ensemble. ``--'' denotes inapplicable components. SR is success rate at the matched $50$k target-transition budget. $N_n$ is the target steps to first reach $n\%$ success, measured from runs continued to $300$k; `$>300$k'' indicates the threshold is never reached. TPA reports $N_{20}$ since no run reaches $50\%$. Cumulative success $\Sigma\,\text{SR}_{50k}=\sum_{t\in{0,10k,\dots,50k}}\text{SR}(t)$ sums success over six evaluations. All runs start from a source policy and use the same 20 target demonstrations.  
+}
+\label{tab:mf-vs-mb-budget}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{c ccc cc cc cc cc c}
+\toprule
+ID & \multicolumn{3}{c}{Component} & \multicolumn{2}{c}{Threading} & \multicolumn{2}{c}{Coffee}
+& \multicolumn{2}{c}{Square} & \multicolumn{2}{c}{TPA}
+& $\Sigma\,\text{SR}_{50k}\uparrow$ \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-8}\cmidrule(lr){9-10}\cmidrule(lr){11-12}\cmidrule(lr){13-13}
+& $Q_{\text{source}}$ & Margin & Dyn Ens.
+& $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
+& $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
+& $N_{50}/N_{80}\downarrow$ & SR$\uparrow$
+& $N_{20}\downarrow$ & SR$\uparrow$
+& (mean over tasks) \\
+\midrule
+\multicolumn{13}{l}{\emph{Model-free} (IBRL)}\\
+MF-1 & $\no$ & $\no$ & --
+& 175k/260k & 0.00 & 205k/$>$300k & 0.00 & 260k/$>$300k & 0.01 & $>$300k & 0.00 & 0.00 \\
+MF-2 & $\yes$ & $\no$ & --
+& 55k/90k & 0.48 & 90k/200k & 0.30 & 85k/190k & 0.29 & $>$300k & 0.02 & 0.83 \\
+MF-3 & $\yes$ & $\yes$ & --
+& 35k/80k & 0.67 & 65k/140k & 0.44 & 45k/155k & 0.51 & \textbf{250k} & 0.08 & 1.50 \\
+\midrule
+\multicolumn{13}{l}{\emph{Model-based: Dyna-style} (Dyna-IBRL)}\\
+DY-1 & $\yes$ & $\no$ & $\no$
+& 165k/$>$300k & 0.11 & $>$300k & 0.04 & 275k/$>$300k & 0.05 & $>$300k & 0.00 & 0.24 \\
+DY-2 & $\yes$ & $\no$ & $\yes$
+& 65k/120k & 0.28 & 200k/$>$300k & 0.04 & 105k/245k & 0.13 & $>$300k & 0.00 & 0.39 \\
+DY-3 & $\yes$ & $\yes$ & $\no$
+& 40k/120k & 0.58 & 70k/190k & 0.30 & 50k/160k & 0.52 & $>$300k & 0.01 & 1.43 \\
+DY-4 & $\yes$ & $\yes$ & $\yes$
+& 30k/\textbf{70k} & 0.71 & 50k/\textbf{135k} & 0.51 & 40k/\textbf{85k} & 0.60 & $>$300k & 0.01 & 1.80 \\
+\midrule
+\multicolumn{13}{l}{\emph{Model-based: planning} (SimDist)}\\
+PL-1 & $\yes$ & -- & $\no$
+& \textbf{5k}/90k & \textbf{0.76} & \textbf{15k}/$>$300k & \textbf{0.56} & \textbf{10k}/$>$300k & \textbf{0.67} & $>$300k & \textbf{0.15} & \textbf{2.86} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+We compare three approaches introduced in Sec.~\ref{sec:preliminary}. We first train an RL agent in the source domain to obtain a source expert policy $\pi_s^e$ and value function $Q_s^e$. For the model-free method, we use IBRL~\citep{hu2023imitation}, which fine-tunes the source expert on target demonstrations $\mathcal{D}_t$ as a prior $\mu$ and trains a critic $Q_\psi$ from scratch. The critic is used to perform action selection between the learned actor $\pi_\phi$ and the prior at each step. To make better use of the prior, we generalize this selection with a ``prior-preference margin'' $m \ge 0$: the actor's action is chosen only when the critic scores it higher than the prior's by more than $m$,
+\begin{equation}
+a^{m}_{\psi}(s) =
+\begin{cases}
+\pi_\phi(s), & Q_\psi\big(s,\pi_\phi(s)\big) > Q_\psi\big(s,\mu(s)\big) + m,\\[2pt]
+\mu(s), & \text{otherwise,}
+\end{cases}
+\label{eq:ibrl-margin}
+\end{equation}
+and original IBRL is recovered at $m=0$. This action selection occurs in two places, and the margin can be applied independently in each:
+\begin{equation}
+\underbrace{a_t = a^{m}_{\psi}(s_t)}_{\text{Rollouts}},
+\qquad
+\underbrace{y = r + \gamma\, Q_{\bar\psi}\!\big(s',\, a^{m}_{\bar\psi}(s')\big)}_{\text{TD target}}.
+\label{eq:ibrl}
+\end{equation}
+For the model-based approaches, we collect a diverse source-domain dataset $\mathcal{D}s^d$ using the source expert $\pi_s^e$ together with a set of sub-optimal policies $\{\pi_s^i\}_{i=1}^N$. This provides broader state-action coverage for world model training and allows both Dyna-style adaptation and model-based planning to start from the same pretrained world model.
+We use $\Theta=\{E_\xi, \hat p_\theta,\hat r_\phi, \hat v_\omega, \hat q_\psi, \pi_\eta\}$ to denote all trainable parameters of the encoder, dynamics, reward, value, Q-value, and policy heads. The world model is trained with value targets relabeled by the source expert $Q_s^e$:
+
+\begin{equation}
+\begin{aligned}
+\mathcal{L}(\Theta) = \sum_{i=0}^{H-1} \delta^{\,i} \Big[\;
+&\underbrace{\Vert{}\hat{z}_{t+i+1} - \text{sg}(E_\xi(s_{t+i+1}))\Vert{}_2^2}_{\text{Dynamics loss}}
+\;+\; \underbrace{c_1\, \ell(\hat{r}_{t+i},\, r_{t+i})}_{\text{Reward loss}} \\[3pt]
+&+\; \underbrace{c_2\, \ell\big(\hat{v}_{t+i+1},\; Q^{e}_{s}(s_{t+i+1},\pi_s^e(s_{t+i+1}))\big)}_{\text{Value loss}}
+\;+\; \underbrace{c_3\, \ell\big(\hat{q}_{t+i},\; Q^{e}_{s}(s_{t+i},a_{t+i})\big)}_{\text{Q-value loss}}\\[3pt]
+&+\; \underbrace{c_4\, \mathbb{I}_e(a_{t+i})\, \Vert{}\pi_\eta(\text{sg}(z_{t+i})) - a_{t+i}\Vert{}_2^2}_{\text{Policy (or Proposal Policy) loss}} 
+\;\Big],
+\end{aligned}
+\label{eq:simdist-distill}
+\end{equation}
+where $H$ is the rollout horizon, $\mathbb{I}_e(\cdot)$ indicates whether the action comes from the expert, $\ell$ denotes cross-entropy against a two-hot target obtained by linearly interpolating between the two nearest bins of a discretized scalar support~\citep{hansen2024td}, and $\delta=0.5$ discounts later rollout steps. After training, this world model is shared by both model-based variants so that the comparison isolates how the model is used rather than which model is used. Dyna-IBRL keeps training the dynamics and action-value heads while using the frozen policy head as the IBRL prior, then trains a separate actor against the critic. Planning follows SimDist~\citep{levy2026simulation}: it transfers the value head for online search and fine-tunes only the dynamics during adaptation.
+
+Tab.~\ref{tab:mf-vs-mb-budget} shows that model-based methods adapt faster than original IBRL under the default budget (DY-1 $>$ MF-1). Some prior work attributes this advantage to the ability of model-based methods to generate additional data through a world model, thereby improving sample efficiency~\citep{janner2019trust, lanier2026adapting}. However, this comparison also \emph{involves value transfer}. The world model carries a trained value function from the source domain, while IBRL initializes its critic from scratch. Any observed gap could be caused by the world model, the transferred value, or both. To separate them, we adapt IBRL to instead use a source expert critic $Q^e_s$ (denoted $Q_{\text{source}}$ in Tab.~\ref{tab:mf-vs-mb-budget}). This single change raises the IBRL's model-free approach cumulative success from 0 to 0.83, surpassing the basic Dyna-IBRL variant with the transferred source critic but without a margin or dynamics ensemble (MF-2 $>$ DY-1). Nonetheless, after controlling for value transfer, the best variant of model-based Dyna-style adaptation still leads (DY-4 $>$ MF-3). In the next section, we investigate what drives this residual advantage and under what conditions it emerges.
+%%NR.09.24: I don't think this next sentence is true. The "gap", as measured by AUC, is from 0 to 0.47. Adding Q_source takes AUC from 0 to 0.14, which is less than "most". Using the word "Most" generally means ">50%", and here 50% is roughly an AUC of 0.24. However, 0.14 is << 0.24! So 0.14 is very far from being able to be considered "most". I've left some comments about the table in particular, it's very hard to distill the takewaways from the table. This next sentence needs revised to clearly match up with what the table shows.
+% The experiment shows that most of that gap belongs to the transferred value function rather than to the learned dynamics.
+
+%%NR.09.24: Avoid two-sentence paragraphs, it's too short. Probably combine with previous.
+%%NR.09.24: This next sentence is hard to make sense of in light of what you said previously. Previously you said something along the lines of "we can surpass a world-model based method", and then here you're saying "if we add value transfer we can do best with a world model". I think you need to very clearly state the relevant performance ordering for the key takewaway(s). Is it something like (model-free without value transfer) < (model-based without value transfer) < (model-free with value transfer) < (model-based with value transfer) ? 
+
+\subsection{What Makes Dyna-style method Work: Accurate Dynamics and Prior-Guided Data Collection}
+\label{sec:two-conditions}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}[b]{0.41\textwidth}
+\centering
+\includegraphics[width=0.95\linewidth]{figs/ceiling_3task.pdf}
+\caption{%
+  \textbf{Adding action sampling biased towards the prior and a dynamics ensemble allows Dyna-style adaptation to realize the advantages of the world model.} We report the mean success rates across Threading, Coffee and Square (10 seeds each), where the orange and blue dashed lines represent the performance ceilings reached by the original SimDist and Dyna-IBRL at 200k steps.
+}
+\label{fig:ceiling}
+\end{minipage}\hfill
+\begin{minipage}[b]{0.56\textwidth}
+\centering
+\includegraphics[width=0.95\linewidth]{figs/value_dynamics_dumbbell.pdf}
+\caption{%
+  \textbf{Oracle dynamics enables high planning success on the target task while keeping the source value frozen.} We use the target simulation environment to replace the learned world model, called ``oracle dynamics''. The proposal policy is trained on ``src only'': the expert data from the source diverse dataset $\mathcal{D}_s^d$; ``trt only'': the 20 demonstrations collected from the target domain; ``src + trt'': the ``src only'' policy fine-tuned on 20 target demonstrations. $\hat V_{\text{source}}$ is the value trained with the world model, sharing latent space with the world model, and $V_{\text{target}}$ is trained with the target RL expert. The points in the figure illustrate the performance of planning under $\hat V_{\text{source}}$ or $V_{\text{target}}$ guidance.
+}
+\label{fig:oracle-dyn-diag}
+\end{minipage}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}[t]{0.453\textwidth}
+\captionsetup{type=table}
+\centering
+\caption{%
+  \textbf{The margin helps primarily through data collection rather than TD target construction.}
+  The prior-preference margin requires the RL actor's estimated value to exceed the prior's by at least $m$. It is applied in the channels marked $\yes$ and zeroed elsewhere. We report ``SR@50k'' as success rate at budget of 50k transitions on Threading. ``Win rate'' is the fraction of steps at which the RL actor wins the argmax, reported separately for collection and for the backup averaged at 0-50k steps.
+}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\resizebox{\linewidth}{!}{%
+\footnotesize
+\begin{tabular}{@{}cccccc@{}}
+\toprule
+\multicolumn{2}{c}{Margin applied in} & & & \multicolumn{2}{c}{Win rate} \\
+\cmidrule(lr){1-2}\cmidrule(lr){5-6}
+Rollouts & TD target & SR@50k & $N_{50}\downarrow$ & Collect & Backup \\
+  \midrule
+  $\yes$ & $\yes$ & 0.711 & 30k & 0.156 & 0.113 \\
+  $\yes$ & $\no$  & 0.733 & 35k & 0.116 & 0.815 \\
+  $\no$  & $\yes$ & 0.535 & 50k & 0.672 & 0.076 \\
+  $\no$  & $\no$  & 0.262 & 70k & 0.715 & 0.786 \\
+\bottomrule
+\end{tabular}}
+\label{tab:margin-channel}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.525\textwidth}
+\captionsetup{type=table}
+\centering
+\caption{%
+  \textbf{All tested value-update schedules reduce success relative to dynamics-only adaptation.} We report the mean target success rate at the end of the target budget for five schedules across 10 seeds: (i) only dynamics adapted for 100k steps (SimDist); (ii) joint value and dynamics adapted simultaneously for 100k steps; (iii) value $\rightarrow$
+  dynamics: after adapting value for 100k steps, adapt dynamics for 100k steps; (iv) dynamics $\rightarrow$ value: after adapting dynamics for 100k steps, adapt value for 100k steps; (v) marginal value: the value head nudged with a small residual instead of refit.
+  }
+\setlength{\tabcolsep}{3pt}
+\resizebox{\linewidth}{!}{%
+\footnotesize
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Schedule & Threading & Square & Coffee & TPA & mean \\
+\midrule
+Dynamics only
+  & \textbf{78.7} & \textbf{72.6} & \textbf{60.2} & \textbf{16.2} & \textbf{56.9} \\
+Joint adapt
+  & 0.0 & 2.5 & 0.0 & 0.0 & 0.6 \\
+Value $\to$ Dynamics
+  & 0.0 & 0.5 & 0.0 & 0.0 & 0.1 \\
+Dynamics $\to$ Value
+  & 0.3 & 0.0 & 4.0 & 0.0 & 1.1 \\
+Marginal value adapt
+  & 16.3 & 0.0 & 0.0 & 0.0 & 4.1 \\
+\bottomrule
+\end{tabular}}
+\label{tab:value-adapt}
+\end{minipage}
+\end{figure*}
+
+We first ask whether reducing dynamics error alone is sufficient to close the remaining gap between model-based and model-free adaptation. We replace the single dynamics model in Dyna-IBRL with an ensemble to improve predictive accuracy. However, even with this change, Dyna-IBRL still underperforms IBRL, especially early in adaptation (MF-2 $>$ DY-2). The variant without a margin in data and TD target in Tab.~\ref{tab:margin-channel} provides a clue to this behavior. Early in adaptation, Dyna-IBRL relies heavily on the newly initialized RL actor for both data collection and TD backup. As a result, imagined rollouts in the world model do not directly benefit from the prior actor during this stage and can instead slow down adaptation. This motivates us to introduce a preference margin $m$, which requires the learned actor to outperform the prior by at least $m$ before replacing it. After sweeping $m$ (see App.~\ref{sec:tuning}), we apply the margin to both data collection and TD target construction. Tab.~\ref{tab:margin-channel} further shows that its main benefit comes from controlling the data distribution rather than from modifying the bootstrap target: setting $m=0$ in the TD target alone has little effect, while removing it from target-environment interaction and imagined rollouts degrades performance and increases $N_{50}$ from 30k to 50k. These results indicate that maintaining sufficient reliance on the prior during early adaptation is important primarily because it keeps the collected and imagined data closer to the prior distribution. The comparison between ``IBRL + $Q_{\text{source}}$ + margin'' and ``Dyna-IBRL + margin + dyn ens.'' in Fig.~\ref{fig:ceiling} and Tab.~\ref{tab:mf-vs-mb-budget} (DY-4 $>$ MF-3) shows that only after combining two components does Dyna-IBRL outperform its model-free counterpart, revealing the benefit of the world model.
+
+The preference margin, however, is not sufficient for Dyna-IBRL to outperform IBRL. When the dynamics ensemble is removed, Dyna-IBRL still fails to outperform IBRL, as shown in Fig.~\ref{fig:ceiling} and Tab.~\ref{tab:mf-vs-mb-budget} (MF-3 $>$ DY-3). The dashed curves in Fig.~\ref{fig:ceiling} further show that Dyna-IBRL eventually plateaus at $80\%$, indicating that dynamics error limits its continued improvement even after the early-stage data-collection issue is addressed. We observe the same behavior in SimDist, where the performance of model-based planning also saturates under an inaccurate world model. These results show that model inaccuracy limits model-based adaptation: the margin improves how the model is used, but accurate dynamics are still required for imagined rollouts to provide useful learning signals.
+
+Taken together, these results show that the advantage of world-model-based adaptation depends on two complementary conditions. The margin keeps early data collection and bootstrapping sufficiently close to the prior, preventing a newly initialized actor from dominating adaptation before it becomes reliable. The dynamics ensemble, in turn, improves the accuracy of imagined rollouts and prevents model error from limiting later-stage performance. Neither component alone is sufficient: the margin without accurate dynamics leaves the model-error ceiling unchanged, while improved dynamics without the margin cannot fully benefit from the prior during early adaptation. Their combination is what allows Dyna-IBRL to surpass the corresponding model-free baseline.
+
+\subsection{What Factors Affect Model-Based Planning?}
+\label{sec:planner-adapt}
+
+Sec.~\ref{sec:two-conditions} identifies dynamics accuracy and prior-guided data collection as complementary factors in Dyna-style adaptation. We next ask whether these findings also govern model-based planning. Although SimDist achieves the highest cumulative success within the 50k interaction budget, it plateaus at a lower performance level than the strongest Dyna-style and model-free variants as the budget grows. We therefore examine which planner components account for SimDist's rapid early adaptation, which limits its later performance~\citep{levy2026simulation}.
+
+We focus on three components: the terminal value $\hat V_\theta$ that ranks candidate trajectories, the dynamics $\hat p_\theta$ that rolls them out, and the proposal policy $\pi_\theta$ that seeds them. We leave the reward head $\hat r_\theta$ unchanged because it carries no signal under sparse reward. Because these components share an encoder $E_\theta$, we freeze the remaining modules when adapting each component to isolate its effect under the same planning procedure.
+
+\begin{wrapfigure}{r}{0.33\textwidth}
+\vspace{-\baselineskip}
+\centering
+\includegraphics[width=\linewidth]{figs/threading_3arm.pdf}
+\caption{%
+  \textbf{Target demonstrations improve proposal initialization, and a regularization provides a further gain.} We report the mean target success rate average on Threading, Coffee and Square, with the planner's proposal policy (a) frozen at the source expert, (b) fine-tuned on the target demonstrations without regularization, and (c) fine-tuned with a regularization toward source policy.
+}
+\label{fig:policy-warmup}
+\vspace{-\baselineskip}
+\end{wrapfigure}
+
+Sec.~\ref{sec:mf-vs-mb} shows that transferring the source critic $Q^e_s$ provides a large gain for IBRL. Since source-target value gap still exist, adapting value to the target domain is a natural way to improve its performance. However, Tab.~\ref{tab:value-adapt} shows that every schedule we tried degrades performance: value first, dynamics first, the two jointly, and a deliberately marginal update interpolates toward the failure rather than avoiding it. Across the schedules, adapting the value head substantially reduces planner success relative to dynamics-only adaptation. These findings are consistent with those from SimDist~\citep{levy2026simulation}, suggesting that retaining the source value function is preferable to adapting it under our adaptation protocol.
+
+Moreover, we conducted a simple oracle experiment in Fig.~\ref{fig:oracle-dyn-diag} to demonstrate that the unadapted source-transferred value is sufficient to achieve high planning performance with an accurate dynamics model. Replacing the learned dynamics with the target simulator substantially improves success despite not adapting the source value or the proposal policy. Under oracle dynamics, using the target value provides no clear additional benefit.
+
+Regarding the proposal policy, Sec.~\ref{sec:two-conditions} suggests that it can affect planning performance by determining the distribution of candidate actions explored by the planner. Results in Fig.~\ref{fig:policy-warmup} show that target demonstrations improve over a frozen source proposal, while a direct update is less effective than an update regularized toward the source policy. This is consistent with the benefit of prior-guided data collection observed in Sec.~\ref{sec:two-conditions}. While the margin controls action selection during Dyna-style adaptation, the regularization before online planning encourages retention of source behavior while incorporating target demonstrations. Therefore, the planner will search regions supported by the source training data, reducing the risk of relying on dynamics and value predictions in unfamiliar regions. Further analysis is provided in App.~\ref{sec:failures}.
+
+\section{DomainADEPT: Domain Adaptation with Dynamics Ensembles and Policy Tethering}
+\label{sec:simadept}
+
+Sec.~\ref{sec:planner-adapt} motivates three design choices. First, the value should be kept. Second, dynamics error determines the performance ceiling, so reducing it is a direct way to raise final performance. Third, the proposal policy must incorporate target demonstrations while staying tethered to the source, so that the dynamics and the value remain valid in the region the planner actually searches. Our method, \DomainADEPT, applies two modifications to SimDist~\citep{levy2026simulation} by adding an ensemble for the dynamics and a ``tether'' on the proposal policy, and keeps freezing the value head.
+
+\paragraph{Plan-time dynamics ensemble.}
+The $K$ dynamics heads are pretrained in the source domain with independent initialization and independently resampled training subsets obtained using Bernoulli masks, then fine-tuned on collected target transitions. At plan time, the planner rolls out on the mean prediction $\bar{f}(z,a)=\frac{1}{K}\sum_i f_i(z,a)$ rather than on any single head. Ensemble-mean planning improves performance from $82\%$ to $96\%$ over the single-model variant on Threading (see Sec.~\ref{sec:ablation}), consistent with the hypothesis that more accurate dynamics predictions benefit adaptation. We also tested penalizing disagreement during planning and rewarding it during exploration, but neither produces a meaningful effect (App.~\ref{sec:tuning}).
+
+\paragraph{Tethered proposal policy fine-tuning.}
+An obvious way to give the proposal policy target information is to clone the target demonstrations. Due to the limited number and sparse distribution of demonstrations, directly fitting a policy on these data causes it to forget behaviors within the original dense distribution~\citep{jain2026smooth}. Meanwhile, since the planner generates actions by iteratively adding noise to actions sampled from proposals, a policy directly fine-tuned on a small target demonstration set may alter behavior on source states that remain useful for planning. This leads to sampling states where the value lacks supervision, ultimately resulting in inaccurate value estimation. On the other hand, directly using the policy distilled from the source leads to slower adaptation without target warmup, as we discuss in Sec.~\ref{sec:planner-adapt}. We therefore penalize deviations from the source policy on the source dataset while fitting the target demonstrations.
+\begin{equation}
+\mathcal{L}(\theta) \;=\;
+\underbrace{\mathbb{E}_{(s,a)\sim\mathcal{D}_t}\!\left[\lVert\pi_\theta(s)-a\rVert_2^2\right]}
+           _{\text{Behavior Cloning}}
+\;+\; \lambda \,
+\underbrace{\mathbb{E}_{s\sim\mathcal{D}^d_s}\!\left[
+  D\!\left(\pi_\theta(\cdot|s)\,\Vert\,\pi_s(\cdot|s)\right)\right]}
+           _{\text{Policy Tethering}},
+\label{eq:tether}
+\end{equation}
+where $\lambda$ is a hyperparameter, $\mathcal{D}^d_s$ is the source diverse dataset that the world model is trained on, and $\pi_s$ is the frozen policy trained on an expert subset of $\mathcal{D}^d_s$. We call this \emph{tethering} the proposal policy: it is free to move locally toward the target demonstrations, but is penalized for leaving the region on which the frozen dynamics and value heads were fitted. Here $D(\cdot\|\cdot)$ is a divergence between the adapted and source proposal policy distributions. We default to the squared $L_2$ distance $D = \lVert\pi_\theta(s) - \pi_s(s)\rVert_2^2$ and compare alternative choices in Sec.~\ref{sec:ablation}.
+
+The value and reward heads stay frozen at their source-distilled values throughout adaptation, and the encoder is frozen after source domain training. Beyond the fixed set of target demonstrations, it requires no target reward shaping, target expert, or access to $p_t$ at any point. All remaining architecture and optimization settings follow SimDist~\citep{levy2026simulation}.
+
+
+
+
+\section{Evaluations}
+
+
+We evaluate \DomainADEPT through experiments addressing three questions: (1) How does \DomainADEPT compare with existing adaptation methods under limited target interaction budgets? (2) How do dynamics ensembles and policy tethering contribute to adaptation performance? (3) How do the regularization formulation, reference actions, and state coverage affect policy tethering?
+
+\subsection{Cross-Domain Adaptation}
+\label{sec:sim2sim}
+
+\paragraph{Baselines.} We compare \DomainADEPT with six adaptation baselines. \textit{Model-free}: IBRL~\citep{hu2023imitation} uses critic-guided selection between prior and actor actions; RLPD~\citep{ball2023efficient} mixes demonstrations with online data; IQL~\citep{kostrikov2021offline} uses offline pretraining followed by online fine-tuning. \textit{Model-based}: Dyna-IBRL adds model-generated transitions to IBRL; Dyna-IBRL+SGFT~\citep{yin2025rapidly} additionally uses source-value reward relabeling; SimDist~\citep{levy2026simulation} is the framework underlying \DomainADEPT and our primary model-based baseline. We also report the domain-randomized source policy's zero-shot performance. See App.~\ref{app:baselines} for implementation details.
+
+We compare the methods on five tasks under a target-domain interaction budget of 50k steps per task, except for TPA, where we use 100k steps because its episodes are longer. Fig.~\ref{fig:main-sim2sim} reports performance throughout adaptation. \DomainADEPT adapt fastest and continues to improve within the allotted budget, reaching the highest average final success rate of approximately 70\%.
+
+\label{exp}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/main_sim2sim.pdf}
+\caption{%
+  \textbf{\DomainADEPT achieves the highest adaptation performance across the five evaluated tasks.} The grey dash-dotted line is the domain-randomized source baseline. Shading is $\pm 1$ standard deviation across 10 seeds, and each point is an independent re-evaluation over 100 episodes. The red dashed line marks approximately 100 episodes of interaction for each manipulation task.
+}
+\label{fig:main-sim2sim}
+\end{figure*}
+
+\subsection{Component Ablation}
+\label{sec:ablation}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}[t]{0.3\textwidth}
+  \vspace{0pt}
+  \centering
+  \includegraphics[width=0.98\linewidth]{figs/ablation1.pdf}
+  \captionof{figure}{%
+    % \textbf{Combining dynamics ensembles and policy tethering gives the best performance.} We ablate \DomainADEPT by removing the dynamics ensemble or the policy tethering on Threading, averaged over 10 seeds. SimDist = DomainADEPT w/o dynamics ensemble and policy tethering.
+    \textbf{Combining dynamics ensembles and policy tethering gives the best performance.} Recall that \DomainADEPT = SimDist with dynamics ensemble and policy tethering.    
+  }
+  \label{fig:ablation_fig}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.68\textwidth}
+    \vspace{0pt}
+    \centering
+    \captionof{table}{%
+      % \textbf{Variants of tethering formulation on Threading.} We compare regularization formulations, state coverage, and reference actions, reporting success rates after 50k target-domain transitions. The default regularizes policy outputs toward the source policy on the full source dataset. Other variants restrict states to successful expert trajectories or replace source-policy outputs with recorded dataset actions. Coefficients are calibrated to match the source-policy deviation $D_{\mathrm{src}}$ where possible. Results show means $\pm$ one standard deviation across seeds, with 100 episodes per evaluation.
+\textbf{Variants of tethering formulations on Threading.} We compare regularization formulations, state coverage, and reference actions after 50k target-domain transitions. The default regularizes outputs toward the source policy on the full source dataset; variants use successful expert states or recorded actions. Coefficients match source-policy deviation $D_{\mathrm{src}}$ where possible. Results show mean $\pm$ one standard deviation across seeds, with 100 evaluation episodes.      
+    }
+    \label{tab:ablation_table}
+    \vspace{4pt}
+    \footnotesize
+
+        \resizebox{0.95\linewidth}{!}{%
+      \begin{tabular}{@{}llcc@{}}
+      \toprule
+      Tether & Coefficient & $D_{\mathrm{src}}$ & SR (\%) @ 50k \\
+      \midrule
+      \multicolumn{4}{@{}l}{\emph{(i) Regularization formulations}}\\
+      \quad Squared $L_2$ / KL (default)
+                              & $\lambda{=}1$        & $0.025$ & \textbf{95.8} \pmsd{1.1} \\
+      \quad Saturating (Hellinger$^2$)
+                              & \twoknob{$\lambda{=}0.013$}{$\tau{=}0.03$} & $0.025$ & \textbf{96.0} \pmsd{1.4} \\
+        \quad Trust region, tight  & \twoknob{$\lambda{=}0.3$}{$\epsilon{=}0.05$} & $0.027$ & 93.6 \pmsd{3.1} \\
+        \quad Trust region, wide   & \twoknob{$\lambda{=}100$}{$\epsilon{=}0.20$} & $0.031$ & 82.9 \pmsd{5.9} \\
+        \quad Parameter-space $L_2$ & $\lambda{=}0.25$      & $0.025$ & 72.1 \pmsd{6.1} \\
+        \quad Weight decay          & $\mathrm{wd}{=}10^{-3}$ & $0.209$ & 77.7 \pmsd{8.7} \\
+      \addlinespace[2pt]
+      \multicolumn{4}{@{}l}{\emph{(ii) State coverage}}\\
+      \quad Expert\,$\wedge$\,Success
+                              & $\lambda{=}1$        & $0.026$ & 93.7\pmsd{3.7} \\
+      \addlinespace[2pt]
+      \multicolumn{4}{@{}l}{\emph{(iii) Reference actions}}\\
+      \quad Recorded dataset action
+                              & $\lambda{=}3$        & $0.154$ & 74.5 \pmsd{6.3} \\
+      \quad Recorded, Expert\,$\wedge$\,Success
+                              & $\lambda{=}30$       & $0.029$ & 78.7 \pmsd{6.0} \\
+      \bottomrule
+      \end{tabular}%
+    }
+  \end{minipage}
+\end{figure*}
+To answer the Question (2), we ablate the two core components, i.e., the dynamics ensemble and policy tethering, of \DomainADEPT by removing each in turn (Fig.~\ref{fig:ablation_fig}). Tethering provides a substantial improvement at initialization, while the ensemble further improves performance both before and during online adaptation. The combined method achieves the highest performance over the evaluated budget.
+
+\subsection{Policy Tethering Design Choice}
+
+To answer the Question (3), we compare different tethering designs in Tab.~\ref{tab:ablation_table}. We tune their coefficients to match the source-policy deviation $D_{\mathrm{src}}$ where possible (App.~\ref{app:tether}). Squared $L_2$, the saturating penalty, and the tight hinge achieve similar success rates ($95.8\%$, $96.0\%$, and $93.6\%$). A wider hinge performs worse ($82.9\%$), as does parameter-space $L_2$ ($72.1\%$). These results demonstrate that regularizing policy outputs performs better than regularizing policy parameters.
+%
+The choice of reference actions also matters. Using source-policy outputs on only expert-success states still achieves $93.7\%$, close to the default $95.8\%$. Replacing these outputs with recorded actions reduces success to $78.7\%$ on the same subset and $74.5\%$ on the full dataset. These results support using the source policy's output as the target. Broader coverage in the tethering dataset provides an additional performance gain and is required to achieve the best performance.
+
+
+\section{conclusion}
+\label{sec:conclusion}
+
+In our paper, we show that value transfer is an important factor in comparing model-free and model-based adaptation. Our experiments highlight the complementary benefits of dynamics accuracy and prior-guided data collection, motivating \DomainADEPT: dynamics ensembles and tethered proposal fine-tuning with a frozen source value. \DomainADEPT improves adaptation under limited target interaction budgets, demonstrating the benefit of selectively adapting transferred components.
+
+\bibliography{iclr2027_conference}
+\bibliographystyle{iclr2027_conference}
+
+\newpage
+
+\appendix
+
+\section{Extended Related Work}
+\label{app:extended-rw}
+
+\subsection{Additional approaches to cross-domain adaptation}
+
+System identification fits a parameterized dynamics model using target-domain observations~\citep{ramos2019bayessim, chebotar2019closing, memmel2024asid, xu2026deal}. Its effectiveness depends on the chosen parameterization: effects such as contact transients and nonlinear friction may remain difficult to capture, leaving residual errors that affect policy transfer. Other approaches adapt policies through target domain interaction~\citep{torne2024reconciling}, jointly train on source and target domain data~\citep{maddukuri2025sim, shi2026beyond}, or use human corrections during execution~\citep{pmlr-v270-jiang25a}. These approaches differ in how they obtain and use target domain information. Our study focuses on adaptation with a fixed set of target demonstrations and a limited online interaction budget, investigating the contribution of world models after controlling for value transfer.
+
+\subsection{Model error, ensembles and disagreement}
+\label{app:rw-ensemble}
+
+Many prior works have studied how to address inaccuracies in learned dynamics models use bootstrap resampling in model ensembles to decorrelate individual models~\citep{abbeel2006using}. \citet{lakshminarayanan2017simple}, while using the ensemble mean as a low-variance predictor to improve training stability~\citep{kurutach2018model}. This property of ensemble models is a key component on which \DomainADEPT relies. In addition, some methods use the uncertainty of ensemble models as a penalty to constrain learning to regions where the model is reliable~\citep{kidambi2020morel, yu2020mopo, yu2021combo}. Other methods instead use such uncertainty as an intrinsic reward to guide exploration, encouraging more learning in regions with larger model errors to reduce their impact~\citep{pathak2019self, shyam2019model, sekar2020planning}.
+
+We experimented with both strategies but did not observe significant improvements (see Sec.~\ref{sec:tuning}). One plausible explanation is that the tether mechanism already restricts the planner to regions covered by the source dynamics model. As a result, there is little room for pessimistic penalties to take effect, while exploration bonuses also have limited contribution.
+
+
+\section{Environmental details}
+
+\begin{figure*}[h]
+\centering
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_threading_init.png}\caption{Threading}\label{fig:env-threading}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_square_init.png}\caption{Square}\label{fig:env-square}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_coffee_init.png}\caption{Coffee}\label{fig:env-coffee}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_tpa_init.png}\caption{TPA}\label{fig:env-tpa}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.19\textwidth}\centering
+  \taskpanel{figs/task_locomotion.jpg}\caption{Locomotion}\label{fig:env-loco}
+\end{subfigure}
+\caption{%
+  \textbf{The five evaluation environments.} Four contact-rich manipulation
+  tasks from MimicGen and one locomotion task from IsaacLab.
+}
+\label{fig:envs}
+\end{figure*}
+
+We use four contact-rich manipulation tasks from MimicGen~\citep{pmlr-v229-mandlekar23a}, including Threading, Square, Coffee and ThreePieceAssembly, and one locomotion task from IsaacLab~\citep{NVIDIA_Isaac_Sim}. The four manipulation tasks share one shift mechanism (multiplicative changes to physical parameters), and the locomotion task instead changes terrain geometry. All five are simulated, which is what lets us run several hundred evaluation episodes per condition and, more importantly, run the same controller with the ground-truth target dynamics in place of the learned model (the oracle-dynamics in Sec.~\ref{sec:planner-adapt}).
+
+Each task gives us a source domain and a target domain. The source domain is the nominal simulator as shipped. The target domain is the same simulator with a fixed perturbation applied to its physical parameters: we scale object mass and inertia, the sliding friction of the manipulated object and of the fixture it must be inserted into, the stiffness of the gripper actuator, and the geometric clearance of the insertion. The task, the assets, the observation space and the success predicate are untouched. This is a deliberate choice: because the two domains differ only in physics, a policy that fails after transfer fails for a dynamics reason and not because it is looking at a different scene or being scored by a different rule.
+
+Two consequences of that choice are worth stating explicitly. First, the success predicate is a fixed geometric tolerance on the object pose and is not re-derived from the perturbed model, so shrinking an insertion clearance makes the task physically harder without redefining the success condition. Second, the object's initial pose is drawn from the same distribution in both domains, so the gap is not a perception or registration problem.
+
+Table~\ref{tab:app-targets} lists the perturbation for each manipulation task. Every entry is a multiplicative scale on the corresponding field of the MuJoCo model, so $1.0$ means unchanged. The scales were chosen per task to produce a drop such that the frozen source expert loses most of its success rate in the target domain, while a policy trained directly in the target domain can still solve the task, which is what makes the remaining gap attributable to adaptation rather than to task difficulty.
+
+\begin{table}[h]
+\centering
+\caption{Target-domain physical perturbations. Values are multiplicative scales
+on the nominal simulator ($1.0$ = unchanged; --- = not applicable to
+that task). ``fixture friction'' and ``clearance'' refer to the part the object is inserted into the ring for Threading, the peg for Square, the pod holder for Coffee, and the base hole for ThreePieceAssembly. $\sigma$ is the standard
+deviation of a Gaussian perturbation added to the robot's initial joint
+configuration, applied identically in both domains. \textsuperscript{$\dagger$}For Square the scale is applied to the peg rather
+than to the hole, so a value \emph{above} one shrinks the clearance; the effect
+is the same as the sub-one scales elsewhere in that row.}
+\label{tab:app-targets}
+\small
+\begin{tabular}{lcccc}
+\toprule
+ & Threading & Square & Coffee & ThreePiece \\
+\midrule
+object mass \& inertia      & $3.0$   & $1.0$     & $8.0$   & $1.0$     \\
+object friction             & $0.5$   & $1.0$    & $0.2$   & $1.0$     \\
+fixture friction            & $2.0$   & $2.0$   & $5.0$   & $2.0$   \\
+insertion clearance         & $0.85$  & $1.2$\textsuperscript{$\dagger$} & $1.0$ & $0.96$ \\
+gripper stiffness           & $0.2$  & $0.3$   & $0.3$   & $0.25$  \\
+lid hinge damping           & ---     & ---     & $5.0$   & ---     \\
+\midrule
+episode length              & $400$   & $400$   & $400$   & $1000$  \\
+initial-pose noise $\sigma$ & $0.1$   & $0.1$   & $0.1$   & $0$     \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The locomotion environment is a Unitree Go2 quadruped walking under a velocity command in IsaacLab~\citep{NVIDIA_Isaac_Sim}. The policy observes a 35-dimensional proprioceptive vector (base linear and angular velocity, projected gravity, joint positions and velocities, the previous action, and a cosine/sine gait phase) together with a 315-point height scan of the terrain under the robot, and outputs 12 joint position targets at 50Hz. Episodes last 1000 control steps and terminate early on a base collision or on the trunk tipping past its orientation limit.Unlike manipulation's sparse reward, Go2's locomotion task utilizes a dense reward function that continuously evaluates tracking performance, gait shaping, smooth control, and survival into a single cumulative score per episode.
+
+ The shift is geometric rather than parametric: the source domain is flat ground, and the target domain replaces it with a field of boxes at difficulty $0.7$ (box height and spacing grow with difficulty), leaving the robot, the command distribution, the observation space, the reward and every contact parameter unchanged. What changes is the contact sequence the gait has to survive: on flat ground foot touchdown is predictable from the joint state alone, while on boxes the touchdown height varies per foot and per step, and it is visible to the policy only through the height scan. This is the locomotion counterpart of the manipulation shifts --- the same task scored the same way, failing for a dynamics reason.
+
+Target-domain demonstrations come from a PPO expert trained under domain
+randomization with privileged observations (terrain friction, added base mass and actuator properties, none of which the distilled model sees). The expert still walks on the target terrain where the distilled policy falls, which is what makes it usable as a demonstrator. Each seed draws 20 expert episodes from 20 distinct box layouts; evaluation uses five further layouts, disjoint from both the demonstration layouts and the layout the online phase trains on, so nothing is scored on a layout it was fit to.
+
+\begin{table}[h]
+\centering
+\caption{Locomotion source and target domains. The shift is terrain geometry. Every contact and actuator parameter is identical in the two domains. Terrain difficulty interpolates box height and spacing. Layout seeds index the procedural terrain generator: demonstrations, online training and evaluation use disjoint sets, so no reported number comes from a layout that was fit to.}
+\label{tab:app-target-loco}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & Source & Target \\
+\midrule
+terrain                     & flat      & boxes \\
+terrain difficulty          & $0.4$     & $0.7$ \\
+foot friction               & $0.8$     & $0.8$ \\
+restitution                 & $0.05$    & $0.05$ \\
+added base mass (kg)        & $0$       & $0$ \\
+\midrule
+observation (proprio + height scan) & \multicolumn{2}{c}{$35 + 315$} \\
+action (joint position targets)     & \multicolumn{2}{c}{$12$} \\
+command (forward velocity, m/s)     & \multicolumn{2}{c}{$0.5$} \\
+episode length (steps)              & \multicolumn{2}{c}{$1000$} \\
+metric                              & \multicolumn{2}{c}{survival rate} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Method details}
+
+\subsection{Algorithm}
+
+\DomainADEPT runs in three stages. Stage~1 happens entirely in the source domain and is paid for once. Stages~2 and 3 are the adaptation proper and are the only parts that consume the target budget.
+
+\paragraph{Stage 1: source domain world model pretraining.}
+We first train an IBRL agent to convergence in the source domain, which gives us an expert policy $\pi_s^e$ and its critic $Q_s^e$. We then roll out that expert together with a set of weaker checkpoints $\{\pi_s^i\}^N_{i=1}$ saved along its training curve, and collect a large replay of source trajectories. We then distill this replay into a latent world model with five heads: an encoder, a dynamics head, a reward head, a state value head and a state-action head. In parallel, a policy head is trained separately on expert demonstrations via behavior cloning. All of them are trained jointly with the multi-step loss of Eq.~\ref{eq:simdist-distill}. The value targets are relabeled by the frozen source critic, so the value head learns $V^{\pi_s^e}$ rather than a return estimate from sparse rewards.
+
+Two details are important. The dynamics head is an ensemble of $K$ heads that share the encoder but are independently initialized and trained on independent bootstrap subsets of each batch, so they disagree off the data manifold. And the gradient of the policy-cloning term is stopped before it reaches the encoder, so the policy cannot reshape the latent space that the dynamics depends on.
+
+\paragraph{Stage 2: warm up the proposal policy on target demonstrations, tethered to the source.}
+We use the $20$ target demonstrations and no target interaction. We fine-tune only the policy head, minimizing the behavior cloning loss plus the tether penalty of Eq.~\ref{eq:tether}. The encoder, the dynamics, the reward and the value heads are all frozen.
+
+\paragraph{Stage 3: target domain dynamics adaptation.}
+We alternate collection and dynamics fitting in rounds. In each round the agent acts in the target domain with the MPPI planner for a fixed number of transitions, appends them to a replay buffer, and then takes a number of gradient steps on the dynamics heads only, using the same latent-consistency loss as stage~1, restricted to the dynamics term. The encoder, the reward head, the value head and the policy head all stay frozen for the entire stage.
+
+\begin{algorithm}[h]
+\caption{DoaminADEPT}
+\label{alg:simoaed}
+\begin{algorithmic}[1]
+\Require source domain $\mathcal{M}_s$, target domain $\mathcal{M}_t$,
+         target demonstrations $\mathcal{D}_t$, budget $N$,
+         dynamics ensemble number $K$
+\Statex $\#$ Stage 1: source distillation
+\State train an RL expert $(\pi_s^e, Q_s^e)$ in $\mathcal{M}_s$
+\State collect diverse dataset $\mathcal{D}_s^d$ with $\pi_s^e$ and weaker checkpoints $\{\pi_s^i\}_{i=1}^N$ of it
+\State distill $\{E_\theta, \hat p_\theta^{1..K}, \hat r_\theta, \hat V_\theta, \pi_\theta\}$
+       on $\mathcal{D}_s$ with Eq.~\ref{eq:simdist-distill}; relabel values with $Q_s$
+\Statex $\#$ Stage 2: proposal policy warm-up
+\State fine-tune $\pi_\theta$ only, on $\mathcal{D}_t$ with the tethering on $\mathcal{D}_s^d$ (Eq.~\ref{eq:tether})
+\Statex $\#$ Stage 3: dynamics adapt
+\State $\mathcal{R} \gets \mathcal{D}_t$; \; $i \gets 0$
+\While{$i < N$}
+  \State collect $m$ transitions in $\mathcal{M}_t$ with MPPI, ensemble-mean rollout; append to $\mathcal{R}$; \; $i \gets i + m$
+  \State take $u$ gradient steps on $\hat p_\theta^{1..K}$ only, latent-consistency
+         loss on $\mathcal{R}$ \Comment{$E_\theta, \hat r_\theta, \hat V_\theta, \pi_\theta$ frozen}
+\EndWhile
+\State \Return planner using $\{E_\theta, \hat p_\theta^{1..K}, \hat r_\theta, \hat V_\theta, \pi_\theta\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Model Structure}
+
+For tasks with state-based observations, the encoder maps the raw state to a $512$-dimensional latent normalized by SimNorm~\citep{hansen2024td} (softmax over groups of $8$), which prevents magnitude drift during multi-step rollouts. The dynamics module is an ensemble of $K$ MLP heads over this shared encoder, each predicting the next SimNorm'd latent; planning rolls out on their mean. The reward and value heads predict distributions over $101$ bins via two-hot cross-entropy rather than scalars, and the planner uses the expected value. The policy head maps the latent to an action with the cloning gradient stopped before the encoder. A decoder trained on detached encodings inverts the encoder for reconstruction but is not used by the planner in the default configuration.
+
+For pixel-based observations, we replace the state encoder with a visual encoder while keeping the latent space, dynamics ensemble, and reward, value, and policy heads unchanged. Each observation consists of two $224\times224$ RGB views, one third-person view and one wrist-camera view, together with the $9$-dimensional proprioceptive state. Object-state information is therefore inferred from vision. Each camera is processed by an ImageNet-pretrained ResNet-18, and the resulting visual features are concatenated with proprioception and projected into the same $512$-dimensional SimNorm latent space used in the state-based setting. We do not use an image decoder. During stage-1 training, the cloning loss is allowed to update the encoder at the first rollout step, while later rollout steps remain stop-gradient as in the state-based setting. We apply standard image augmentations, including random shifts, color jitter, blur, and proprioceptive noise, with augmentation parameters held fixed across each training sequence to preserve temporal consistency.
+
+\subsection{Hyperparameter}
+
+Table~\ref{tab:app-hparams} lists the hyperparameters. They are shared across all four
+manipulation tasks except for the planner's search parameters, which we re-tune
+per task, since we found them not to transfer, including between a learned and an
+oracle dynamics model, and we report the swept values in
+Table~\ref{tab:app-planner}.
+
+\begin{table}[h]
+\centering
+\caption{DoaminADEPT hyperparameters.}
+\label{tab:app-hparams}
+\small
+\begin{tabular}{llc}
+\toprule
+Stage & Parameter & Value \\
+\midrule
+\multirow{12}{*}{1 (distillation)}
+ & latent dimension & $512$ \\
+ & SimNorm group size & $8$ \\
+ & MLP hidden size / layers & $512$ / $2$ \\
+ & rollout horizon $H$ & $5$ \\
+ & per-step loss discount $\delta$ & $0.5$ \\
+ & dynamics ensemble size $K$ & $5$ \\
+ & reward/value bins, range & $101$, $[-10, 10]$ \\
+ & loss weights (dyn.\ / rew.\ / val.\ / BC ) & $20$ / $0.1$ / $0.1$ / $10$ \\
+ & learning rate & $3\times10^{-4}$ \\
+ & batch size & $256$ \\
+ & gradient steps & $800$k \\
+ & source replay size & $\sim$$55$k episodes \\
+\midrule
+\multirow{4}{*}{2 (proposal policy warm-up)}
+ & target demonstrations $n$ & $20$ \\
+ & gradient steps & $1000$ \\
+ & learning rate, batch size & $3\times10^{-4}$, $256$ \\
+ & tether strength $\lambda$ & \{$0.1$, $1.0$, $3.0$, $10$\} \\
+\midrule
+\multirow{4}{*}{3 (dynamics adapt)}
+ & target budget $N$ & $50/100$k transitions \\
+ & transitions per round $m$ & $1000$ \\
+ & dynamics steps per round $u$ & $1000$ \\
+ & learning rate, batch size & $3\times10^{-4}$, $256$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{MPPI search parameters. \texttt{init\_std} and the base-policy noise
+were re-swept per task; the remaining entries are the same everywhere.}
+\label{tab:app-planner}
+\small
+\begin{tabular}{lc}
+\toprule
+Parameter & Value \\
+\midrule
+candidate sequences per iteration & $350$ ($100$ from the proposal policy, $250$ random) \\
+planning horizon & $5$ \\
+CEM iterations & $3$ \\
+elites & $64$ \\
+softmax temperature & $0.4$ \\
+discount & $0.99$ \\
+initial std / minimum std & \{$0.15$, $1.0$\} / $0.05$ \\
+base-policy noise std & \{$0.01$, $0.1$\} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Baseline details}
+\label{app:baselines}
+
+\paragraph{IBRL.}
+IBRL is our model-free reference. Following \citet{hu2023imitation}, a behaviour-cloning prior $\mu$ is obtained by fine-tuning the source expert on the target demonstrations and then frozen. An actor $\pi_\phi$ and a twin critic $Q_\psi$ are trained online with TD3-style updates, and at every step the executed action is the critic's argmax over the two candidates $\{\pi_\phi(s), \mu(s)\}$ (Eq.~\ref{eq:ibrl}). The same argmax is used inside the Bellman backup, so the prior bootstraps the value function rather than only performing as an actor. The demonstrations are kept in a frozen half of the replay buffer like RLPD~\citep{ball2023efficient}, so every minibatch is half demonstration data and half online data throughout training.
+
+We report three variants, which differ in exactly one thing each:
+\begin{itemize}
+\item \textbf{IBRL}: the original method, and the critic is initialized from scratch.
+\item \textbf{IBRL + source critic}: the critic is initialized from the source expert's critic $Q_s$ instead. 
+\item \textbf{IBRL + source critic + margin}: additionally requires the learned actor to beat the prior by a margin $m$ before it is executed: 
+\begin{equation}
+a(s) = \begin{cases}
+\pi_\phi(s) & \text{if } Q_\psi(s,\,\pi_\phi(s)) > Q_\psi(s,\,\mu(s)) + m, \\
+\mu(s) & \text{otherwise}.
+\end{cases}
+\label{eq:ibrl-margin}
+\end{equation}
+\end{itemize}
+
+\paragraph{Dyna-IBRL.}
+The model-based counterpart to IBRL, and it isolates how a world model is used. It shares the same distilled world model, the same frozen prior from the same warm-up with our method and differs only in what happens during stage~3. Instead of planning with the model at decision time, it uses the model as a data generator: each round it branches imagined rollouts from real latents, adds them to a synthetic buffer, and trains an actor and a $Q(z,a)$ head on a mixture of real and imagined transitions. Imagination is carried out entirely in latent space rather than decoding to states and re-encoding, because that round trip is not the identity and it will increase the error ~\citep{hafner2020mastering}. Concretely, from each real latent $z_t = E_\theta(s_t)$ in the replay buffer, the model branches $H$-step imagined trajectories:
+\begin{equation}
+\hat{z}_{t+k+1} = f_\theta(\hat{z}_{t+k},\, \hat{a}_{t+k}), \quad
+\hat{a}_{t+k} = a_\psi(\hat{z}_{t+k}), \quad k = 0, \ldots, H{-}1,
+\label{eq:dyna-imagination}
+\end{equation}
+where $a_\psi$ is the IBRL argmax of Eq.~\ref{eq:ibrl-margin}. The imagined transitions are added to a synthetic buffer, and the actor and critic are trained on a mixture of real and imagined data.
+
+\paragraph{SGFT.}
+Simulation-guided fine-tuning \citep{yin2025rapidly} transfers the source value function as a dense reward instead of as a critic initialization, because the source value already encodes the long-horizon structure of the task, so the target-domain run only has to correct behaviour over a short horizon. We implement the potential-based form used in the \citet{yin2025rapidly} implementation, which
+makes it a simple change from Dyna-IBRL: the reward entering the critic's Bellman backup is relabeled, and the critic is reinitialized. Writing $\Phi(z)=\hat{V}_\theta(z)$ as the trained source value function, the reward is relabeled as
+\begin{equation}
+\tilde{r}_t \;=\; r_t \;+\; \alpha\big(\gamma\,(1-d_t)\,\Phi(z_{t+1}) \;-\; \Phi(z_t)\big),
+\qquad \Phi(z) = \hat{V}_\theta(z),
+\label{eq:sgft-shaping}
+\end{equation}
+where $\alpha$ is the shaping weight and $d_t$ is the terminal flag. Because the shaping is potential-based, the optimal target policy is unchanged~\citep{ng1999policy}. It only redistributes the sparse terminal reward across the trajectory, which a $0/1$ signal with $\gamma=0.99$ would otherwise propagate very slowly over an episode. The effect on the critic is equivalent to warm-starting it at $\alpha\hat{V}_\theta$~\citep{wiewiora2003potential}, so the Bellman target clamp must be shifted from $[0,1]$ to $[-\alpha, 1]$ to avoid truncating the shaped values. 
+\paragraph{RLPD.}
+An off-policy method designed to learn efficiently from a mixture of offline and online data \citep{ball2023efficient}. Following the original recipe, we sample every minibatch half offline and half online, and keep others the same as in IBRL. The offline buffer is the union of a large set of source rollouts and the $20$ target demonstrations, merged into a single prior dataset. This gives RLPD more offline data than any other baseline. The critic is updated on the mixed batch:
+\begin{equation}
+\mathcal{L}(Q) = \tfrac{1}{2}\,
+\mathbb{E}_{(s,a,r,s')\sim\mathcal{D}_{\text{off}}}\!\big[(Q(s,a) - y)^2\big]
++ \tfrac{1}{2}\,
+\mathbb{E}_{(s,a,r,s')\sim\mathcal{D}_{\text{on}}}\!\big[(Q(s,a) - y)^2\big],
+\quad y = r + \gamma\,\bar{Q}(s',\pi(s')).
+\label{eq:rlpd}
+\end{equation}
+
+\paragraph{IQL.}
+An offline RL method \citep{kostrikov2021offline} is used here as a warm start, followed by online fine-tuning. We first run IQL offline on source rollouts plus the target demonstrations. The value function is fit by expectile regression to avoid querying out-of-distribution actions:
+\begin{equation}
+\mathcal{L}(V) = \mathbb{E}_{(s,a)\sim\mathcal{D}}\!\Big[
+\lvert\tau - \mathbf{1}(Q(s,a) - V(s) < 0)\rvert\,
+\big(Q(s,a) - V(s)\big)^2\Big],
+\label{eq:iql-value}
+\end{equation}
+where $\tau \in (0,1)$ is the expectile. The policy is then extracted by advantage-weighted regression:
+\begin{equation}
+\mathcal{L}(\pi) = \mathbb{E}_{(s,a)\sim\mathcal{D}}\!\Big[
+\exp\!\big(\beta\,(Q(s,a) - V(s))\big)\,
+\lVert\pi(s) - a\rVert_2^2\Big].
+\label{eq:iql-policy}
+\end{equation}
+The resulting actor and critic then initialize an online run with the same budget and environment as others.
+
+\begin{table}[h]
+\centering
+\caption{\textbf{Baseline hyperparameters.} The upper block is shared by every online methods. The lower blocks give what is specific to each method. \{\} means chooses the best parameter for each task.}
+\label{tab:app-baselines}
+\small
+\begin{tabular}{ll}
+\toprule
+\multicolumn{2}{l}{\emph{Shared by all baselines}} \\
+\midrule
+warm-up episodes (counted against the budget) & $30$ \\
+batch size                        & $256$ \\
+learning rate                     & $3{\times}10^{-4}$ \\
+discount $\gamma$                 & $0.99$ \\
+critics (clipped double-$Q$)      & $2$ \\
+critic updates per environment step & $5$ \\
+actor update frequency            & every $2$ critic updates \\
+$n$-step return                   & $3$ \\
+exploration noise std             & $0.1$ \\
+demonstration fraction per batch  & $0.5$ \\
+target-network rate $\tau$        & $0.01$ \\
+\midrule
+\multicolumn{2}{l}{\emph{IBRL}} \\
+\midrule
+prior-preference margin $m$       & $0$ / $0.01$ (two variants) \\
+\midrule
+\multicolumn{2}{l}{\emph{Dyna-IBRL}} \\
+\midrule
+imagined transitions per round    & $20$k \\
+imagination rollout length        & $\{1,3,5\}$ \\
+synthetic buffer size             & $100$k \\
+real fraction per batch           & $0.5$ \\
+actor updates per round           & $500$ \\
+critic updates per round          & $5000$ \\
+collection noise std              & $0.1$ \\
+target-policy smoothing std / clip & $0.1$ / $0.3$ \\
+TD-target clamp                   & $[0,\,1]$ \\
+\midrule
+\multicolumn{2}{l}{\textit{Dyna-IBRL $+$ SGFT}} \\
+\midrule
+shaping weight $\alpha$           & \{$0.5$, $1.0$, $2.0$\}  \\
+TD-target clamp                   & $[-\alpha,\,1]$ \\
+\midrule
+\multicolumn{2}{l}{\emph{IQL} (offline warm start, then online)} \\
+\midrule
+expectile $\tau_{\text{exp}}$     & $0.9$ \\
+offline critic steps              & $80$k \\
+offline actor steps               & $20$k \\
+weighting temperature $\beta$ & $3.0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Computational cost}
+\label{app:compute}
+
+All cross-domain adaptation experiments were run on a workstation with four RTX Pro 6000 Blackwell GPUs (96GB each). The control loop runs at $20$Hz, giving a $50$ms budget per step. \DomainADEPT's p95 latency uses about $40\%$ of this budget in both the state and pixel settings. It is about $14\times$ slower than an MLP policy in the state setting, but the absolute latency remains small relative to the control period. Table~\ref{tab:app-inference-latency} is the value used in our analysis.
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Single-step inference latency.} Timing includes copying one
+  observation from CPU to GPU, computing the action, and copying the action back
+  to CPU. Each planner configuration was run three times on each of two GPUs,
+  for $1000$ steps per run after discarding the first $50$ warm-up steps. MPPI
+  uses the paper setting: $350$ candidates, $3$ iterations, horizon $H=5$, and
+  $64$ elites.}
+\label{tab:app-inference-latency}
+\small
+\begin{tabular}{lcc}
+\toprule
+Method & median (ms) & p95 (ms) \\
+\midrule
+\DomainADEPT, state, MPPI $K=5$ & $11.7$ & $20.2$ \\
+SimDist, state, MPPI $K=1$ & $4.8$ & $9.5$ \\
+Policy head only, state & $0.86$ & $1.6$ \\
+\DomainADEPT, pixel ResNet-18@$224$, MPPI $K=5$ & $13.5$ & $22.3$ \\
+SimDist, pixel ResNet-18@$224$, MPPI $K=1$ & $6.5$ & $11.6$ \\
+Pixel policy head only & $1.8$ & $3.7$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{%
+  \textbf{Where MPPI time is spent.} Each block
+  varies one parameter while holding the others at the default planner setting. Median latency is reported in milliseconds.}
+\label{tab:app-mppi-breakdown}
+\small
+\begin{tabular}{ll}
+\toprule
+Sweep & median latency (ms) \\
+\midrule
+Candidates: $100$, $350$, $1000$, $3000$, $10000$
+  & $11.2$, $11.5$, $18.6$, $47$, $153$ \\
+Iterations: $1$, $3$, $6$, $12$
+  & $5.7$, $11.4$, $21.8$, $40.0$ \\
+Horizon: $1$, $3$, $5$, $8$
+  & $3.1$, $7.3$, $11.4$, $17.9$ \\
+Dynamics heads $K$: $1$, $2$, $3$, $5$
+  & $4.8$, $6.5$, $8.3$, $12.2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The planner is cheap in width and expensive in depth. Increasing the number of candidate sequences from $100$ to $350$ is almost free at batch size $1$. In contrast, the number of MPPI iterations and the rollout horizon scale almost linearly. The ensemble size also scales nearly linearly, adding about $1.8$ms per additional head in the current implementation, because \texttt{next\_all} evaluates heads
+serially in Python. This is an implementation cost rather than an algorithmic requirement. We can reduce this by batching the heads or capturing the rollout in a CUDA graph.
+
+\subsection{Tether variants}
+\label{app:tether}
+
+We define the nine variants compared in Tab.~\ref{tab:ablation_table} and state the calibration protocol that makes them comparable.
+
+Every variant is an instance of
+\begin{equation}
+\mathcal{L}_{\mathrm{tether}}(\theta) \;=\; \lambda\,
+\mathbb{E}_{s\sim\mathcal{D}}\Big[\,
+g\big(\lVert M\,(\pi_\theta(s)-\pi_{\mathrm{ref}}(s))\rVert_2\big)\Big],
+\label{eq:tether-general}
+\end{equation}
+which exposes exactly four free positions: the shape $g$ of the penalty, the state distribution $\mathcal{D}$ on which proximity is measured, the metric $M$ on action space, and the reference $\pi_{\mathrm{ref}}$ the proposal policy is pulled towards. The deployed setting is $g(x)=x^2$, $\mathcal{D}=\mathcal{D}^d_s$, $M=I$ and $\pi_{\mathrm{ref}}=\pi_s$. Block~(i) of Tab.~\ref{tab:ablation_table} varies $g$ and $M$, block~(ii) varies $\mathcal{D}$, and block~(iii) varies $\pi_{\mathrm{ref}}$.
+
+The policy head is a deterministic $\tanh$-MLP, so the only way to define a divergence between $\pi_\theta$ and $\pi_s$ is to lift both to $\mathcal{N}(\pi(s),\sigma^2 I)$ with a constant $\sigma$. Writing $d = \lVert\pi_\theta(s)-\pi_s(s)\rVert_2$, every standard divergence between two equal-covariance Gaussians is a function of $d$ alone:
+\begin{equation}
+\mathrm{KL} = \frac{d^2}{2\sigma^2},\quad
+W_2^2 = d^2,\quad
+H^2 = 1-e^{-d^2/8\sigma^2},\quad
+\mathrm{TV} = 2\Phi\!\Big(\frac{d}{2\sigma}\Big)-1,\quad
+\chi^2 = e^{d^2/\sigma^2}-1,
+\label{eq:divergences}
+\end{equation}
+where $\Phi$ the standard normal CDF (Cumulative Distribution Function). For small updates ($d \ll \sigma$), all five share the identical leading-order Taylor expansion $\mathcal{O}(d^2/\sigma^2)$, so constant differences are fully absorbed by re-tuning the scalar multiplier $\lambda$. Crucially, when deviations grow comparable to or exceed $\sigma$, these divergences do not span arbitrary behaviors. Instead, their growth rates relative to $d^2$ partition into three qualitative regimes, and our ablation picks the canonical, numerically stable representative for each:
+
+\paragraph{(i) Penalty shape $g(d)$ across curvature regimes.}
+Let $d(s) = \lVert \pi_\theta(s)-\pi_s(s)\rVert_2$.
+\begin{itemize}
+\item \textbf{Quadratic / Elastic ($\mathrm{KL}$, $W_2^2$, default):} $g(x) = x^2$, yielding $\lambda\,\mathbb{E}_s[d(s)^2]$. Because $\mathrm{KL}$ and $W_2^2$ differ by only a scalar constant $1/(2\sigma^2)$, they are identical algorithms under hyperparameter tuning. We label this merged baseline squared $L_2$ / KL. It makes every state a restoring force strictly proportional to its drift.
+\item \textbf{Sub-quadratic / Saturating ($H^2$, $\mathrm{TV}$):} $g(x) = 1 - e^{-x^2/\tau}$, exactly matching $H^2$ ($\tau = 8\sigma^2$). Both $H^2$ and $\mathrm{TV}$ plateau at an upper bound of $1$, effectively releasing far-drifted outlier states. We use smooth $H^2$, which is merely a monotonic reparametrization yielding redundant empirical behavior.
+\item \textbf{Super-quadratic / Threshold ($\chi^2$, Trust region):} $g(x) = \mathrm{relu}(x - \epsilon)^2$. While $\chi^2$ represents the super-quadratic class, its exponential term $e^{d^2/\sigma^2}$ produces unbounded gradients that cause numerical instability, conflating optimization failure with penalty shape. We instead instantiate this regime via a hinge trust region ($\epsilon = \sigma\sqrt{2\delta}$), cleanly capturing the TRPO~\citep{schulman2015trust} principle of ``zero penalty within a safety margin, quadratic penalty beyond it'' with well-behaved curvature.
+\end{itemize}
+\paragraph{(ii) Underlying metric $M$.}
+\begin{itemize}
+\item \textbf{Function-space Fisher metric (default):} For fixed $\sigma$, the Fisher information is $F = G/\sigma^2$, where $G$ is the Gauss--Newton matrix of policy outputs. This restricts updates strictly along directions that alter the output action distribution~\citep{hinton2015distilling, li2017learning}.
+\item \textbf{Parameter-space $L_2$:} $c\,\lVert\theta - \theta_s\rVert_2^2$, where $\theta_s$ is $\pi_s$'s parameter. This replaces $F$ with the isotropic identity metric $I$. Because policy representations contain substantial null spaces that do not affect output actions, an unweighted parameter penalty uniformly penalizes all directions, incurring substantial cloning overhead for the same behavioral proximity~\citep{kirkpatrick2017overcoming}.
+\item \textbf{Weight decay:} Standard Adam weight decay on the policy head shrinks weights toward $\theta = 0$ rather than $\theta_s$. This isolates generic capacity control from explicit behavioral anchoring.
+\end{itemize}
+
+\paragraph{(iii) The state distribution $\mathcal{D}$.}
+The deployed setting trains the policy over all states in $\mathcal{D}^d_s$, matching the training distribution of the world model. The variant restricts evaluations to the expert-and-success subset $\mathcal{D}^e_s$ on which $\pi_s$ was cloned, testing whether regularization must cover the full dynamics support or only the task manifold.
+
+\paragraph{(iv) The reference target $\pi_{\mathrm{ref}}$.}
+The deployed setting pulls towards the frozen policy $\pi_s(s)$ evaluated at $s$. The variants replace evaluations with the static actions stored in dataset transitions over either all of $\mathcal{D}^d_s$ or the expert-and-success subset $\mathcal{D}^e_s$. This tests whether interactive query access to $\pi_s$ is necessary or if offline dataset labels suffice.
+
+To fairly compare these variants, we calibrate $\lambda$ to make sure the coefficient provides comparable strength for them.
+Before the adaptation, we train the policy with different variants and sweep their $\lambda$ until it matches the default setting (Squared $L_2$ / KL, $\lambda=1$) on
+\begin{equation}
+D_{\mathrm{src}} \;=\; \frac{1}{d_a}\,
+\mathbb{E}_{s\sim\mathcal{D}^d_s}\big\lVert
+\pi_\theta(s)-\pi_s(s)\big\rVert_1 ,
+\label{eq:dsrc}
+\end{equation}
+with $d_a$ the action dimension. Adaptation is only run when $D_{\mathrm{src}}$ approximately matches the default, i.e., $0.025$. This results in a wide range of final strengths shown in Tab.~\ref{tab:ablation_table}. Weight decay and the unfiltered recorded actions cannot reach the working point at any strength and are reported at their attainable floor.
+
+
+\section{Supplementary experiments}
+
+\subsection{Failed attempts}
+\label{sec:failures}
+
+\begin{figure}[t]
+\centering
+\begin{minipage}[t]{0.635\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \includegraphics[width=\linewidth]{figs/negres_value_attempt.pdf}
+  \caption{%
+    \textbf{More experiments on improving value estimating and proposal policy.} Left: SimDist compared with value-aware model learning (VAML), a pessimistic value ensemble (VEns), and value calibration (VCalib). Right: proposal self-distillation and a stronger proposal trained on 500 target demonstrations, compared with SimDist with and without a dynamics ensemble using 20 demonstrations. Solid curves show planner success; dashed curves show proposal-only success.
+  }
+  \label{fig:planner-negres}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.34\linewidth}
+  \captionsetup{type=figure}
+  \centering
+  \includegraphics[width=\linewidth]{figs/margin_sweep.pdf}
+  \caption{%
+    \textbf{Margin sweep in Dyna-IBRL.} We compare Dyna-IBRL with prior-preference margins $m \in \{0, 0.01, 0.05, 0.1\}$ over 100k target interactions. The margin sets how much the learned actor must outperform the prior before it is selected over the prior.
+  }
+  \label{fig:margin-sweep}
+\end{minipage}
+\end{figure}
+
+In addition to dynamics ensembles and policy tethering, we explore several other ways to improve SimDist. Since planning in the sparse-reward setting relies primarily on the value function for decision making, an alternative to reducing dynamics-model error is to directly reduce value-estimation error, so that the value function can make more accurate predictions on imagined latent features produced by imperfect rollouts.
+
+Specifically, we investigate: (i) adapting the dynamics model through value estimation, namely Value-Aware Model Learning (VAML); (ii) penalizing value uncertainty using a pessimistic value ensemble; and (iii) reducing value-estimation error on imagined latent features through value calibration in imagined states. We also explored several improvements to the policy: (iv) training the proposal policy to imitate successful MPPI trajectories, thereby further improving proposal quality (Self-Distill); and (v) fine-tuning the proposal policy with additional demonstrations before adaptation (Strong Proposal).
+
+However, none of these attempts lead to effective adaptation. These results shown in Fig.~\ref{fig:planner-negres} suggest that the main performance bottleneck of model-based planning lies in the accuracy of the learned dynamics model, rather than in value estimation or candidate-action generation.
+
+
+\paragraph{(i) Value-aware model learning (VAML).}
+Since the planner only reads the dynamics through $\hat V_\theta$, errors of $f_\theta$ that leave the value unchanged are harmless to the ranking. Value-aware model learning~\citep{farahmand2017value, farahmand2018iterative, voelcker2025calibrated} therefore penalizes only the part of the model error that the value can see. We replace the dynamics training loss with
+\begin{equation}
+\mathcal{L}_{\text{VAML}}(f_\theta) \;=\; \mathbb{E}_{\mathcal{R}}
+\Big[\tfrac{1}{\sum_k \delta^k}\sum_{k=0}^{H-1} \delta^{k}\,
+\big(\hat V_\theta(\hat z_{t+k+1}) - \mathrm{sg}\,\hat V_\theta\big(E_\theta(s_{t+k+1})\big)\big)^2\Big],
+\end{equation}
+with $\hat V_\theta$ frozen, so gradients reach $f_\theta$ only through the value. Although VAML reduces value-estimation error, it increases the distance between the terminal latent state imagined by the model $\hat z_{t+H}$ and the terminal latent state obtained from actual environment rollouts $z_{t+H}$. This ultimately degrades the latent geometry on which planning relies to rank trajectories according to their value estimates.
+
+\paragraph{(ii) Value ensemble with pessimism (VEns).}
+Following MRS.Q~\citep{chang2026surprising}, we replace the value head by an ensemble of $N=10$ heads, each on an independent Bernoulli($0.5$) mask $m_i$ of every batch and with a frozen random prior function $p_i$ of scale $\beta=3$ to keep the members diverse:
+\begin{equation}
+\hat V_i(z) \;=\; g_i(z) + \beta\, p_i(z), \qquad
+\mathcal{L}_{V} \;=\; \tfrac{1}{N}\sum_{i=1}^{N}
+\mathbb{E}\big[m_i\, \ell\big(\hat V_i(z_{t}),\, Q^e_s(s_t, \pi^e_s(s_t))\big)\big],
+\end{equation}
+and the planner scores the terminal state pessimistically with
+$\hat V_{\min}(z) = \min_{i} \hat V_i(z)$ in place of $\hat V_\theta$. However, this pessimistic value-ensemble approach is effective only when the ensemble members disagree in their value estimates. In our setting, the dynamics gap changes $p(s' \mid s,a)$ but does not change the marginal state distribution $p(s)$. The level of disagreement on states from target-domain trajectories is nearly identical to that on corresponding states from the source domain ($0.0083$ v.s. $0.0078$), indicating that this method is ineffective during adaptation.
+
+
+\paragraph{(iii) Reducing the value error at the imagined state (VCalib).}
+The planner evaluates $\hat V_\theta$ at the imagined latent $\hat z_{t+H}$, not at the true one $z_{t+H}$, so its effective value error is $\varepsilon(s_t, a_{t:t+H}) = \hat V_\theta(\hat z_{t+H}) - \hat V_\theta(z_{t+H})$. In the oracle dynamics experiment, feeding the real $z_{t+H}$ to the same value head solves the task. Therefore, it is natural to calibrate the value to the imagined latent and remove $\varepsilon$. Each round, after the dynamics update, we regress the value head on real target segments from $\mathcal{R}$:
+\begin{equation}
+\min_{\hat V_\theta}\;
+\mathbb{E}_{(s_t,\,a_{t:t+H},\,s_{t+H})\sim\mathcal{R}}
+\Big[\ell\Big(\hat V_\theta\big(f^{H}_\theta(E_\theta(s_t), a_{t:t+H})\big),\;
+\hat V^{0}_\theta\big(E_\theta(s_{t+H})\big)\Big)\Big],
+\end{equation}
+where $f^H_\theta$ is the $H$-step latent rollout (no gradient) and $\hat V^0_\theta$ is a frozen copy of the source value head. The imagined-state error does go down, but the planner does not improve. This is because MPPI relies on value-based ranking, meaning that it is the relative value error across candidate trajectories that significantly affects MPPI. Value calibration helps reduce the absolute value error, but not the relative error between candidate trajectories.
+
+\paragraph{(iv) Self-distilling the planner into the proposal policy (Self-distill).}
+The planner is a policy-improvement operator on top of $\pi_\theta$, so its successful rollouts could serve as new demonstrations. Let $\mathcal{R}^{+}\subset\mathcal{R}$ be the transitions of successful target episodes, whose actions are the MPPI outputs. After the first $5$k transitions, each round trains on
+\begin{equation}
+\min_{\pi_\theta}\;
+\tfrac12\,\mathbb{E}_{(s,a)\sim\mathcal{D}_t}\big\Vert \pi_\theta(\mathrm{sg}(z)) - a\big\Vert_2^2
+\;+\; \tfrac12\,\mathbb{E}_{(s,a)\sim\mathcal{R}^{+}}\big\Vert \pi_\theta(\mathrm{sg}(z)) - a\big\Vert_2^2 ,
+\end{equation}
+where half of each batch drawn from $\mathcal{D}_t$ keeps the proposal policy from collapsing onto a few rollouts. The loop only clones successes, which already come from where the planner works well. However, this self-distillation strategy does not effectively improve the proposal policy. The dashed curve in the right panel of Fig.~\ref{fig:planner-negres} shows that the degraded performance of the proposal policy itself also negatively affects MPPI. To investigate whether a sufficiently strong proposal policy can improve adaptation, we conduct experiment (v).
+
+
+\paragraph{(v) More target demonstrations for the proposal policy (Strong proposal).}
+If the proposal policy were the bottleneck, a stronger proposal policy should raise the planner. We keep all other settings fixed and increase the target demonstration set from $20$ to $500$ episodes:
+\begin{equation}
+\min_{\pi_\theta}\;
+\mathbb{E}_{(s,a)\sim\mathcal{D}_t^{(500)}}
+\big\Vert \pi_\theta\big(\mathrm{sg}(E_\theta(s))\big) - a \big\Vert_2^2
+\qquad\text{instead of}\qquad \mathcal{D}_t^{(20)}.
+\end{equation}
+The number of BC steps is raised from $1$k to $8$k so that the larger set is actually fitted. The deep red dashed line in Fig.~\ref{fig:planner-negres} shows that the proposal policy does become stronger. Even so, SimDist with a dynamics ensemble matches its performance after adaptation with only 30k transitions. The former uses only 20 demonstrations and improves the proposal policy from an initial success rate of 38\% to 85\% through MPPI, while the latter improves an already strong proposal policy from 80\% to only 85\%. This suggests that fully realizing the potential of model-based planning does not depend on how strong the proposal policy is, but rather on the accuracy of the dynamics model.
+
+\subsection{Sweep experiments}
+\label{sec:tuning}
+
+\paragraph{Margin.} After sweeping $m$, we find $m=0.01$ is the best for IBRL adaptation, as it effectively uses the prior to warm up. As depicted in Fig.~\ref{fig:margin-sweep}, when $m$ is reduced (like $m=0$), the actor wins the argmax immediately, before the critic can meaningfully rank either candidate, and the policy needs more budget to learn to be optimal. When $m$ increases (like $m=0.1$), the actor never wins the argmax at any logging point, so the prior carries over every episode and little adaptation occurs, and policy performance improves slowly. 
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/lambda_tuning.pdf}
+\caption{%
+  \textbf{Lambda sweep on 4 manipulation tasks.} We sweep $\lambda \in \{0.1, 0.3, 1, 3, 10\}$ during proposal warm-up on Threading, Coffee, Square, and TPA, then evaluate adaptation over 50k target interactions.
+  Larger $\lambda$ penalizes deviations from the source policy more strongly.
+}
+\label{fig:tether-lambda}
+\end{figure*}
+
+\paragraph{Tether strength.} We analyze $\lambda \in \{0.1, 0.3, 1, 3, 10\}$ across four tasks and report the best-performing setting for each task in Fig.~\ref{fig:main-sim2sim}. Illustrated in Fig.~\ref{fig:tether-lambda}, we find that the optimal $\lambda$ varies across tasks. For manipulation tasks, the best values are mostly concentrated between $0.1$ and $1$, suggesting that when target-domain demonstrations are limited, a relatively weak tether often performs better. It also shows that the tether strength introduces a clear trade-off: a tether that is too weak, or no tether at all, performs worse, while a tether that is too strong, or directly fine-tuning on target-domain demonstrations, is also inferior to choosing an appropriate tether strength.
+
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.8\linewidth]{figs/optim_threading_sweeps_aligned.pdf}
+\caption{%
+  \textbf{Dynamics ensemble hyperparameters.} On Threading, we vary the exploration bonus coefficient
+  $c_{\mathrm{explore}}$ (left), the planning penalty coefficient
+  $\beta_{\mathrm{plan}}$ (middle), and the number of dynamics heads
+  (right).
+  The first two use ensemble disagreement to encourage exploration
+  or penalize uncertain plans, respectively.
+  All panels report success over 50k target interactions.
+}
+\label{fig:ensemble-sweeps}
+\end{figure*}
+
+\paragraph{Exploration optimism, Planning penalty and Dynamics ensemble number.} We test whether dynamics ensemble disagreement can guide exploration or improve planning. Let $J(\mathbf a)$ denote the original planner score for a candidate action sequence $\mathbf a$, and let $U(\mathbf a)$ denote its accumulated dynamics ensemble disagreement. Optimistic exploration rewards uncertain trajectories, while pessimistic planning penalizes them:
+\begin{equation}
+  J_{\mathrm{explore}}(\mathbf a) = J(\mathbf a) + c_{\mathrm{explore}} U(\mathbf a),
+  \qquad
+  J_{\mathrm{plan}}(\mathbf a) = J(\mathbf a) - \beta_{\mathrm{plan}} U(\mathbf a).
+\end{equation}
+The exploration bonus is used during target-data collection, while the planning penalty is applied when scoring candidate trajectories. Fig.~\ref{fig:ensemble-sweeps} compares these choices on Threading. Neither provides a clear improvement over setting its coefficient to zero. Increasing the dynamics ensemble from one to five heads improves success, while ten heads provide no further gain. We therefore use five dynamics heads without exploration bonuses or planning penalties.
+
+\subsection{Dynamics ensembles and candidate selection}
+\label{app:ensemble-ranking}
+
+We evaluate whether dynamics ensembles improve candidate selection in the target domain. We consider candidate action sequences near the proposal policy and compare their scores after model rollouts with their scores after true environment rollouts. Each model uses its own value head for both scores:
+\begin{equation}
+\hat v_i = \hat V(\hat z_H^{\,i}), \qquad
+v_i = \hat V(E(s_H^{\,i})),
+\end{equation}
+where $\hat z_H^{\,i}$ is the imagined terminal latent and $s_H^{\,i}$ is the true terminal state for candidate $i$. We report Spearman rank correlation $\delta$ between $\{\hat v_i\}$ and $\{v_i\}$, and normalized selection regret:
+\begin{equation}
+\frac{\mathrm{regret}}{\sigma}
+= \frac{\max_i v_i-v_{\hat i}}{\operatorname{Std}_i(v_i)},
+\qquad \hat i=\arg\max_i \hat v_i.
+\end{equation}
+Higher correlation and lower regret indicate better candidate selection. The reference scores $v_i$ are value estimates at true terminal states, not observed returns. These metrics measure how model rollouts affect candidate scores and they do not measure the accuracy of the value head itself.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Candidate selection with adapted dynamics models.}
+Ranking metrics use target-domain candidates near the proposal policy.
+The variants use one, three or five heads from different adapted checkpoint, keeping the rest unchanged. }
+\label{tab:ensemble-ranking}
+\begin{tabular}{ccc}
+\toprule
+Dynamics head number & Rank $\delta \uparrow$ & Regret$/\sigma \downarrow$ \\
+\midrule
+1 & 0.532 & 0.811 \\
+3 & 0.566 & 0.724 \\
+5 & 0.595 & 0.706 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Shown in Fig.~\ref{tab:ensemble-ranking}, using one, three, and five heads progressively improves both rank and regret, with smaller gains from three to five heads. This supports averaging multiple dynamics predictions to improve candidate selection. We limit the conclusion to candidates near the proposal policy. The ensemble still has substantial selection error, and these results do not imply oracle-level predictions. 
+
+\subsection{Visual experiment}
+
+We test \DomainADEPT and SimDist in pixel-based environment: Threading. As shown in Fig.~\ref{fig:pixel}, DomainADEPT consistently outperforms SimDist throughout training. DomainADEPT reaches a success rate of approximately 34\% after only 30k environment steps, exceeding the approximately 31\% achieved by SimDist at 100k steps. Its success rate peaks at approximately 46\% at 90k steps and remains higher than that of SimDist at the end of training (41\% versus 31\%). These results demonstrate that DomainADEPT achieves stronger performance with fewer environment interactions.
+
+\begin{wrapfigure}{r}{0.33\textwidth}
+\vspace{-\baselineskip}
+\centering
+\includegraphics[width=\linewidth]{figs/pixel_ladder.pdf}
+\caption{%
+  \textbf{Pixel experiment on Threading.} DomainADEPT consistently achieves higher success rates across the evaluated training steps, demonstrating improved sample efficiency. Shaded regions indicate variability.
+}
+\label{fig:pixel}
+\vspace{-\baselineskip}
+\end{wrapfigure}
+
+% \section{Preliminary Real-Robot Grasping Results}
+% \label{app:real-grasp}
+
+% \begin{wrapfigure}{r}{0.6\textwidth}
+% \centering
+% \begingroup
+% \setlength{\taskpanelht}{3.1cm}
+
+% \begin{minipage}[t]{0.36\linewidth}\centering
+%   \parbox[c][\taskpanelht][c]{\linewidth}{\centering
+%     \includegraphics[
+%       width=\linewidth,
+%       height=\taskpanelht,
+%       keepaspectratio
+%     ]{figs/square_real.pdf}}
+% \end{minipage}\hfill
+% \begin{minipage}[t]{0.3\linewidth}\centering
+%   \taskpanel{figs/robot_sim.png}
+% \end{minipage}\hfill
+% \begin{minipage}[t]{0.3\linewidth}\centering
+%   \taskpanel{figs/real.jpg}
+% \end{minipage}
+
+% \endgroup
+% \caption{%
+%   \textbf{Threading on the real robot [Now it's a placeholder].}
+%   \emph{Left:} the task in simulation.
+%   \emph{Middle:} the same task on the real robot.
+%   \emph{Right:} success rate against the number of target episodes consumed.
+%   The policy is updated every $10$ episodes and each point is an evaluation over $50$ trials. The grey dash-dotted line is the zero-shot simulation expert.
+% }
+% \label{fig:square-real}
+% \end{wrapfigure}
+
+% To evaluate whether \DomainADEPT transfers effectively to a real robot, we conduct experiments on a physical Franka Research 3 robot. We use two ZED cameras: a global camera ZED 2i that captures scene-level information and a wrist camera ZED mini that provides local observations. The simulation environment is constructed in MuJoCo using a Real-to-Sim pipeline. We reproduce the real setup as closely as possible by matching the lighting conditions, camera viewpoints, object appearance, table size and color, while randomizing factors such as the background, illumination, and object positions to improve the robustness of visual learning. The goal is to minimize the visual sim-to-real gap as much as possible so that the experiments can focus primarily on the dynamics gap.
+
+% % We first train a state-based RL policy in simulation to collect a diverse dataset, which is then used to train the visual policy and world model. We subsequently collect 20 demonstrations in the real environment to fine-tune the policy before performing online adaptation. Consistent with the sim-to-sim results, \DomainADEPT adapts faster than both SimDist and the model-free baselines in the sim-to-real setting. It reaches a success rate of $y$ using only $z$ real-world training trajectories, outperforming SimDist by $x$.
+
+% We report grasp success separately from full-task completion. No full-task successes wereobserved in the evaluated trials, so these results provide only a preliminary assessment of the grasping stage.
+
+\section{Limitation and Future Work}
+
+First, our analysis focuses on adaptation to dynamics shifts under a limited interaction budget, primarily in sparse-reward manipulation tasks. The controlled cross-domain setting allows us to separate value transfer from world-model adaptation, but does not capture the full complexity of physical deployment, including visual discrepancies, sensor noise, and partial observability. Our preliminary real-robot experiments report grasping results, while full-task success has not yet been achieved. Extending \DomainADEPT to effective end-to-end sim-to-real adaptation remains an important direction for future work.
+
+Second, value updates perform poorly in our experiments. This result supports freezing the value function under our protocol, but it does not rule out the possibility that value adaptation may become effective with more data or different update strategies. Our method also assumes access to target-domain demonstrations for fine-tuning the proposal policy. Relaxing these assumptions, or dynamically adjusting the strength of source-domain regularization during adaptation, remains an important direction for future work.
+
+Finally, planning and dynamics-model ensembles trade additional computation for improved interaction efficiency in the target domain. Our comparisons control for the target-domain interaction budget rather than the computational budget. Our diagnostic analysis of candidate-policy ranking shows that model ensembles improve planning-relevant predictions near the proposal policy, but this improvement does not necessarily hold in whole space. These results suggest that model accuracy should be evaluated in relation to the region searched by the planner, rather than treated as a single global metric.
+
+\section{LLM Usage}
+
+Large Language Models (LLMs) were used to aid in the writing and polishing of the manuscript. Specifically, we used an LLM to assist in refining the language, improving readability, and ensuring clarity in various sections of the paper. The model helped with tasks such as sentence rephrasing.grammar checking, and enhancing the overall flow of the text.
+
+It is important to note that the LLM was not involved in the ideation, research methodology, or experimental design. All research concepts, ideas, and analyses were developed and conducted by the authors. The contributions of the LLM were solely focused on improving the linguistic quality of the paper, with no involvement in the scientific content or data analysis.
+
+The authors take full responsibility for the content of the manuscript, including any text generated polished by the LLM. We have ensured that the LLM-generated text adheres to ethical guidelines and does not contribute to plagiarism or scientific misconduct.
+
+\end{document}

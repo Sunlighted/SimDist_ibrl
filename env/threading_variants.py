@@ -89,7 +89,7 @@ class Threading_RealCell(Threading_D0):
         # at z=0.912 after the lift. So the table can be placed relative to it
         # before the arena is built.
         base_z = 0.912
-        self.table_offset = [0.0, 0.0, base_z + float(cfg.table_above_base)]
+        self.table_offset = [0.0, 0.0, base_z + cfg.work_surface_above_base()]
         import numpy as np
         self.table_offset = np.array(self.table_offset)
         self._cell_offset = tuple(float(v) for v in cfg.workspace_offset)
@@ -147,3 +147,97 @@ class Threading_RealCell(Threading_D0):
             b[k]["x"] = (b[k]["x"][0] + dx, b[k]["x"][1] + dx)
             b[k]["y"] = (b[k]["y"][0] + dy, b[k]["y"][1] + dy)
         return b
+
+
+# ---------------------------------------------------------------------------
+# ROBOTIQ real cell (2026-10-11; cell = the 2026-10-13 calibration since 10-14) + the Robotiq 2F-85
+# the real arm now carries. A separate registered class -- not a knob on
+# Threading_RealCell -- because the gripper changes the MODEL: a dataset's
+# env_name must say which hand it was made with, and MimicGen / robomimic build
+# envs from that name without ever seeing our wrapper, so the gripper, its mount
+# and the work-surface height have to live in the class itself.
+# ---------------------------------------------------------------------------
+REAL_CELL_ROBOTIQ_YAML = _os.environ.get("THREADING_ROBOTIQ_CELL_YAML") or _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+    "real2sim/zed_capture/calib_20261013/threading_real_cell_20261013.yaml")
+ROBOTIQ_DRIVER_JOINTS = ("gripper0_finger_joint", "gripper0_right_outer_knuckle_joint")
+
+
+def _robotiq_cell():
+    from env.sim2real import load_sim2real
+    cfg = load_sim2real(REAL_CELL_ROBOTIQ_YAML)
+    assert cfg.enabled and cfg.table_above_base is not None, REAL_CELL_ROBOTIQ_YAML
+    assert cfg.gripper_types == "Robotiq85Gripper", (
+        f"{REAL_CELL_ROBOTIQ_YAML}: Threading_RealCellRobotiq needs gripper_types: Robotiq85Gripper")
+    return cfg
+
+
+class Threading_RealCellRobotiq(Threading_RealCell):
+    """Threading_RealCell on the 2026-10-10 cell with the Robotiq 2F-85.
+
+    On top of Threading_RealCell (table height incl. table_top_dz, arena, layout,
+    init_qpos -- all read from REAL_CELL_ROBOTIQ_YAML):
+      * gripper_types forced to the cell's Robotiq85Gripper;
+      * the gripper mount (gripper_mount_yaw_deg / _z: square to the FR3 flange,
+        45.03 deg from robot0_right_hand) written into the MJCF, so it is in the
+        model xml every dataset stores;
+      * robot0_gripper_qpos / _qvel = the two ACTUATED knuckle joints only
+        (ROBOTIQ_DRIVER_JOINTS), not all six: the four passive joints are tied to
+        them by equality constraints, and 2 dims keep the 37-dim state / 9-dim
+        prop contract (PROP_DIM) every trainer slices by. Range 0 (open) .. 0.8
+        (closed) rad -- NOT the Panda's +-finger metres; the real side must map
+        the Robotiq's position register onto it.
+    """
+
+    def __init__(self, *args, gripper_types="default", **kwargs):
+        want = _robotiq_cell().gripper_types
+        got = gripper_types[0] if isinstance(gripper_types, (list, tuple)) else gripper_types
+        assert got in ("default", None, want), (
+            f"Threading_RealCellRobotiq is the {want} cell; got gripper_types={gripper_types!r}")
+        super().__init__(*args, gripper_types=want, **kwargs)
+
+    def _cell(self):
+        return _robotiq_cell()
+
+    def _load_model(self):
+        super()._load_model()
+        cfg = self._cell()
+        root = self.robots[0].robot_model.worldbody.find(
+            ".//body[@name='gripper0_robotiq_85_adapter_link']")
+        assert root is not None, "Robotiq adapter link not found in the robot model"
+        h = np.radians(float(cfg.gripper_mount_yaw_deg)) / 2
+        root.set("pos", f"0 0 {float(cfg.gripper_mount_z)!r}")
+        root.set("quat", f"{np.cos(h)!r} 0 0 {np.sin(h)!r}")
+
+    def _reset_internal(self):
+        super()._reset_internal()
+        # Start OPEN, like the real arm's home. robosuite resets the Robotiq to
+        # current_action 0 = ctrl 0.4 rad, i.e. HALF-closed (drivers read 0.28 rad
+        # after one step), which the real gripper never is at the start.
+        rob = self.robots[0]
+        rob.gripper.current_action = -np.ones(rob.gripper.dof)
+        self.sim.data.qpos[rob._ref_gripper_joint_pos_indexes] = 0.0
+        self.sim.data.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
+        self.sim.forward()
+
+    def _setup_observables(self):
+        from robosuite.utils.observables import Observable, sensor
+        obs = super()._setup_observables()
+        modality = "robot0_proprio"
+
+        def _addr(kind, name):
+            m = self.sim.model
+            return m.get_joint_qpos_addr(name) if kind == "q" else m.get_joint_qvel_addr(name)
+
+        @sensor(modality=modality)
+        def gripper_qpos(obs_cache):
+            return np.array([self.sim.data.qpos[_addr("q", n)] for n in ROBOTIQ_DRIVER_JOINTS])
+
+        @sensor(modality=modality)
+        def gripper_qvel(obs_cache):
+            return np.array([self.sim.data.qvel[_addr("v", n)] for n in ROBOTIQ_DRIVER_JOINTS])
+
+        for name, s in (("robot0_gripper_qpos", gripper_qpos), ("robot0_gripper_qvel", gripper_qvel)):
+            assert name in obs, name
+            obs[name] = Observable(name=name, sensor=s, sampling_rate=self.control_freq)
+        return obs
