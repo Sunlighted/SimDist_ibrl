@@ -1,0 +1,31 @@
+--- publish_zed_uvc.py.bak_20261014	2026-10-14 17:41:55.569294303 -0400
++++ publish_zed_uvc.py	2026-10-14 17:43:34.382882177 -0400
+@@ -93,6 +93,10 @@
+     Without it the images are still published, just without camera_info.
+     """
+ 
++    lock_controls: bool = True
++    """Fix exposure / gain / white balance from camera_controls.json after every open
++    (zed_controls.py). Auto-exposure makes brightness depend on what is in view."""
++
+     list_devices: bool = False
+     """List the V4L2 devices the kernel knows about and exit."""
+ 
+@@ -318,6 +322,17 @@
+                 f"{self.name}: asked for {self._size[0]}x{self._size[1]} "
+                 f"but the driver gave {actual[0]}x{actual[1]}."
+             )
++        if self._args.lock_controls:
++            # The sensor registers only answer while streaming, and every open resets the
++            # exposure, so lock on EVERY open (apply() waits out the sensor's own init).
++            try:
++                import zed_controls
++
++                status = zed_controls.apply(self.device, fps=self._args.fps,
++                                            grab=lambda: capture.read())
++                self._node.get_logger().info(f"{self.name}: controls locked {status}")
++            except Exception as exc:  # noqa: BLE001 -- never lose the stream over this
++                self._node.get_logger().error(f"{self.name}: could not lock controls: {exc}")
+         return capture
+ 
+     def _run(self) -> None:

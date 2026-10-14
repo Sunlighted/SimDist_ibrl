@@ -1,0 +1,7 @@
+{
+ "fps": 30,
+ "exposure_raw": 275,
+ "gain_raw": 200,
+ "wb_temperature": 3300,
+ "_note": "Locked ZED capture settings (both cameras, both sensors), applied by zed_controls.py after every stream open. 2026-10-14, room lights only (LED, no flicker measured): auto-exposure had chosen exposure 249 / gain 200-208 at HD720@30; 275 raw ~ 8.3 ms at 30 fps. White board at these values: scene BGR ~(227,207,188), wrist ~(196,194,164), <0.2% of the frame clipped. wb 3300 is the cool step (R/G 0.85-0.91), 3400 the warm one (R/G 1.08-1.12); colour is matched to the sim afterwards (render -> measure -> fix). Raw exposure units depend on fps: change fps => re-derive exposure_raw."
+}

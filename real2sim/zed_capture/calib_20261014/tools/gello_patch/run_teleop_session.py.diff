@@ -1,0 +1,16 @@
+--- run_teleop_session.py.bak_20261014	2026-10-14 17:42:16.921651126 -0400
++++ run_teleop_session.py	2026-10-14 17:42:16.945651522 -0400
+@@ -101,9 +101,10 @@
+     camera_mode: str = "hd720"
+     """Capture mode passed to publish_zed_uvc.py."""
+ 
+-    camera_fps: int = 60
+-    """Camera frame rate. The recorder samples the newest frame at --rate, so a faster camera
+-    means fresher images in each sample. Measured at hd720: wrist 60, scene 50-55."""
++    camera_fps: int = 30
++    """Camera frame rate. 30 everywhere (2026-10-14): the locked exposure in
++    camera_controls.json is in raw sensor lines, whose length depends on the fps, and the
++    calibration / deploy tools capture at 30."""
+ 
+     rate: float = 20.0
+     """Recorder sampling rate in Hz."""

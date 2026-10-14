@@ -38,6 +38,9 @@ from real2sim.deploy.preprocess import Rectifier  # noqa: E402
 CELL = os.path.join(_REPO, "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml")
 FACTORY = os.path.join(_REPO, "release/cfgs/sim2real/zed_factory_intrinsics.json")
 JOINTS = os.path.expanduser("~/simdist/gello_software/simdist_runner/joint_state_latest.json")
+# Locked exposure / gain / white balance, same file and code as the camera publisher.
+ZED_CONTROLS_DIR = os.path.expanduser(
+    "~/simdist/gello_software/ros2/src/franka_gello_state_publisher/scripts")
 CAMS = {"scene": ("ZED 2i", "agentview"), "wrist": ("ZED-M", "robot0_eye_in_hand")}
 W, H, S = 1280, 720, 224
 
@@ -135,6 +138,8 @@ def main():
     ap.add_argument("--zoom", type=float, default=2.5, help="display scale of the 224 crops")
     ap.add_argument("--out", default="", help="SPACE saves shots here")
     ap.add_argument("--max_age", type=float, default=0.5)
+    ap.add_argument("--auto_exposure", action="store_true",
+                    help="leave the camera on auto exposure / WB (default: lock camera_controls.json)")
     ap.add_argument("--needle", default="", help="target needle 'x,y,zrot_deg' in the base frame")
     ap.add_argument("--needle_range", default="0.075,0.05", help="half range 'dx,dy' (m) to draw")
     args = ap.parse_args()
@@ -149,13 +154,19 @@ def main():
     def scene_cam(P):
         return (R_bs.T @ (np.asarray(P, float) - t_bs).T).T
     for name, c in cams.items():
-        cap = cv2.VideoCapture(find_device(c["model"]), cv2.CAP_V4L2)
+        c["dev"] = find_device(c["model"])
+        cap = cv2.VideoCapture(c["dev"], cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2 * W)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
         cap.set(cv2.CAP_PROP_FPS, 30)
         if not cap.isOpened():
             raise SystemExit(f"cannot open {name}")
         c["cap"] = cap
+        if not args.auto_exposure:   # every open resets the exposure
+            sys.path.insert(0, ZED_CONTROLS_DIR)
+            import zed_controls
+            print(f"[{name}] controls locked:",
+                  zed_controls.apply(c["dev"], fps=30, grab=lambda cap=cap: cap.read()))
         c["rects"] = {c["fovy"]: Rectifier(c["K"], c["D"], W, H, S, c["fovy"])}
         print(f"[{name}] -> {c['sim']}  fovy {c['fovy']}  crop {c['rects'][c['fovy']].side} px  K,D: {c['src']}")
     scene_fovy = cams["scene"]["fovy"]

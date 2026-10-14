@@ -1,0 +1,48 @@
+{
+ "scene": {
+  "status": {
+   "aecagc": [
+    false,
+    false
+   ],
+   "exposure_raw": [
+    275,
+    275
+   ],
+   "gain_raw": [
+    200,
+    200
+   ],
+   "wb_auto": 0,
+   "wb_temperature": 3300
+  },
+  "board_bgr": [
+   227.1,
+   211.2,
+   196.3
+  ]
+ },
+ "wrist": {
+  "status": {
+   "aecagc": [
+    false,
+    false
+   ],
+   "exposure_raw": [
+    275,
+    275
+   ],
+   "gain_raw": [
+    200,
+    200
+   ],
+   "wb_auto": 0,
+   "wb_temperature": 3300
+  },
+  "board_bgr": [
+   194.8,
+   196.4,
+   170.0
+  ]
+ }
+}
