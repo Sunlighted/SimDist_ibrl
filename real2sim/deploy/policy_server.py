@@ -16,16 +16,27 @@ Everything that must match training lives on THIS side:
   action  : the policy's 7-d output is an OSC_POSE delta (+-5 cm, +-0.5 rad per
             50 ms step, world frame, kp 150) + gripper. It is NOT turned into a pose
             target by IK. Instead a REFERENCE copy of the sim arm (object collisions
-            disabled) is set to the real joint positions AND velocities and stepped
-            once through robosuite's own OSC; the joint configuration it reaches in
-            that 50 ms is the target sent to the real joint impedance controller.
-            So the action means exactly what it meant in training, OSC lag included.
+            disabled) is stepped once through robosuite's own OSC; the joint
+            configuration it reaches in that 50 ms is the target sent to the real joint
+            impedance controller. So the action means exactly what it meant in training.
+            --action_map sim_ref (default): the reference keeps its OWN q and qvel from
+              step to step (a reference trajectory the real arm tracks) and is re-synced
+              to the measured q only when the TCPs are > --resync_m apart. The real arm
+              lags (tau ~100 ms), so the tracking error, and the impedance torque, grow
+              until it moves. (The owner's 09-25 fix, real_policy_server.py.)
+            --action_map reseed: the reference restarts at the MEASURED q, dq every step.
+              The error then stays ~0.007 rad (~1.7 Nm on j4), below joint friction: on
+              10-15 x moved 1-4 % of the command per step (calib_20261015/README.md).
 
 Safety checks here (the client adds its own rate / freshness limits):
   - action clipped to [-1, 1]
   - joint target clipped to the FR3 x Panda joint-limit intersection minus a margin
-  - grip-site target below --z_min (sim world, metres) or outside the table box
-    -> the step is refused (target = current joints) and flagged
+  - grip-site target below --z_min (sim world, metres) or outside the table box:
+    sim_ref -> clamped into the box (the reference stops there); reseed -> refused
+  - sim_ref: inside --z_slow_band above z_min the target descends <= --z_slow_step/step
+  - hard caps on the commanded TCP, both maps: <= --max_tcp_speed / --max_rot_speed
+    (real time) from the last command and <= --max_lead ahead of the measured TCP;
+    a capped step pulls the reference back onto the capped target (no wind-up)
 
 Usage (robot host):
   python real2sim/deploy/policy_server.py --ckpt <dir>/model0.pt
@@ -245,6 +256,57 @@ class ReferenceArm:
     def eef(self):
         return np.array(self.sim.data.site_xpos[self.rob.eef_site_id])
 
+    def site_pose(self, q):
+        """-> (grip-site position, rotation) at joint configuration q (sim world)."""
+        import mujoco
+        m, d = self.sim.model._model, self.sim.data._data
+        d.qpos[self.jidx] = q
+        mujoco.mj_forward(m, d)
+        sid = self.rob.eef_site_id
+        return d.site_xpos[sid].copy(), d.site_xmat[sid].reshape(3, 3).copy()
+
+    def ik_pose(self, q, p_star, R_star, iters=50, tol=1e-5, damping=1e-3):
+        """Damped-least-squares IK of the grip site to (p_star, R_star) from q -> q_target."""
+        import mujoco
+        m, d = self.sim.model._model, self.sim.data._data
+        T = self.T
+        sid = self.rob.eef_site_id
+        d.qpos[self.jidx] = q
+        mujoco.mj_forward(m, d)
+        jp, jr = np.zeros((3, m.nv)), np.zeros((3, m.nv))
+        qi = np.array(q, np.float64)
+        for _ in range(iters):
+            e_p = p_star - d.site_xpos[sid]
+            e_r = T.quat2axisangle(T.mat2quat(R_star @ d.site_xmat[sid].reshape(3, 3).T))
+            if np.linalg.norm(e_p) < tol and np.linalg.norm(e_r) < 10 * tol:
+                break
+            mujoco.mj_jacSite(m, d, jp, jr, sid)
+            J = np.vstack([jp[:, self.jvel], jr[:, self.jvel]])
+            qi = np.clip(qi + J.T @ np.linalg.solve(J @ J.T + damping * np.eye(6),
+                                                    np.concatenate([e_p, e_r])), Q_LO, Q_HI)
+            d.qpos[self.jidx] = qi
+            mujoco.mj_forward(m, d)
+        return qi
+
+    def ref_reset(self):
+        self.q_ref, self.v_ref = None, np.zeros(7)
+
+    def step_ref(self, q_real, action, fingers, resync_m):
+        """--action_map sim_ref: step the reference trajectory (its own q AND qvel) by one
+        action, exactly as in training. Re-synced to the real arm (at rest) only when the
+        TCPs are > resync_m apart, e.g. blocked by contact. -> (q_target, resynced?)"""
+        resynced = False
+        if getattr(self, "q_ref", None) is None:
+            self.q_ref, self.v_ref = np.array(q_real, np.float64), np.zeros(7)
+        elif np.linalg.norm(self.site_pose(self.q_ref)[0] - self.site_pose(q_real)[0]) > resync_m:
+            self.q_ref, self.v_ref = np.array(q_real, np.float64), np.zeros(7)
+            resynced = True
+        self.set_state(self.q_ref, self.v_ref, fingers)
+        q_next = self.step(action)
+        self.q_ref = np.array(q_next)
+        self.v_ref = np.array(self.sim.data.qvel[self.jvel])
+        return q_next, resynced
+
     def step(self, action):
         """One 50 ms control step through robosuite's own OSC. -> joint positions reached."""
         self.raw.timestep = 0                       # never trip robosuite's horizon check
@@ -349,6 +411,16 @@ class Server:
         else:
             self.log = None
         self.n = 0
+        self._reset_ref()
+        print(f"[server] action map {a.action_map}"
+              + (f" (resync {a.resync_m:g} m, z slow band {a.z_slow_band:g} m)" if a.action_map == "sim_ref" else "")
+              + f" | caps: {a.max_tcp_speed:g} m/s, {a.max_rot_speed:g} rad/s, lead {a.max_lead:g} m",
+              flush=True)
+
+    def _reset_ref(self):
+        """New episode / client: the reference re-seeds at the next measured q."""
+        self.arm.ref_reset()
+        self.last_cmd_pose, self.last_step_t, self.last_cmd_z = None, None, None
 
     def _sim_cameras(self):
         """sim camera -> (fovy it was trained with, its cell RealCameraConfig or None).
@@ -368,6 +440,7 @@ class Server:
 
     def hello(self, h):
         self.hz = float(h.get("hz", 20.0))
+        self._reset_ref()
         for cam, ci in h["camera_info"].items():
             if cam not in self.cammap:
                 continue
@@ -416,19 +489,30 @@ class Server:
                 action = self.agent.act(obs, eval_mode=True).numpy().astype(np.float64)
         t2 = time.perf_counter()
         action = np.clip(action, -1.0, 1.0)
-        q_ref = self.arm.step(action)
-        eef_tgt = self.arm.eef()
-        q_tgt = np.clip(q_ref, Q_LO + self.a.joint_margin, Q_HI - self.a.joint_margin)
         warn = []
-        if eef_tgt[2] < self.a.z_min:
-            warn.append(f"z {eef_tgt[2]:.3f} < z_min {self.a.z_min:.3f}: step refused")
-        if not (self.a.x_box[0] <= eef_tgt[0] <= self.a.x_box[1]
-                and self.a.y_box[0] <= eef_tgt[1] <= self.a.y_box[1]):
-            warn.append(f"xy {eef_tgt[:2].round(3).tolist()} outside table box: step refused")
+        if self.a.action_map == "sim_ref":
+            q_ref, resynced = self.arm.step_ref(q, action, fingers, self.a.resync_m)
+            if resynced:
+                warn.append(f"reference re-synced to the real arm (TCPs > {self.a.resync_m * 100:.0f} cm apart)")
+            q_ref = self._clamp_box(q_ref, eef, warn)
+        else:
+            self.arm.set_state(q, dq, fingers)
+            q_ref = self.arm.step(action)
+            eef_ref = self.arm.eef()
+            if eef_ref[2] < self.a.z_min:
+                warn.append(f"z {eef_ref[2]:.3f} < z_min {self.a.z_min:.3f}: step refused")
+            if not (self.a.x_box[0] <= eef_ref[0] <= self.a.x_box[1]
+                    and self.a.y_box[0] <= eef_ref[1] <= self.a.y_box[1]):
+                warn.append(f"xy {eef_ref[:2].round(3).tolist()} outside table box: step refused")
+        q_ref = self._speed_caps(q, q_ref, warn)
+        q_tgt = np.clip(q_ref, Q_LO + self.a.joint_margin, Q_HI - self.a.joint_margin)
         if np.any(np.abs(q_tgt - q_ref) > 1e-6):
             warn.append("joint target clipped to limits")
         if any("refused" in w for w in warn):
             q_tgt = q.copy()
+            self.last_cmd_pose = None                    # the arm holds where it is
+        eef_tgt = self.arm.site_pose(q_tgt)[0]
+        self.last_cmd_z = float(eef_tgt[2])
         grip_close = bool(action[6] > 0.0)
         t3 = time.perf_counter()
         res = {"q_target": q_tgt.tolist(), "gripper_close": grip_close,
@@ -451,6 +535,61 @@ class Server:
         self.n += 1
         return res
 
+    def _clamp_box(self, q_ref, eef, warn):
+        """sim_ref safety: CLAMP the reference TCP into the box (keeping its rotation) and stop
+        the reference there, so it does not keep pushing into the floor / wall. Inside
+        --z_slow_band above z_min the target may descend at most --z_slow_step per step (from
+        the last COMMANDED height, so it never jumps back up): the lagging arm creeps onto the
+        floor instead of ramming it."""
+        a = self.a
+        lo = np.array([a.x_box[0], a.y_box[0], a.z_min])
+        hi = np.array([a.x_box[1], a.y_box[1], np.inf])
+        p, R = self.arm.site_pose(q_ref)
+        band_top = a.z_min + a.z_slow_band
+        if a.z_slow_band > 0 and p[2] < band_top:
+            z_last = self.last_cmd_z if self.last_cmd_z is not None else eef[2]
+            lo[2] = max(lo[2], min(z_last, band_top) - a.z_slow_step)
+        p_cl = np.clip(p, lo, hi)
+        if np.all(np.abs(p_cl - p) <= 1e-9):
+            return q_ref
+        names = "".join(n for n, c in zip("xyz", np.abs(p_cl - p) > 1e-9) if c)
+        warn.append(f"target {names} clamped {p.round(3).tolist()} -> {p_cl.round(3).tolist()}")
+        q_ref = self.arm.ik_pose(q_ref, p_cl, R)
+        self.arm.q_ref, self.arm.v_ref = np.array(q_ref), np.zeros(7)
+        return q_ref
+
+    def _speed_caps(self, q, q_cmd, warn):
+        """HARD limits on the commanded TCP, whatever the policy, map or client rate: at most
+        --max_tcp_speed / --max_rot_speed (real time since the last step) from the previous
+        command, and never more than --max_lead ahead of the MEASURED TCP (bounds the
+        impedance pull). A capped step pulls the sim reference back onto it (no wind-up)."""
+        T = self.arm.T
+        now = time.monotonic()
+        dt = float(np.clip(now - self.last_step_t, 0.02, 0.25)) if self.last_step_t else 1.0 / self.hz
+        self.last_step_t = now
+        p_cmd, R_cmd = self.arm.site_pose(q_cmd)
+        p_meas, R_meas = self.arm.site_pose(q)
+        p_prev, R_prev = self.last_cmd_pose if self.last_cmd_pose is not None else (p_meas, R_meas)
+        why = []
+        dp = p_cmd - p_prev
+        vmax = self.a.max_tcp_speed * dt
+        if np.linalg.norm(dp) > vmax:
+            p_cmd = p_prev + dp * (vmax / np.linalg.norm(dp)); why.append("speed")
+        lead = p_cmd - p_meas
+        if np.linalg.norm(lead) > self.a.max_lead:
+            p_cmd = p_meas + lead * (self.a.max_lead / np.linalg.norm(lead)); why.append("lead")
+        rv = T.quat2axisangle(T.mat2quat(R_cmd @ R_prev.T))
+        rmax = self.a.max_rot_speed * dt
+        if np.linalg.norm(rv) > rmax:
+            R_cmd = T.quat2mat(T.axisangle2quat(rv * (rmax / np.linalg.norm(rv)))) @ R_prev; why.append("rot")
+        if why:
+            q_cmd = self.arm.ik_pose(q_cmd, p_cmd, R_cmd)
+            if self.a.action_map == "sim_ref" and self.arm.q_ref is not None:
+                self.arm.q_ref, self.arm.v_ref = np.array(q_cmd), np.zeros(7)
+            warn.append("capped(" + ",".join(why) + ")")
+        self.last_cmd_pose = (p_cmd, R_cmd)
+        return q_cmd
+
     def serve(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -471,6 +610,7 @@ class Server:
                             send_msg(conn, self.step(h, blobs))
                         elif h["type"] == "reset":
                             self.n = 0
+                            self._reset_ref()
                             if self.script is not None:
                                 self.script = TrackScript(self.a.track_axes.split(","),
                                                           [float(x) for x in self.a.track_amps.split(",")],
@@ -512,6 +652,22 @@ def main():
     ap.add_argument("--x_box", type=float, nargs=2, default=(-0.35, 0.35))
     ap.add_argument("--y_box", type=float, nargs=2, default=(-0.35, 0.35))
     ap.add_argument("--joint_margin", type=float, default=0.05)
+    ap.add_argument("--action_map", choices=("sim_ref", "reseed"), default="sim_ref",
+                    help="sim_ref: the sim arm is a reference trajectory with its own q/qvel, the "
+                         "real arm tracks it (09-25 fix). reseed: restart it at the measured q every "
+                         "step (stalls below joint friction: x 1-4 %%/step on 10-15)")
+    ap.add_argument("--resync_m", type=float, default=0.08,
+                    help="sim_ref: re-sync the reference to the real arm past this TCP distance (m)")
+    ap.add_argument("--z_slow_band", type=float, default=None,
+                    help="sim_ref: within this height above --z_min the target descends at most "
+                         "--z_slow_step per step (m). Default 0.06, 0 with --scripted")
+    ap.add_argument("--z_slow_step", type=float, default=0.003)
+    ap.add_argument("--max_tcp_speed", type=float, default=0.08,
+                    help="HARD cap on the commanded TCP speed (m/s, real time)")
+    ap.add_argument("--max_rot_speed", type=float, default=0.4,
+                    help="HARD cap on the commanded TCP rotation speed (rad/s, real time)")
+    ap.add_argument("--max_lead", type=float, default=0.03,
+                    help="HARD cap on how far the commanded TCP may lead the measured one (m)")
     ap.add_argument("--jpeg_reduce", type=int, default=2, choices=(1, 2, 4),
                     help="decode JPEGs at 1/r resolution (2: 37 -> ~10 ms/step, same 224 image)")
     ap.add_argument("--save_dir", default="", help="log steps.jsonl + policy-input images")
@@ -519,6 +675,8 @@ def main():
     a = ap.parse_args()
     if not a.scripted and not a.ckpt:
         ap.error("--ckpt is required unless --scripted")
+    if a.z_slow_band is None:
+        a.z_slow_band = 0.0 if a.scripted else 0.06
     Server(a).serve()
 
 

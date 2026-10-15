@@ -3,6 +3,7 @@
 #
 #   bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh          # 20 then 10 Hz
 #   bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh 10       # only 10 Hz
+#   ACTION_MAP=reseed bash ...                                       # the 10-15 baseline map
 #
 # Does by itself: bring up cameras + robot + Robotiq + GELLO publisher in the container (unless
 # already up; no matching gate, the controller stays off), wrist camera_info stop-gap if the
@@ -21,6 +22,7 @@ RUNNER_HOST="$HOME/simdist/gello_software/simdist_runner"
 CELL=real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml
 SCRIPTS=/workspace/ros2/src/franka_gello_state_publisher/scripts
 MAX_OVERSHOOT_MM=10
+ACTION_MAP=${ACTION_MAP:-sim_ref}
 cd "$D"
 
 dex() { docker exec "$C" bash -lc "$ROSENV; $1"; }
@@ -69,7 +71,8 @@ fi
 # ---- 2. one confirmation
 echo
 echo "======================================================================"
-echo " The arm will move: DROID home, then 6 cm in z and x at 3 speeds, rates: ${RATES[*]} Hz"
+echo " The arm will move: DROID home, then ~6-8 cm in z and x at 3 speeds, rates: ${RATES[*]} Hz,"
+echo " action map ${ACTION_MAP} (commanded TCP capped at 8 cm/s, <= 3 cm ahead of the arm)"
 echo " (>= 15 cm above the table). Do NOT touch the GELLO. Hand on the e-stop."
 echo "======================================================================"
 read -r -p "Type g then Enter to start, anything else aborts: " go
@@ -78,14 +81,14 @@ read -r -p "Type g then Enter to start, anything else aborts: " go
 DIRS=()
 for HZ in "${RATES[@]}"; do
     STAMP=$(date +%m%d_%H%M%S)
-    RUN="runs/track${HZ}_${STAMP}"
+    RUN="runs/track${HZ}_${ACTION_MAP}_${STAMP}"
     mkdir -p "$RUN"
     echo; echo "[$HZ Hz] arm -> DROID home"
     dex "python3 $SCRIPTS/reset_arm.py --yes --no-resume --gripper-move-action ''" 2>&1 | tail -4
 
     echo "[$HZ Hz] server -> $RUN"
     "$PY" real2sim/deploy/policy_server.py --scripted track --task Threading_RealCellRobotiq \
-        --cell "$CELL" --save_dir "$RUN" --save_every 1 > "$RUN/server.log" 2>&1 &
+        --cell "$CELL" --action_map "$ACTION_MAP" --save_dir "$RUN" --save_every 1 > "$RUN/server.log" 2>&1 &
     SRV=$!
     trap 'kill $SRV 2>/dev/null || true' EXIT
     for i in $(seq 60); do grep -q "listening" "$RUN/server.log" && break; sleep 1; done
@@ -113,7 +116,7 @@ for HZ in "${RATES[@]}"; do
     DIRS+=("$RUN")
     "$PY" real2sim/zed_capture/calib_20261014/tools/analyze_tracking.py "$RUN" || true
     [[ $rc -eq 0 ]] || { echo "[$HZ Hz] client exited with $rc; stopping."; break; }
-    worst=$("$PY" -c "import json,math;r=json.load(open('$RUN/tracking_report.json'));v=[s['overshoot_mm'] for s in r['segments'].values() if not math.isnan(s['overshoot_mm'])];print(max(v) if v else 0)" 2>/dev/null || echo 0)
+    worst=$("$PY" -c "import json,math;r=json.load(open('$RUN/tracking_report.json'));k='past_target_mm' if '$ACTION_MAP'=='sim_ref' else 'overshoot_mm';v=[s[k] for s in r['segments'].values() if not math.isnan(s[k])];print(max(v) if v else 0)" 2>/dev/null || echo 0)
     echo "[$HZ Hz] worst overshoot ${worst} mm"
     if "$PY" -c "import sys; sys.exit(0 if float('$worst') > $MAX_OVERSHOOT_MM else 1)"; then
         echo "[$HZ Hz] overshoot > ${MAX_OVERSHOOT_MM} mm: stopping before the next rate."; break

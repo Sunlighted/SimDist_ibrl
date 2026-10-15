@@ -10,6 +10,12 @@ For each run (one --save_dir with steps.jsonl, optionally the client's --joint_l
                  arm reaches in one step)
     overshoot    how far the measured grip site keeps going after the command stops (mm)
                  -- the quantity that put the gripper into the table at 20 Hz
+  with --action_map sim_ref (the target is a reference trajectory that LEADS the arm, so
+  done/step and overshoot above mix in the lead; read these instead):
+    ref cm/s     speed of the commanded target itself (steady part of the move)
+    real/ref     real speed / ref speed (1.0 = the arm keeps up)
+    lag mm       steady distance target - measured along the axis
+    past tgt mm  how far the measured grip site goes BEYOND the final target (the real overshoot)
   image age      camera frame age at the moment the client sent the step (ROS receive time:
                  a LOWER bound, exposure + USB transfer come on top)
   joint delay    (joint log only) time shift between the 100 Hz command and the measured joints
@@ -74,7 +80,8 @@ for run in args.runs:
     dt = 1.0 / hz
     print(f"\n=== {run}  ({hz:g} Hz, {len(rows)} steps)")
     print(f"{'axis':4s} {'amp':>4s} | {'cmd cm/s':>8s} {'real cm/s':>9s} {'done/step':>9s} | "
-          f"{'overshoot mm':>12s} {'settle s':>8s}")
+          f"{'overshoot mm':>12s} {'settle s':>8s} | {'ref cm/s':>8s} {'real/ref':>8s} {'lag mm':>6s} "
+          f"{'past tgt mm':>11s}")
     rep = {}
     for (ax, amp), seg in segments(rows).items():
         j = "xyz".index(ax)
@@ -96,11 +103,20 @@ for run in args.runs:
             settle = next((k * dt for k, i in enumerate(h1) if abs(mv[i] - fin) < 5e-4), np.nan)
         else:
             over, settle = np.nan, np.nan
+        sign = -1.0 if ax == "z" else 1.0
+        home = np.array([r["script"]["home"][j] for r in seg])
+        mvt = sign * (tg - home)                           # target moved, same sign as `moved`
+        ref = np.abs(np.diff(tg))[nxt] / dt if nxt else np.array([np.nan])
+        lag = 1e3 * np.abs(tg[steady] - e[steady]) if steady else np.array([np.nan])
+        past = 1e3 * max(0.0, float((mv[h1] - mvt[h1]).max())) if h1 else np.nan
+        rr = float(np.median(real) / max(np.median(ref), 1e-9))
         rep[f"{ax}{amp:g}"] = dict(cmd_cm_s=float(100 * np.median(cmd)), real_cm_s=float(100 * np.median(real)),
                                    done_per_step=float(np.median(ratio)), overshoot_mm=float(over),
-                                   settle_s=float(settle))
+                                   settle_s=float(settle), ref_cm_s=float(100 * np.median(ref)),
+                                   real_over_ref=rr, lag_mm=float(np.median(lag)), past_target_mm=float(past))
         print(f"{ax:4s} {amp:4.1f} | {100 * np.median(cmd):8.1f} {100 * np.median(real):9.1f} "
-              f"{np.median(ratio):9.2f} | {over:12.1f} {settle:8.2f}")
+              f"{np.median(ratio):9.2f} | {over:12.1f} {settle:8.2f} | {100 * np.median(ref):8.1f} "
+              f"{rr:8.2f} {np.median(lag):6.1f} {past:11.1f}")
         curves.append((f"{os.path.basename(run.rstrip('/'))} {ax}{amp:g}", dt, e - e[0], tg - e[0], ph))
     ages = {}
     for r in rows:

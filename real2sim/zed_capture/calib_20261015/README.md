@@ -130,8 +130,25 @@ the rate mostly sets how far ahead the reference runs, and 10 Hz is what the own
 
 ## Next step
 
-1. Port `sim_ref` + `_speed_caps` into `policy_server.py`, and test offline against the scripted track (no robot).
-2. On the robot: `bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh` again, then compare with this table.
+1. ~~Port `sim_ref` + `_speed_caps` into `policy_server.py`~~ **done (10-15 evening)**:
+   `--action_map sim_ref` (default; `reseed` = the 10-15 baseline), `--resync_m 0.08`, box *clamp* instead of
+   refusal, `--z_slow_band 0.06 / --z_slow_step 0.003` (0 with `--scripted`), hard caps `--max_tcp_speed 0.08`,
+   `--max_rot_speed 0.4`, `--max_lead 0.03` on both maps. `analyze_tracking.py` now also prints `ref cm/s`,
+   `real/ref`, `lag mm` and `past tgt mm` (with sim_ref the target leads the arm, so read these, not done/step).
+   - Offline check (fake arm: τ 100 ms + a static-friction deadband on the PD error, 20 Hz):
+
+     | map | x real cm/s (amp 0.2 / 0.5 / 1.0) | z real cm/s | past target |
+     |---|---|---|---|
+     | reseed | 0.0 / 0.2 / 0.9 | 0.0 / 0.0 / 0.6 | ≤ 2 mm |
+     | sim_ref | 5.1 / 4.7 / 7.1 | 5.3 / 7.0 / 7.9 | ≤ 4.4 mm, lead ≤ 18 mm |
+
+     The deadband model is stricter than the real arm (real z moved under reseed, with gravity), so only the
+     contrast counts. Dry run with the real inputs (arm not moving): runs, and the target stops 3 cm ahead (`capped(lead)`).
+   - Note: the speed cap (8 cm/s) is below the sim's OSC speed at |a| ≥ 0.2 (≈ 20+ cm/s at 20 Hz), so on the real arm
+     all three amplitudes run at the cap. That is the owner's 09-25 limit; the sim does not model it yet (step 2).
+2. On the robot: `bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh` again (now `sim_ref`; runs are named
+   `runs/track{HZ}_sim_ref_*`). It stops between rates on `past tgt mm` > 10. Pass: x `real/ref` ≈ z `real/ref` ≈ 1,
+   real x speed of several cm/s (10-15: 0.1 cm/s), `past tgt mm` ≤ a few mm.
 3. Then continue `NEXT_VISIT.md`: §2 rate with the owner, §3 wrist re-calibration (teleop without cameras +
    `record_calib.py`; the stack from step 2 must be down first: `run_tracking_test.sh --down`),
    §4 touch-offs, §5 layout / exposure drift, §6 demos.
