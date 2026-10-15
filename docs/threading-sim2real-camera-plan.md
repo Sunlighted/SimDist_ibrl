@@ -12,6 +12,12 @@ Background: `docs/infra.md` §14–§14f, `docs/real-teleop-stage2.md`,
 > **Before step 4, work through the sim-side checklist in `calib_20261014/README.md`**: switch the default
 > cell, decide the control rate (the owner runs the policy at 10 Hz, the sim is 20 Hz), the placement
 > sampler not re-sampling on `reset()`, the sim Robotiq not closing below ~14 mm, wrist-camera DR.
+>
+> **Status 2026-10-15 (sim side): everything except the control rate is done** — table in
+> `calib_20261014/README.md` "Sim-side status". The 10-14 cell is the default; the "no re-sampling" was a
+> stale-handle artefact; every expert grasp is on the 40 mm handle (scripted Robotiq grasp 12/12); wrist
+> ±10 mm DR; colours re-matched to the locked exposure. ⚠️ Robotiq obs map is **sim ≈ 1.134 × real**
+> (in-contact), not 0.83. **Blocking: the control rate (10 vs 20 Hz) must be decided before step 4.**
 
 ## 1. Why the previous transfer failed
 

@@ -96,6 +96,41 @@ def quat_wxyz2mat(q) -> np.ndarray:
         [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
 
 
+def _quat_mul_xyzw(a, b) -> np.ndarray:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return np.array([aw * bx + ax * bw + ay * bz - az * by,
+                     aw * by - ax * bz + ay * bw + az * bx,
+                     aw * bz + ax * by - ay * bx + az * bw,
+                     aw * bw - ax * bx - ay * by - az * bz])
+
+
+def eef_in_base(sim, pos_w, quat_xyzw):
+    """World-frame eef pose -> robot0_base frame of the CURRENT model state.
+
+    The one implementation of prop_frame="base": the wrapper (training / eval),
+    the deploy server and the real-demo converter all call this, so the prop on
+    the robot is the same function of q as in the sim. Quaternion product rather
+    than a matrix round trip, so the sign convention of the input is kept (a
+    mat2quat would be free to flip it)."""
+    m, d = sim.model, sim.data
+    bid = m.body_name2id("robot0_base")
+    R = np.asarray(d.body_xmat[bid]).reshape(3, 3)
+    pos = R.T @ (np.asarray(pos_w, np.float64) - d.body_xpos[bid])
+    w, x, y, z = (float(v) for v in d.body_xquat[bid])
+    quat = _quat_mul_xyzw((-x, -y, -z, w), np.asarray(quat_xyzw, np.float64))
+    return pos, quat
+
+
+def apply_prop_frame(sim, cfg, obs) -> None:
+    """In place on a robosuite obs dict: rewrite the eef keys into cfg.prop_frame."""
+    if not (cfg is not None and cfg.enabled and cfg.prop_frame == "base"):
+        return
+    pos, quat = eef_in_base(sim, obs["robot0_eef_pos"], obs["robot0_eef_quat"])
+    obs["robot0_eef_pos"] = pos.astype(np.asarray(obs["robot0_eef_pos"]).dtype)
+    obs["robot0_eef_quat"] = quat.astype(np.asarray(obs["robot0_eef_quat"]).dtype)
+
+
 def lookat_R_opencv(fwd, up=(0.0, 0.0, 1.0)) -> np.ndarray:
     """Optical axis + an up HINT -> OpenCV rotation (columns = x_right, y_down,
     z_forward). Only 2 of the 3 DOF come from `fwd`; `up` invents the third."""
@@ -145,6 +180,30 @@ class RealCameraConfig:
     # camera_intrinsics: policy_server + scripts/convert_real_teleop.py); the sim
     # never looks at it. The 2026-10-10 back-of-hand ZED-M needs it (factory D wrong).
     real_intrinsics: str = ""
+    # Per-camera DR widths. None = use the cell-wide dr_cam_pos / dr_cam_rot_deg /
+    # dr_cam_fovy_deg (the old behaviour). Only read when randomize is true.
+    # ⚠️ They OVERRIDE the cell-wide knobs: zeroing dr_cam_* no longer switches a camera with its own
+    # widths off (a test did exactly that and failed) -- set randomize=False on the camera instead.
+    # Exists for the 2026-10-14 wrist camera: its hand-eye TRANSLATION is ~1 cm
+    # uncertain (calib_20261014/README.md) while the scene camera is validated to
+    # 1-2 px, so the two need different widths.
+    # dr_pos / dr_rot_deg may also be a 3-tuple, one width per axis (pos: the camera's `frame`, rot: the camera's
+    # own axes, x/y = tilt, z = roll about the optical axis): the measured wrist error is strongly directional
+    # (calib_20261014/README.md), and an isotropic box wide enough for its worst axis shakes every other axis too.
+    dr_pos: Optional[object] = None
+    dr_rot_deg: Optional[object] = None
+    dr_fovy_deg: Optional[float] = None
+
+    def dr_widths(self, cfg) -> tuple:
+        """(pos m, rot deg, fovy deg) DR widths for this camera; zeros if fixed. pos / rot are a float
+        or a 3-tuple."""
+        if not self.randomize:
+            return 0.0, 0.0, 0.0
+        def pick(own, glob):
+            v = glob if own is None else own
+            return tuple(float(x) for x in v) if isinstance(v, (tuple, list)) else float(v)
+        return (pick(self.dr_pos, cfg.dr_cam_pos), pick(self.dr_rot_deg, cfg.dr_cam_rot_deg),
+                pick(self.dr_fovy_deg, cfg.dr_cam_fovy_deg))
 
     def resolved_fovy(self) -> float:
         """0 => do not touch the camera's fovy."""
@@ -407,6 +466,17 @@ class Sim2RealConfig:
     dr_base_yaw_deg: float = 0.0        # +- deg about world z      (R1: yaw snap 1.2 deg)
     dr_base_tilt_deg: float = 0.0       # +- deg about world x AND y (R2: table tilt 0.99 deg)
     dr_base_xy: float = 0.0             # +- metres per axis in x,y (R3: two solves ~7 mm apart)
+    # Frame of robot0_eef_pos / robot0_eef_quat in the wrapper's obs (state[:9] AND
+    # prop -- every trainer slices prop out of state, so both change together).
+    # "world" = robosuite's own (legacy). "base" = the robot0_base frame of THIS
+    # episode (2026-10-15): on the robot the prop is FK(q) in the base frame with
+    # no calibration in it, while a world-frame prop carries the base<->table
+    # registration -- which the base DR above randomises in the sim but nobody
+    # knows on the robot. In "base" the base DR reaches the policy only through
+    # the images, as on the robot. object-state stays WORLD (its *_to_eef terms
+    # are gripper-frame and do not care). Changes the obs contract: experts /
+    # data / stage-1 built with "world" do not transfer.
+    prop_frame: str = "world"
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so
@@ -437,7 +507,8 @@ class Sim2RealConfig:
             self.dr_light_shadow_n,
             self.dr_base_height, self.dr_cam_pos, self.dr_cam_rot_deg,
             self.dr_cam_fovy_deg, self.any_base_dr(), self.any_peg_dr(),
-            bool(self.dr_background_image)])
+            bool(self.dr_background_image),
+            any(any(np.any(w) for w in c.dr_widths(self)) for c in self.cameras)])
 
     def work_surface_above_base(self) -> Optional[float]:
         """Height of the surface the objects sit on, above the base origin."""
@@ -702,7 +773,7 @@ def _rand(rng, lo_hi):
 
 
 def _small_rot(rng, deg):
-    """Random rotation with each axis angle ~ U(-deg, deg), applied as an
+    """Random rotation with each axis angle ~ U(-deg, deg) (deg: scalar or per-axis), applied as an
     intrinsic XYZ composition. Small-angle so order barely matters, but it is
     fixed anyway to keep a seeded run repeatable."""
     a, b, c = np.radians(rng.uniform(-deg, deg, 3))
@@ -1116,10 +1187,12 @@ def _apply_camera(env, m, sim, cam: RealCameraConfig, cfg: Sim2RealConfig, rng):
     R_cv = cam.rotation_opencv()
     p = np.asarray(cam.pos, dtype=np.float64)
 
-    if cam.randomize and cfg.dr_cam_pos:
-        p = p + rng.uniform(-cfg.dr_cam_pos, cfg.dr_cam_pos, 3)
-    if cam.randomize and R_cv is not None and cfg.dr_cam_rot_deg:
-        R_cv = R_cv @ _small_rot(rng, cfg.dr_cam_rot_deg)
+    dr_pos, dr_rot, dr_fovy = cam.dr_widths(cfg)
+    if np.any(dr_pos):
+        w = np.asarray(dr_pos, dtype=np.float64)        # scalar or per-axis
+        p = p + rng.uniform(-w, w, 3)
+    if R_cv is not None and np.any(dr_rot):
+        R_cv = R_cv @ _small_rot(rng, np.asarray(dr_rot, dtype=np.float64))
 
     if cam.frame == "base":
         bid = _body_id(m, "robot0_base")
@@ -1154,8 +1227,8 @@ def _apply_camera(env, m, sim, cam: RealCameraConfig, cfg: Sim2RealConfig, rng):
 
     fovy = cam.resolved_fovy()
     if fovy > 0:
-        if cam.randomize and cfg.dr_cam_fovy_deg:
-            fovy += rng.uniform(-cfg.dr_cam_fovy_deg, cfg.dr_cam_fovy_deg)
+        if dr_fovy:
+            fovy += rng.uniform(-dr_fovy, dr_fovy)
         m.cam_fovy[cid] = float(fovy)
 
 
@@ -1392,4 +1465,5 @@ def load_sim2real(path) -> Sim2RealConfig:
     cfg = Sim2RealConfig(cameras=tuple(cams), **kw)
     for c in cfg.cameras:
         c.rotation_opencv()        # validate now, not mid-dataset-generation
+    assert cfg.prop_frame in ("world", "base"), f"{path}: prop_frame {cfg.prop_frame!r}"
     return cfg

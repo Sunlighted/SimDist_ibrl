@@ -22,6 +22,17 @@ The board must sit at the nominal pose the replay stills show aligned
 Place the peg upright inside the sim reset range (robot base frame x 0.39–0.58 m,
 y 0.14–0.23 m, yaw within ±30°), e.g. base (0.49, 0.18).
 
+## Threading Robotiq cell (2026-10-15)
+
+`ReferenceArm` also builds `Threading_RealCellRobotiq` from the ckpt's `sim2real_cell` (all DR off).
+prop = the training env's own observables + `prop_frame: base` ⇒ FK(q) in the base frame, identical to
+training (`scripts/test_sim2real.py` M). Client: `--gripper-state-topic /gripper/joint_states` (it sends the
+one `robotiq_85_left_knuckle_joint` value; the server maps it). Server: pass `--z_min` (measure it with a
+closed-fingertip touch-off, `eef[2]` + 2 mm; sim estimate ≈ 0.950). Full real-side list:
+`docs/real-teleop-stage2.md` §2b. ⚠️ No policy exists for this cell yet (control rate undecided).
+
+Tracking-lag test (no policy): `policy_server.py --scripted track --task ... --cell ...` + client `--joint-log`; analysis `real2sim/zed_capture/calib_20261014/tools/analyze_tracking.py`; procedure in `calib_20261014/NEXT_VISIT.md` §1.
+
 ## Run
 
 Start the usual teleop session (cameras via `publish_zed_uvc.py`, robot, gripper,
@@ -46,8 +57,8 @@ python3 /workspace/simdist_runner/robot_client.py --live --steps 300
 # afterwards: realign the GELLO / run reset_arm.py (the client leaves the controller off)
 ```
 
-Useful flags: server `--no_color` (raw ZED colours), `--z_min` (default 0.995 m sim-world
-grip-site z; the real demos bottom out at 1.008); client `--hz 10` (each target gets
+Useful flags: server `--no_color` (raw ZED colours), `--z_min` (sim-world grip-site z; PegInsertion
+default 0.995, the real demos bottom out at 1.008; **required** for any other task); client `--hz 10` (each target gets
 100 ms — slower, gentler), `--max-step-rad` (default 0.03 rad per step).
 
 ## Safety behaviour

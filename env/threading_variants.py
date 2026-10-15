@@ -150,7 +150,7 @@ class Threading_RealCell(Threading_D0):
 
 
 # ---------------------------------------------------------------------------
-# ROBOTIQ real cell (2026-10-11; cell = the 2026-10-13 calibration since 10-14) + the Robotiq 2F-85
+# ROBOTIQ real cell (2026-10-11; cell = the 2026-10-14 calibration since 10-15) + the Robotiq 2F-85
 # the real arm now carries. A separate registered class -- not a knob on
 # Threading_RealCell -- because the gripper changes the MODEL: a dataset's
 # env_name must say which hand it was made with, and MimicGen / robomimic build
@@ -159,8 +159,19 @@ class Threading_RealCell(Threading_D0):
 # ---------------------------------------------------------------------------
 REAL_CELL_ROBOTIQ_YAML = _os.environ.get("THREADING_ROBOTIQ_CELL_YAML") or _os.path.join(
     _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-    "real2sim/zed_capture/calib_20261013/threading_real_cell_20261013.yaml")
+    "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml")
 ROBOTIQ_DRIVER_JOINTS = ("gripper0_finger_joint", "gripper0_right_outer_knuckle_joint")
+# Real Robotiq knuckle (/gripper/joint_states robotiq_85_left_knuckle_joint, rad) -> sim driver
+# joints. In-contact anchor 0.440 real <-> 0.499 sim on the 40 mm handle, clipped at the sim
+# stall (calib_20261014/README.md "Correction to the Robotiq obs map"; the older 0.83 is wrong).
+ROBOTIQ_REAL_TO_SIM = 1.134
+ROBOTIQ_SIM_STALL = 0.556
+
+
+def robotiq_real_to_sim(knuckle_real) -> np.ndarray:
+    """One real knuckle angle -> the 2 sim driver-joint values robot0_gripper_qpos carries."""
+    v = float(np.clip(ROBOTIQ_REAL_TO_SIM * float(knuckle_real), 0.0, ROBOTIQ_SIM_STALL))
+    return np.array([v, v])
 
 
 def _robotiq_cell():

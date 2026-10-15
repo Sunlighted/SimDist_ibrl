@@ -117,6 +117,43 @@ field uses.** If you change stacks or firmware, re-check it.
 Quaternion order in the demo recorder is **xyzw** (verified: at the ready pose it is ≈(1,0,0,0), a 180°
 rotation about x, which is the gripper pointing down).
 
+### 3b. Robotiq cell (from 2026-10-14): the policy's robot state is now in the **robot base frame**
+
+On the Robotiq cell (`real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml`,
+`prop_frame: base`), the policy's 9-d robot state is **forward kinematics of the measured joints, expressed in
+the FR3 base frame**: TCP position, hand orientation (xyzw), and the Robotiq knuckle mapped onto the
+simulator's two driver joints (`clip(1.134 × knuckle, 0, 0.556)`, written twice).
+
+Why: in a world/table frame the state would also encode where the base sits relative to the table. The
+simulator randomises that pose (±7 mm, ±1.5°), which moves the world-frame TCP by up to **27 mm** for the
+same joint angles, and on the robot nobody knows its true value. In the base frame the state is
+**FK(q)**, the same function on both sides with no calibration inside it. The base↔table relation now
+reaches the policy only through the cameras, as it does on the robot.
+
+What this means for you:
+
+1. **Log raw quantities; do not convert anything.** Per tick:
+   - measured `fr3_joint1..7` (rad) and velocities;
+   - `robotiq_85_left_knuckle_joint` from `/gripper/joint_states` (rad, one value);
+   - timestamps for the joints and for every camera frame, on one monotonic clock.
+
+   We compute the state offline with the simulator's own FK. **Do not add the old
+   (−0.489, −0.034, 0.912) world offset** — that applied to the Franka-hand cell only.
+2. **Base calibration still matters for the cameras and object placement, just not for the state.**
+   Please add one **xy touch-off** session:
+   - with the Robotiq closed, lightly touch ≥ 4 marked points of known position on the board (ChArUco
+     corners or taped marks; note each point's ID);
+   - at each point, hold still and record q plus one frame from each camera;
+   - then touch both ends of the needle handle.
+
+   Today only the height is pinned down (0.0287 ± 0.0012 m); this session gives the base↔table xy and yaw.
+3. **Deploy:**
+   - run `robot_client.py --gripper-state-topic /gripper/joint_states`;
+   - `policy_server.py` now **requires `--z_min`** for this task. Do one closed-fingertip touch-off,
+     read the server's printed `eef[2]` in a dry run, and use that value + 2 mm (the simulator's estimate is ≈ 0.950).
+4. **Control rate is still open** (10 Hz on the robot vs 20 Hz in the simulator). Whatever you choose must be
+   the same in the simulator, the recorder and the runner.
+
 ---
 
 ## 4. Cameras

@@ -30,6 +30,7 @@ from env.sim2real import (
     apply_cell_layout,
     apply_init_qpos,
     apply_line_lights,
+    apply_prop_frame,
     apply_sim2real,
     apply_workspace_offset,
     snapshot_visual_nominal,
@@ -594,6 +595,11 @@ class PixelRobosuite:
                 if key in obs:
                     h, w = obs[key].shape[:2]
                     obs[key] = self._splat.composite(self.env.sim, cam, h, w)
+
+        # prop_frame (env/sim2real.py): before BOTH state and prop are assembled,
+        # since every trainer slices prop = state[:PROP_DIM]. No-op for "world".
+        if self._s2r_active:
+            apply_prop_frame(self.env.sim, self.sim2real, obs)
 
         high_res_images = {}
         rl_obs = {}

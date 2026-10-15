@@ -1,4 +1,7 @@
 # 2026-10-14 cell (Threading, Robotiq). Lives in real2sim/zed_capture/calib_20261014/ (README there).
+# 2026-10-15 (sim side): + wrist camera DR (robot0_eye_in_hand, see there) + table_rgb / object_rgb
+#   re-matched to the exposure-locked frames (see table_rgb). Now the default cell of
+#   Threading_RealCellRobotiq (env/threading_variants.py REAL_CELL_ROBOTIQ_YAML).
 # = calib_20261013/threading_real_cell_20261013.yaml (git 2d57392) with FOUR changes (4. init_qpos =
 #   the DROID home, see init_qpos), all measured
 #   on the robot 2026-10-14 (see README):
@@ -64,14 +67,24 @@ table_visual_yaw_deg: 0.235
 table_visual_apply_pose: 1
 dr_background_image: /user_data/Chenyang/bg_textures/val_256
 dr_background_floor: 1
+# COLOUR re-matched 2026-10-15 against the EXPOSURE-LOCKED real frames (data/home_droid, 275/200/WB 3300),
+#   render -> measure -> fix (tools/colour_check.py): sim rendered at the real home q, colour + light DR ON
+#   (DR mean = what must match), geometry DR off, 16 seeds; medians over the sim segmentation masks.
+#   board    real scene (173,182,199) wrist (156,169,170); sim at 0.85 was (217,217,215) / (234,234,233).
+#            One albedo cannot fit both cameras: the real wrist sees the board 10 % DARKER than the scene
+#            camera, the sim one 11 % BRIGHTER. Chosen = the geometric mean: sim now (157,168,179) scene
+#            (-9 %) / (175,186,198) wrist (+12 %), i.e. centred, both inside dr_table_rgb_gain 0.9-1.1.
+#   red      real scene (76,0,14); sim at 0.438 was (106,3,2), now (74,4,21). (The wrist sees no red at home.)
+#   Shadow depth checked with the old criterion (board p90-p10): sim 33 / 71 vs real 45 / 65 => lighting kept.
+#   Was: table_rgb [0.85, 0.8507, 0.8403], object_rgb [0.438, 0.0086, 0.0089] (auto-exposure era).
 table_rgb:
-- 0.85
-- 0.8507
-- 0.8403
+- 0.62
+- 0.66
+- 0.70
 object_rgb:
-- 0.438
-- 0.0086
-- 0.0089
+- 0.31
+- 0.016
+- 0.09
 workspace_offset:
 - 0.071
 - 0.066
@@ -96,6 +109,11 @@ cameras:
   - 0.23173
   - 0.55526
   - 0.52272
+  # 2026-10-15: own DR widths, wider than the cell-wide 11 mm / 1 deg (owner: cover what can go wrong). Measured
+  #   error is far smaller (validated 1-2 px; one cable bump = 0.30 deg, translation <~1 mm): +-15 mm / +-1.5 deg
+  #   leaves 5x for another bump. Fovy +-1 (cell-wide).
+  dr_pos: 0.015
+  dr_rot_deg: 1.5
   # 2026-10-14: rotated 0.30 deg (bump), pos unchanged. 10-13: [0.15479, -0.29452, 0.85353, -0.40097]
   quat:
   - 0.15341
@@ -105,7 +123,17 @@ cameras:
   fovy: 50.0
 - name: robot0_eye_in_hand
   frame: hand
-  randomize: false
+  # 2026-10-15 (README "Camera DR"): randomize true with its OWN, PER-AXIS widths, wide on purpose (owner:
+  #   cover what can go wrong; the wrist is re-solved on the next visit). The render fit against the real wrist
+  #   frames (tools/fit_layout_wrist.py) needs, in the hand frame, x -0.8..1.8 / y 5.1..6.1 / z 7.2..15.5 mm and
+  #   tilts <= 2.1 deg, roll up to 4.0 deg depending on the model => +-(6, 10, 20) mm, +-(3, 3, 4.5) deg (x/y tilt,
+  #   z roll about the optical axis), fovy +-1. (An isotropic +-20 mm / +-4.5 deg box moved the needle 20 px median,
+  #   44 px max in the 224 wrist view and dropped the gripper IoU vs nominal to 0.55 -- far beyond the real error,
+  #   which matches the OLD +-10 mm / 0.5 deg box's 0.73.) Nominal pose still the 10-13 solve.
+  randomize: true
+  dr_pos: [0.006, 0.010, 0.020]
+  dr_rot_deg: [3.0, 3.0, 4.5]
+  dr_fovy_deg: 1.0
   # real side: undistort wrist frames with the REFITTED K/D (factory D is wrong)
   real_intrinsics: ../calib_20261010/data/wrist_intrinsics.json
   pos:
@@ -140,7 +168,14 @@ dr_light_specular:
 - 1.5
 dr_light_dir: 0.3
 dr_light_pos: 0.4
-dr_light_shadow_n: 3
+# 2026-10-15: 3 -> 1 with light_shadow_n 5 -> 1 (0-2 casters of 8, each 1/8 of the light). Measured against the
+#   exposure-locked home frame with tools/light_check.py, board luminance split in two bands (a single p90-p10
+#   cannot tell a soft room gradient from hard shadow edges): high-band edge energy, real scene / wrist 1.77 / 1.25,
+#   5+-3 casters 2.37 / 4.15 (the stacked hard arm shadows in the wrist view), 1+-1 casters 1.02 / 1.54, no
+#   shadows 0.57 / 0.61. A 2x4 grid of the 8 lights was WORSE (3.5-6.3: point-light shadows are hard, more
+#   lights = more hard copies), so the line stays. Render cost halves (1.8 -> 0.9 ms for both cameras).
+#   Not fixed: the real low-band gradient (34 / 60) exceeds the sim's (20 / 45) -- most likely lens vignetting.
+dr_light_shadow_n: 1
 dr_cam_pos: 0.011
 dr_cam_rot_deg: 1.0
 dr_cam_fovy_deg: 1.0
@@ -152,6 +187,10 @@ cam_follow_base_dr: 1
 dr_base_yaw_deg: 1.5
 dr_base_tilt_deg: 1.0
 dr_base_xy: 0.007
+# 2026-10-15 (owner's choice A): prop = eef pose in the robot0_base frame. On the robot it is FK(q)
+#   exactly, with no base<->table registration in it; the base DR above then reaches the policy only
+#   through the images, as on the robot. Real side: docs/real-teleop-stage2.md §2b.
+prop_frame: base
 # OBJECT LAYOUT re-centred 2026-10-14 on the real placement photo (object_layout/): sim needle
 #   and tripod rendered in the scene camera and fitted to the red masks of the real ones
 #   (IoU, rendered at fovy 65 so the needle is not cut):
@@ -192,7 +231,7 @@ light_pos:
 - 0.501
 - 3.0
 light_diffuse: 0.9953
-light_shadow_n: 5
+light_shadow_n: 1      # 2026-10-15: 5 -> 1, see dr_light_shadow_n
 light_target:
 - 0.45
 - 0.08

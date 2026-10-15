@@ -21,11 +21,131 @@ with **four** measured changes, each documented where it is set in the yaml:
 | 3 work-surface height | done: touch-off 0.0287 ± 0.0012 = the cell's 0.0285; table tilt 0.60° / 0.27° |
 | 4 needle vs the fovy-50 crop | done: placement and sim range moved to (0.55, −0.12, −100°), fovy stays 50 |
 | 5 placement protocol | range centre + extents drawn live by `real2sim/deploy/live_crop_view.py --needle 0.55,-0.12,-100` |
-| 6 Robotiq → sim gripper map | done: sim driver ≈ 0.83 × real knuckle; ⚠️ the sim Robotiq cannot close below ~14 mm |
+| 6 Robotiq → sim gripper map | done: ~~0.83~~ **sim ≈ 1.134 × real knuckle** (in-contact anchor, corrected 10-15); ⚠️ the sim Robotiq cannot close below ~14 mm |
 | 7 home pose | done: DROID home, real + sim |
 | 8 exposure / gain / WB | done: locked (275 / 200 / 3300), reference frames in `data/exposure_locked/` |
 | 9 capture mode / fps | done: HD720 @ **30 fps everywhere** (teleop was 60). ⚠️ the owner runs the policy at **10 Hz**, the sim is 20 Hz |
 | 10 housekeeping | USB3 checked on both cameras; ⬜ the bowl / balls are still at the lower left of the scene view |
+
+## Sim-side status (2026-10-15)
+
+**Next robot visit: [`NEXT_VISIT.md`](NEXT_VISIT.md)** (tracking-lag test → control rate → wrist re-calibration with both eyes → touch-offs → layout/exposure → demos). New tools: `tools/record_calib.py` (10-15: right eye + factory `.conf`, exposure lock, `--touch`), `tools/analyze_tracking.py`.
+
+| # | item | result |
+|---|---|---|
+| 1 | default cell | ✅ `REAL_CELL_ROBOTIQ_YAML` → this yaml; `scripts/test_sim2real.py` ALL PASS (its Robotiq asserts read the cell, nothing was 10-13-specific) |
+| 2 | control rate | ⬜ **open — owner's decision** (10 Hz real vs 20 Hz sim) |
+| 3 | placement not re-sampling | ✅ **not a bug, a stale-handle artefact**: `reset()` is a hard reset, it rebuilds `env.sim`, so `sim.model/data` fetched before it keep reading the first episode forever. Re-fetched handles and the obs `state` both change every episode (6/6 distinct, raw env and wrapper alike) |
+| 4 | Robotiq grasp | ✅ all 210 expert grasps (10 source + 200 MimicGen D0) close on the **40 mm handle** (needle frame y = 0.043–0.065, handle = 0.04–0.08), none on the shaft. Scripted top-down handle grasp on this cell (`tools/robotiq_grasp_check.py`): **12/12 lift the needle 12 cm**, over needle yaw −128…−71°. ⚠️ obs map corrected, see below |
+| 5 | home pose | ✅ in the cell (nothing to do in code) |
+| 6 | needle range reach | ✅ the 12 grasp episodes above are sampled from the new range: all reached + grasped. Full-task (insertion) feasibility comes with the MimicGen run, after item 2 |
+| 7 | wrist camera DR | ✅ new per-camera `dr_pos` / `dr_rot_deg` / `dr_fovy_deg` in `RealCameraConfig` (None = cell-wide widths = old behaviour). Wrist: `randomize: true`, ±10 mm / ±0.5° / no fovy. Test: jitter max 9.75 mm, fovy fixed. `cam_pos`/`cam_quat` are already in `MODEL_STATE_FIELDS` ⇒ replayable |
+| 8 | table tilt | — not changed: `dr_base_tilt_deg` 1° covers 0.60° / 0.27° (≤ 1.6 mm over the workspace) |
+| 9 | colour | ✅ (+ 10-15 lighting / deploy colour map, see below) `table_rgb` 0.85 → **0.62 0.66 0.70**, `object_rgb` → **0.31 0.016 0.09** (`tools/colour_check.py`, `figs/colour_match_1015.jpg`; numbers in the yaml). Lighting kept (shadow-depth criterion agrees). ⚠️ residual: real wrist sees the board 10 % darker than the scene camera, the sim 11 % brighter — a per-camera gap one albedo cannot fix (centred instead). ⚠️ the sim's hard arm shadows are visible in both views; the real frames show almost none |
+| 10 | deploy | 🟨 `policy_server.ReferenceArm` ported to `Threading_RealCellRobotiq` (cell from the ckpt, DR off, prop through the training env's own observables; client sends the ONE Robotiq knuckle, server maps it with `robotiq_real_to_sim` = clip(1.134 x, 0, 0.556)); `--z_min` now required (sim estimate ≈ 0.950 world). Live run after item 2 |
+| 11 | prop frame | ✅ **`prop_frame: base`** (owner's choice A, 10-15): prop = FK(q) in the base frame, no base<->table registration in it. Same q over 8 base-DR draws: world eef spreads (9, 27, 18) mm, base-frame prop ≤ 1e-15; deploy FK == training env to 1.5e-8 (`test_sim2real.py` M). ⚠️ obs contract changed: nothing trained on this cell yet, but `convert_real_teleop.py` / `validate_real_demos.py` refuse / misjudge it until ported. Real side: `docs/real-teleop-stage2.md` §2b |
+
+### Blender check (2026-10-15, one frame, `tools/blender_check/`, `figs/blender_vs_mujoco_vs_real_1015.jpg`)
+
+Home q, nominal cell (no DR), identical geometry/cameras (MuJoCo 3 rebuild asserted == the 2.3.2 dump). Blender =
+Cycles 64 spp, 3x3 ceiling area panels + matte room, ONE fitted number (exposure, on the scene board luminance).
+
+| | scene board | wrist board | wrist/scene | board p90-p10 scene / wrist | scene red |
+|---|---|---|---:|---|---|
+| real | (173,182,199) | (156,169,170) | **0.910** | 42 / **57** | (75,0,14) |
+| MuJoCo (nominal) | (185,197,209) | (199,211,223) | 1.072 | 40 / **92** | (93,3,28) |
+| Blender | (174,184,192) | (179,188,197) | 1.027 | 44 / **41** | (94,33,42) |
+
+- Shadows: the wrist-view contrast is the arm's hard shadows in MuJoCo (92 vs real 57); Blender's area lights remove
+  them (41, a bit too flat). This is the one thing path tracing fixes for free.
+- Per-camera gap: physically based light moves wrist/scene only 1.07 → 1.03 against the real 0.91 ⇒ **the gap is
+  mostly the cameras (ZED-M vs ZED 2i response at the same locked settings), not lighting** ⇒ fix it per camera.
+- Red: Blender adds the dielectric Fresnel floor (G ≈ 30 after sRGB); the real ZED crushes it to 0 (black level /
+  tone curve) ⇒ a camera tone-curve issue, not something path tracing gets right by itself.
+- Cost: ~0.5–1.2 s per 224² camera at 64 spp on one RTX Pro 6000 (ABC quotes ~190 ms / 3 cams at 16 spp on H100).
+
+### Needle / wrist camera (2026-10-15, `tools/fit_layout_wrist.py`, `figs/fit_layout_wrist_1015.jpg`, poses in `fit_layout_wrist_1015.json`)
+
+Re-run: `python tools/fit_layout_wrist.py --free cam --json fit_layout_wrist_1015.json`; the light / colour tools take it as `--objects`.
+
+Render-based fits (MuJoCo geometry). ⚠️ The red mask must be "redness" R − max(G,B) > 22: the needle **shaft** is a
+dark maroon that an HSV gate drops, which leaves only the handle cube and makes the yaw unobservable (first fit: −150°).
+
+- **Needle in the scene camera: matches.** home_droid (0.5534, −0.1074) yaw −109.1° (IoU 0.78); layout_shot_000
+  (0.5449, −0.1017) −106.7°; tripod (0.519, 0.183) −35.4° (IoU 0.85–0.90). Agrees with the earlier fit (0.553, −0.108,
+  −101…−108°) and with the range centre (0.55, −0.12, −100°). The mismatch in the first comparison figures was the
+  sim's random reset placement, not the cell.
+- **Wrist camera: a real error, ~2° tilt + 1–1.6 cm along the optical axis**, larger than the wrist DR (±0.5° / ±10 mm).
+  layout_shot_000 (old home, the wrist sees the needle): needle IoU **0.18 → 0.86** after the fit, gripper silhouette
+  0.73 → 0.84 (dark mask restricted to the gripper's neighbourhood: the breadboard / ChArUco squares are dark too).
+
+  | free parameters | gripper IoU fit / hold | needle IoU (fit) | tripod off (hold) | correction | loss |
+  |---|---|---|---|---|---|
+  | none (cell) | 0.73 / 0.71 | 0.18 | 1.3 px | — | — |
+  | camera | 0.84 / 0.82 | 0.86 | 2.6 px | 2.0/2.0/4.0°, 16 mm | 1.488 |
+  | + mount dz | 0.85 / 0.83 | 0.82 | 2.7 px | dz +0.8 mm | 1.502 |
+  | + mount yaw | 0.90 / 0.88 | 0.69 | 3.3 px | 12.6 mm, yaw +0.07° | 1.531 |
+  | + both | 0.88 / 0.86 | 0.76 | 1.4 px | 9.4 mm, yaw +1.3°, **dz −5.8 mm** | 1.493 |
+
+  ⚠️ Not adopted: (a) the losses tie ⇒ camera error vs Robotiq geometry (mount yaw, the +6.5 mm `gripper_mount_z` of
+  10-14 moving the WHOLE sim Robotiq while the real extra length may sit in the fingers) are **not identifiable from two
+  frames**; (b) the held-out tripod (home_droid) does not improve (1.3 px before). Only two local frames carry wrist
+  images; the workstation (`~/simdist/calib/layout_1014*`) was unreachable. Next visit: ≥ 15 wrist poses **with the
+  needle in view**, which separates the camera from the gripper geometry.
+
+### Camera DR (2026-10-15, owner: wide on purpose, cover what can go wrong; the wrist is re-solved next visit)
+
+Per-camera widths, the wrist **per axis** (new: `dr_pos` / `dr_rot_deg` take a 3-tuple; pos in the camera's `frame`,
+rot in the camera's own axes, z = roll about the optical axis). Extent measured in the 224 views at the
+layout_shot_000 pose, 64 draws, camera DR only:
+
+| camera | widths | needle shift median / max | gripper IoU vs nominal (median) | covers the wrist fits |
+|---|---|---|---|---|
+| wrist, old | ±10 mm, ±0.5°, fovy 0 | 9.1 / 27.7 px | 0.73 (= the real-vs-sim 0.71–0.73) | no |
+| wrist, isotropic | ±20 mm, ±4.5°, fovy ±1 | 19.6 / 44.1 px | 0.55 | yes |
+| **wrist, chosen** | **±(6, 10, 20) mm (hand), ±(3, 3, 4.5)°, fovy ±1** | **13.5 / 41.0 px** | **0.69** | **yes** (fits: x ≤ 1.8, y ≤ 6.1, z ≤ 15.5 mm; tilt ≤ 2.1°, roll ≤ 4.0°) |
+| scene, old | ±11 mm, ±1°, fovy ±1 | 3.8 / 8.6 px | — | measured error: 1–2 px, one bump 0.30° |
+| **scene, chosen** | **±15 mm, ±1.5°, fovy ±1** | **5.9 / 12.0 px** | — | 5× a second bump |
+
+⚠️ The isotropic box was rejected because the measured wrist error is directional: it shook the axes that have no
+error as hard as the worst one. ⚠️ Per-camera widths override the cell-wide `dr_cam_*`; to switch camera DR off, set
+`randomize: false` per camera. ⚠️ Wide pose DR is a bet: §48 measured image-level augmentation (jitter/blur) as
+−0.2…−0.3 on pixel stage-1. Camera-pose DR is a different (geometric) thing, but if a pixel run regresses, this is
+the first knob to narrow.
+
+### Lighting (2026-10-15, `tools/light_check.py`, `figs/light_check_1015.jpg`)
+
+`light_shadow_n` 5 → 1, `dr_light_shadow_n` 3 → 1 (0–2 of 8 lights cast, each 1/8). Board luminance split in two bands
+(one p90−p10 cannot tell a soft gradient from hard shadow edges, iron rule 29): high-band edge energy real scene / wrist
+**1.77 / 1.25**; old 5±3 casters 2.37 / **4.15**; 1±1 casters 1.02 / **1.54**; no shadows 0.57 / 0.61. A 2×4 grid of the
+8 lights was worse (3.5–6.3: MuJoCo point-light shadows are hard, more casters = more hard copies) and was removed again.
+Render cost 1.8 → 0.9 ms for both cameras. ⚠️ Not fixed: the low-band gradient (real 34 / 60, sim 20 / 45), most likely
+lens vignetting.
+
+### Deploy colour correction (2026-10-15, `tools/fit_color_threading.py`, `color_correction_threading_1014.json`)
+
+Real ZED crop (after `Rectifier`) → sim DR-mean image (new lighting, 16 seeds, home q, fitted object poses), per-channel
+affine per camera, class-balanced. Use with `policy_server.py --color_json real2sim/zed_capture/calib_20261014/color_correction_threading_1014.json`
+(the default `real2sim/deploy/color_correction.json` is the PegInsertion splat map).
+
+| camera | gain R/G/B | board \|Δ\| before → after | gripper \|Δ\| | red \|Δ\| |
+|---|---|---|---|---|
+| scene | 0.86 / 0.88 / 0.91 | 15.9 → 1.9 | 9.8 → 3.2 | 5.2 → 5.0 |
+| wrist | 1.19 / 1.15 / 1.32 | 39.5 → 1.8 | 7.8 → 2.8 | (not used: wrist misregistered) |
+
+⚠️ The scene board of the `exposure_locked/` frame (same locked settings, another moment) is **~10 % brighter** than
+home_droid's (189,205,221 vs 173,182,199): room light varies between moments by about the width of
+`dr_table_rgb_gain` (0.9–1.1), so that DR stays. Re-fit after any lighting / albedo change of the cell, and from
+several exposure-locked frames with q once available (this one is fitted on one frame).
+
+### ⚠️ Correction to the Robotiq obs map (item 6 of the robot side)
+
+The 0.83 map below was derived from the pad geometry in free air. **In contact, the sim reads 0.499 on both
+driver joints when it holds the 40 mm handle** (12/12 episodes, identical to 3 decimals) — not 0.365. Use the
+contact anchor, which is what the policy actually sees in the sim while holding the needle:
+**sim ≈ 1.134 × real knuckle (0 → 0, 0.440 → 0.499), clipped at the sim stall ~0.556.** Feeding 0.83 × real
+would hand the policy a gripper state (0.365) that it only ever saw mid-closure in free air.
+(The pad-geometry route is not self-consistent on this model: the pad-centre distance reads 123 mm fully open.)
 
 ## Sim-side checklist (do these before regenerating experts / demos / stage-1)
 
@@ -108,6 +228,7 @@ with **four** measured changes, each documented where it is set in the yaml:
 | `data/run_1014_1552/` | the 7-view wrist check (`extrinsics.json` is NOT used) |
 | `tools/gello_patch/` | `zed_controls.py` + `camera_controls.json` (locked capture settings) and the diffs applied to the gello `publish_zed_uvc.py`, `run_teleop_session.py`, `reset_arm.py`, `collect_demos.py` (gello is an upstream clone: re-apply after a pull) |
 | `data/exposure_locked/` | reference scene + wrist frames with the locked settings, `summary.json` |
+| `tools/colour_check.py`, `tools/robotiq_grasp_check.py` | 2026-10-15 sim side: render-vs-real colour medians at the home q; scripted handle grasp + lift |
 | `tools/` | `scene_rot_delta.py`, `snap_layout.py`; needle silhouette fit `geo.py` + `fit.py`; touch-off `touch.py`, fingertip projection `tipcheck.py` (scratch scripts: paths point at `~/simdist/calib/`) |
 | `figs/` | fingertip projection, needle target overlay, 224 policy views of the layout shots, wrist silhouette across sessions |
 
@@ -151,7 +272,8 @@ Log: `data/robotiq_gripper_log.json` (pos + GELLO target `/gripper/gripper_clien
 | grasping the needle by its 40 mm handle | **0.440** (≈ 56 % of stroke ≈ 38 mm) | 0.215 | ≈ 0.37 gives a 40 mm pad gap |
 | closed on nothing | **0.786** (pads touch) | 0.20 (trigger fully pressed) | **stalls at 0.52–0.556 with a 14–21 mm gap** |
 
-- Map by finger opening, not by angle: anchors (open, 40 mm handle) ⇒ **sim ≈ 0.83 × real** (0 → 0, 0.440 → 0.365).
+- ~~Map by finger opening, not by angle: anchors (open, 40 mm handle) ⇒ **sim ≈ 0.83 × real** (0 → 0, 0.440 → 0.365).~~
+  **Superseded 2026-10-15: sim ≈ 1.134 × real** (in-contact anchor, see "Correction to the Robotiq obs map" above).
   The real side reports ONE knuckle; the sim obs has the 2 driver joints ⇒ feed the mapped value twice.
 - The GELLO trigger tops out at a 0.20 target but the gripper keeps closing until it meets something, so the
   real gripper state is set by what it holds, not by how far the trigger is pressed.

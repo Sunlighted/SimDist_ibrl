@@ -8,9 +8,11 @@ Everything that must match training lives on THIS side:
             newK=K) -> principal-point square crop at the SIM camera's fovy -> 224
             -> ZED->splat colour map  (real2sim/deploy/preprocess.py)
   prop    : [eef_pos(3), eef_quat_xyzw(4), gripper_qpos(2)] computed by MuJoCo FK
-            on the SAME PegInsertion_D0 model the policy was trained in: real joint
-            angles in, sim-world grip-site pose out. This carries the measured base
-            placement and the 45 deg flange offset for free.
+            on the SAME model the policy was trained in (ReferenceArm): real joint
+            angles in, grip-site position + hand orientation out, which carries the
+            45 deg flange offset for free. Frame = the cell's prop_frame: "base" on
+            the Threading Robotiq cell (FK(q), no calibration in it), sim world on
+            PegInsertion_D0. Robotiq: the ONE real knuckle angle -> both sim drivers.
   action  : the policy's 7-d output is an OSC_POSE delta (+-5 cm, +-0.5 rad per
             50 ms step, world frame, kp 150) + gripper. It is NOT turned into a pose
             target by IK. Instead a REFERENCE copy of the sim arm (object collisions
@@ -114,22 +116,51 @@ def load_agent(ckpt, device):
 
 
 class ReferenceArm:
-    """The training env's arm, used for FK (prop) and as the OSC action model."""
+    """The training env's arm, used for FK (prop) and as the OSC action model.
 
-    def __init__(self, task):
-        # ⚠️ PegInsertion_D0 only: robots="Panda" with its 2-finger hand, no sim2real
-        # cell (arena, Robotiq + mount, init_qpos). On a RealCell policy the FK/prop
-        # and the OSC model here would be the WRONG robot -- port before deploying.
-        if not task.startswith("PegInsertion"):
+    PegInsertion_D0: Panda hand, no cell, world-frame prop (unchanged).
+    Threading_RealCellRobotiq: the cell the ckpt was trained on (Robotiq + mount, arena,
+    init_qpos), every DR off, prop through the SAME code path as the training env
+    (robosuite observables -> env.sim2real.apply_prop_frame), so with the cell's
+    prop_frame "base" the prop is FK(q) in the base frame and carries no calibration.
+    The real gripper reports ONE knuckle angle; robotiq_real_to_sim maps it."""
+
+    TASKS = ("PegInsertion", "Threading_RealCellRobotiq")
+
+    def __init__(self, task, cell_path=""):
+        if not task.startswith(self.TASKS):
             raise NotImplementedError(
-                f"ReferenceArm is PegInsertion-only; {task} needs the cell's gripper/arena")
-        import env.peg_insertion  # noqa: F401  registers PegInsertion_D0
+                f"ReferenceArm supports {self.TASKS}; {task} needs its gripper/arena ported")
         from env.robosuite_wrapper import PixelRobosuite
         import robosuite.utils.transform_utils as T
         self.T = T
+        self.task = task
+        self.robotiq = task == "Threading_RealCellRobotiq"
+        self.cell = None
+        if self.robotiq:
+            import dataclasses
+            import env.threading_variants as tv
+            from env.sim2real import Sim2RealConfig, load_sim2real
+            assert cell_path, "the ckpt cfg records no sim2real_cell"
+            if os.path.realpath(cell_path) != os.path.realpath(tv.REAL_CELL_ROBOTIQ_YAML):
+                print(f"[server] ⚠️ ckpt cell {cell_path} != the class's model cell "
+                      f"{tv.REAL_CELL_ROBOTIQ_YAML}: the Robotiq/arena geometry comes from the "
+                      f"latter (as it did in training at the time)", flush=True)
+            cell = load_sim2real(cell_path)
+            off = {f.name: f.default for f in dataclasses.fields(Sim2RealConfig)
+                   if f.name.startswith("dr_")}
+            self.cell = dataclasses.replace(
+                cell, cameras=tuple(dataclasses.replace(c, randomize=False) for c in cell.cameras),
+                **off)
+            self._map = tv.robotiq_real_to_sim
+            free = ("needle", "tripod")
+        else:
+            import env.peg_insertion  # noqa: F401  registers PegInsertion_D0
+            free = ("peg",)
         self.e = PixelRobosuite(env_name=task, robots="Panda", episode_length=10 ** 9,
                                 camera_names=[], rl_cameras=[], use_state=True,
-                                state_only_no_render=True, device="cpu")
+                                state_only_no_render=True, device="cpu",
+                                hand_init_perturb_joint_sigma=0.0, sim2real=self.cell)
         np.random.seed(0)
         self.e.reset()
         self.raw = self.e.env
@@ -139,47 +170,73 @@ class ReferenceArm:
         self.jidx = np.array(self.rob._ref_joint_pos_indexes)
         self.jvel = np.array(self.rob._ref_joint_vel_indexes)
         names = [m.joint_id2name(i) for i in range(m.njnt)]
-        self.gidx = [m.get_joint_qpos_addr(n) for n in names if n and "finger_joint" in n]
-        self.gvel = [m.get_joint_qvel_addr(n) for n in names if n and "finger_joint" in n]
+        if self.robotiq:
+            gj = list(tv.ROBOTIQ_DRIVER_JOINTS)
+        else:
+            gj = [n for n in names if n and "finger_joint" in n]
+        self.gidx = [m.get_joint_qpos_addr(n) for n in gj]
+        self.gvel = [m.get_joint_qvel_addr(n) for n in gj]
         # objects must not push the reference arm around: it models free-space OSC
         for g in range(m.ngeom):
             b = m.body_id2name(int(m.geom_bodyid[g])) or ""
-            if b.startswith(("peg_obj", "board_obj")):
+            if b.startswith(tuple(f + "_obj" for f in free)) or b.startswith(("board_obj",)):
                 m.geom_contype[g] = 0
                 m.geom_conaffinity[g] = 0
-        peg = [n for n in names if n and "peg" in n]
-        self.peg_q = self.peg_v = None
-        if peg:
-            a = m.get_joint_qpos_addr(peg[0]); v = m.get_joint_qvel_addr(peg[0])
-            self.peg_q = a[0] if isinstance(a, tuple) else a
-            self.peg_v = v[0] if isinstance(v, tuple) else v
-        self._park_peg()
+        self.free = []
+        for n in names:
+            if n and n.startswith(free) and m.jnt_type[m.joint_name2id(n)] == 0:   # free joint
+                a = m.get_joint_qpos_addr(n); v = m.get_joint_qvel_addr(n)
+                self.free.append((a[0] if isinstance(a, tuple) else a,
+                                  v[0] if isinstance(v, tuple) else v))
+        tid = m.geom_name2id("table_collision") if "table_collision" in [
+            m.geom_id2name(i) for i in range(m.ngeom)] else None
+        self.sim.forward()
+        self.table_top_z = (float(self.sim.data.geom_xpos[tid][2] + m.geom_size[tid][2])
+                            if tid is not None else None)
+        self._park()
         self.sim.forward()
         # robosuite's OSC is numba-jitted: the first step costs ~4 s. Pay it now,
         # not on the first live step (which would trip the client's staleness stop).
         q0 = np.array(self.sim.data.qpos[self.jidx])
         t0 = time.time()
         self.step(np.zeros(7))
-        self.set_state(q0, np.zeros(7), [0.04, 0.04])
-        print(f"[server] reference-arm OSC warm-up {time.time() - t0:.1f}s", flush=True)
+        self.set_state(q0, np.zeros(7), [0.0] if self.robotiq else [0.04, 0.04])
+        print(f"[server] reference-arm OSC warm-up {time.time() - t0:.1f}s | prop frame "
+              f"{self.cell.prop_frame if self.cell else 'world'}", flush=True)
 
-    def _park_peg(self):
-        """The peg is a free body: keep it far below the table and at rest."""
-        if self.peg_q is not None:
-            self.sim.data.qpos[self.peg_q:self.peg_q + 3] = [0.0, 0.0, -5.0]
-            self.sim.data.qvel[self.peg_v:self.peg_v + 6] = 0.0
+    def _park(self):
+        """Free objects: far below the table and at rest."""
+        for i, (a, v) in enumerate(self.free):
+            self.sim.data.qpos[a:a + 3] = [0.0, 2.0 * i, -5.0]
+            self.sim.data.qvel[v:v + 6] = 0.0
+
+    def sim_fingers(self, fingers):
+        """What the client sends -> the sim's gripper joint values.
+        Panda: [left, right] finger metres (right sign-flipped, as before).
+        Robotiq: [knuckle_rad] from /gripper/joint_states, mapped to both drivers."""
+        if self.robotiq:
+            return self._map(fingers[0])
+        return np.array([fingers[0], -fingers[1]])
 
     def set_state(self, q, dq, fingers):
         d = self.sim.data
         d.qpos[self.jidx] = q
         d.qvel[self.jvel] = dq if dq is not None else 0.0
-        if len(self.gidx) == 2:
-            d.qpos[self.gidx[0]], d.qpos[self.gidx[1]] = fingers[0], -fingers[1]
-            d.qvel[self.gvel[0]] = d.qvel[self.gvel[1]] = 0.0
-        self._park_peg()
+        g = self.sim_fingers(fingers)
+        for a, v, x in zip(self.gidx, self.gvel, g):
+            d.qpos[a] = x
+            d.qvel[v] = 0.0
+        self._park()
         self.sim.forward()
 
     def prop(self, fingers):
+        if self.robotiq:
+            # the training env's own observables + prop_frame: same function of q by construction
+            from env.robosuite_wrapper import PROP_KEYS
+            from env.sim2real import apply_prop_frame
+            obs = self.raw._get_observations(force_update=True)
+            apply_prop_frame(self.sim, self.cell, obs)
+            return np.concatenate([np.asarray(obs[k], np.float64) for k in PROP_KEYS]).astype(np.float32)
         d = self.sim.data
         pos = np.array(d.site_xpos[self.rob.eef_site_id])
         quat = self.T.convert_quat(d.get_body_xquat(self.rob.robot_model.eef_name), to="xyzw")
@@ -192,7 +249,58 @@ class ReferenceArm:
         """One 50 ms control step through robosuite's own OSC. -> joint positions reached."""
         self.raw.timestep = 0                       # never trip robosuite's horizon check
         self.raw.step(np.asarray(action, np.float64))
+        # site_xpos after mj_step is FK of the qpos BEFORE the last substep's integration
+        # (~0.4 mm behind at 12 cm/s): eef() -- the z_min / box check -- must see the target
+        self.sim.forward()
         return np.array(self.sim.data.qpos[self.jidx])
+
+
+class TrackScript:
+    """--scripted track: a fixed OSC action pattern instead of the policy (2026-10-15).
+
+    Measures what made the 20 Hz runs hit the table: how far behind the commanded pose the
+    real arm is, and how far it keeps going after the command stops. Per axis and amplitude:
+    hold -> move at -amp (z: down) until the MEASURED grip site has gone `dist` -> hold ->
+    move back until it is home -> hold. Everything else (ReferenceArm OSC, joint target,
+    z_min / box refusal, client step clip and 100 Hz ramp) is the deploy path unchanged, so a
+    20 Hz and a 10 Hz run differ only in the client's --hz. Gripper stays open."""
+
+    def __init__(self, axes, amps, dist, hold_s, max_move_s):
+        self.plan = [(ax, a) for ax in axes for a in amps]
+        self.dist, self.hold_s, self.max_move_s = dist, hold_s, max_move_s
+        self.i, self.phase, self.k, self.home = 0, "hold0", 0, None
+        self.done = False
+
+    def act(self, eef, hz):
+        """-> (7-d action, info). `eef` = measured grip site (sim world)."""
+        a = np.zeros(7)
+        a[6] = -1.0
+        if self.done or self.i >= len(self.plan):
+            self.done = True
+            return a, {"phase": "done"}
+        ax, amp = self.plan[self.i]
+        j = "xyz".index(ax)
+        sign = -1.0 if ax == "z" else 1.0            # z: away = DOWN; x/y: +
+        if self.home is None:
+            self.home = np.array(eef)
+        moved = sign * (eef[j] - self.home[j])
+        hold, mmax = int(round(self.hold_s * hz)), int(round(self.max_move_s * hz))
+        nxt = {"hold0": "away", "away": "hold1", "hold1": "back", "back": "hold2", "hold2": None}
+        go = (self.phase.startswith("hold") and self.k >= hold) or \
+             (self.phase == "away" and (moved >= self.dist or self.k >= mmax)) or \
+             (self.phase == "back" and (moved <= 0.0 or self.k >= mmax))
+        if go:
+            self.phase, self.k = nxt[self.phase], 0
+            if self.phase is None:                   # next (axis, amplitude)
+                self.i, self.phase, self.home = self.i + 1, "hold0", None
+                return self.act(eef, hz)
+        if self.phase == "away":
+            a[j] = sign * amp
+        elif self.phase == "back":
+            a[j] = -sign * amp
+        self.k += 1
+        return a, {"phase": self.phase, "axis": ax, "amp": amp, "moved": round(float(moved), 5),
+                   "home": np.round(self.home, 5).tolist()}
 
 
 class Server:
@@ -201,15 +309,39 @@ class Server:
         self.a = a
         self.torch = torch
         t0 = time.time()
-        self.agent, self.cfg = load_agent(a.ckpt, a.device)
+        self.script = None
+        if a.scripted:
+            assert a.task and a.cell, "--scripted needs --task and --cell (no ckpt is loaded)"
+
+            class _Cfg:
+                task_name, sim2real_cell, rl_image_size = a.task, a.cell, 224
+            self.agent, self.cfg = None, _Cfg
+            rl_cameras = ["agentview", "robot0_eye_in_hand"]
+            self.script = TrackScript(a.track_axes.split(","),
+                                      [float(x) for x in a.track_amps.split(",")],
+                                      a.track_dist, a.track_hold_s, a.track_max_move_s)
+        else:
+            self.agent, self.cfg = load_agent(a.ckpt, a.device)
+            rl_cameras = self.agent.rl_cameras
         self.S = int(self.cfg.rl_image_size)
-        self.cammap = sim_camera_map(self.agent.rl_cameras)    # ROS cam -> sim cam
+        self.cammap = sim_camera_map(rl_cameras)    # ROS cam -> sim cam
+        self.hz = 20.0
         self.fovy, self.cell_cam = self._sim_cameras()
-        self.arm = ReferenceArm(self.cfg.task_name)
+        self.arm = ReferenceArm(self.cfg.task_name, self.cfg.sim2real_cell)
+        if self.a.z_min is None and self.script is not None and self.arm.table_top_z is not None:
+            # free-space test: never let a target come within 15 cm of the table
+            self.a.z_min = self.arm.table_top_z + 0.15
+            print(f"[server] --scripted: z_min = table top + 0.15 = {self.a.z_min:.3f}", flush=True)
+        if self.a.z_min is None:
+            if not self.cfg.task_name.startswith("PegInsertion"):
+                raise SystemExit(f"--z_min is required for {self.cfg.task_name} (sim world z of the "
+                                 f"grip site, m). Table top here = {self.arm.table_top_z}; measure the "
+                                 f"grip-site height at a fingertip touch-off and add a margin.")
+            self.a.z_min = 0.995
         self.color = {} if a.no_color else load_color(a.color_json)
         self.rect = {}
-        print(f"[server] {a.ckpt} loaded in {time.time() - t0:.1f}s | cameras "
-              f"{self.agent.rl_cameras} @ {self.S} | colour map: "
+        print(f"[server] {a.ckpt or 'SCRIPTED ' + a.scripted} loaded in {time.time() - t0:.1f}s | cameras "
+              f"{rl_cameras} @ {self.S} | colour map: "
               f"{sorted(self.color) or 'NONE (raw ZED colours)'}", flush=True)
         if a.save_dir:
             os.makedirs(a.save_dir, exist_ok=True)
@@ -235,6 +367,7 @@ class Server:
         return {c: pf[c] for c in sims}, {c: None for c in sims}
 
     def hello(self, h):
+        self.hz = float(h.get("hz", 20.0))
         for cam, ci in h["camera_info"].items():
             if cam not in self.cammap:
                 continue
@@ -271,12 +404,16 @@ class Server:
         prop = self.arm.prop(fingers)
         eef = self.arm.eef()
         torch = self.torch
-        obs = {self.cammap[c]: torch.from_numpy(np.ascontiguousarray(im.transpose(2, 0, 1)))
-               for c, im in ims.items()}
-        obs["prop"] = torch.from_numpy(prop)
         t1 = time.perf_counter()
-        with torch.no_grad():
-            action = self.agent.act(obs, eval_mode=True).numpy().astype(np.float64)
+        info = None
+        if self.script is not None:
+            action, info = self.script.act(eef, self.hz)
+        else:
+            obs = {self.cammap[c]: torch.from_numpy(np.ascontiguousarray(im.transpose(2, 0, 1)))
+                   for c, im in ims.items()}
+            obs["prop"] = torch.from_numpy(prop)
+            with torch.no_grad():
+                action = self.agent.act(obs, eval_mode=True).numpy().astype(np.float64)
         t2 = time.perf_counter()
         action = np.clip(action, -1.0, 1.0)
         q_ref = self.arm.step(action)
@@ -297,10 +434,14 @@ class Server:
         res = {"q_target": q_tgt.tolist(), "gripper_close": grip_close,
                "action": action.round(4).tolist(), "eef": eef.round(4).tolist(),
                "eef_target": eef_tgt.round(4).tolist(), "warn": warn,
+               "script": info, "done": bool(self.script is not None and self.script.done),
                "ms": {"pre": round((t1 - t0) * 1e3, 1), "policy": round((t2 - t1) * 1e3, 1),
                       "osc": round((t3 - t2) * 1e3, 1)}}
         if self.log:
-            self.log.write(json.dumps(dict(res, step=self.n, q=q.round(4).tolist(),
+            self.log.write(json.dumps(dict(res, step=self.n, q=q.round(5).tolist(),
+                                           dq=dq.round(5).tolist(), eef_full=eef.round(6).tolist(),
+                                           eef_target_full=eef_tgt.round(6).tolist(),
+                                           ages=h.get("ages"), t_mono=h.get("t_mono"), hz=self.hz,
                                            t=time.time())) + "\n")
             self.log.flush()
             if self.a.save_every and self.n % self.a.save_every == 0:
@@ -330,6 +471,11 @@ class Server:
                             send_msg(conn, self.step(h, blobs))
                         elif h["type"] == "reset":
                             self.n = 0
+                            if self.script is not None:
+                                self.script = TrackScript(self.a.track_axes.split(","),
+                                                          [float(x) for x in self.a.track_amps.split(",")],
+                                                          self.a.track_dist, self.a.track_hold_s,
+                                                          self.a.track_max_move_s)
                             send_msg(conn, {"ok": True})
                         else:
                             send_msg(conn, {"error": f"unknown type {h['type']}"})
@@ -345,15 +491,24 @@ class Server:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", default="", help="policy (not needed with --scripted)")
+    ap.add_argument("--scripted", default="", choices=("", "track"),
+                    help="track: fixed move/hold pattern instead of a policy (tracking-lag test)")
+    ap.add_argument("--task", default="", help="--scripted: the task whose arm is the OSC model")
+    ap.add_argument("--cell", default="", help="--scripted: its cell yaml")
+    ap.add_argument("--track_axes", default="z,x")
+    ap.add_argument("--track_amps", default="0.2,0.5,1.0", help="OSC action magnitudes to test")
+    ap.add_argument("--track_dist", type=float, default=0.06, help="m moved per leg (measured)")
+    ap.add_argument("--track_hold_s", type=float, default=1.5)
+    ap.add_argument("--track_max_move_s", type=float, default=4.0)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5555)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--color_json", default=DEFAULT_COLOR_JSON)
     ap.add_argument("--no_color", action="store_true", help="feed raw ZED colours")
-    ap.add_argument("--z_min", type=float, default=0.995,
-                    help="lowest allowed grip-site target, sim world z (m). The real demos "
-                         "bottom out at 1.008 (grasping the peg off the table).")
+    ap.add_argument("--z_min", type=float, default=None,
+                    help="lowest allowed grip-site target, sim world z (m). PegInsertion default "
+                         "0.995 (the real demos bottom out at 1.008); REQUIRED for any other task.")
     ap.add_argument("--x_box", type=float, nargs=2, default=(-0.35, 0.35))
     ap.add_argument("--y_box", type=float, nargs=2, default=(-0.35, 0.35))
     ap.add_argument("--joint_margin", type=float, default=0.05)
@@ -361,7 +516,10 @@ def main():
                     help="decode JPEGs at 1/r resolution (2: 37 -> ~10 ms/step, same 224 image)")
     ap.add_argument("--save_dir", default="", help="log steps.jsonl + policy-input images")
     ap.add_argument("--save_every", type=int, default=5)
-    Server(ap.parse_args()).serve()
+    a = ap.parse_args()
+    if not a.scripted and not a.ckpt:
+        ap.error("--ckpt is required unless --scripted")
+    Server(a).serve()
 
 
 if __name__ == "__main__":

@@ -745,7 +745,9 @@ def test_robotiq_cell():
     except AssertionError:
         check("a Panda hand on the Robotiq cell is refused", True)
     # the wrapper on top: same mount, 37/9, base-frame camera rides with the base DR
-    nocam = dataclasses.replace(cell, dr_cam_pos=0.0, dr_cam_rot_deg=0.0)
+    # per-camera dr_* widths override the cell-wide ones (10-15): switch the cameras off, not the cell knob
+    nocam = dataclasses.replace(cell, dr_cam_pos=0.0, dr_cam_rot_deg=0.0,
+                                cameras=tuple(dataclasses.replace(c, randomize=False) for c in cell.cameras))
     env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
                          camera_names=["agentview"], rl_cameras=["agentview"], use_state=True,
                          obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
@@ -780,6 +782,105 @@ def test_robotiq_cell():
     R = d.body_xmat[bid].reshape(3, 3)
     e = np.abs(R.T @ (d.cam_xpos[cid] - d.body_xpos[bid]) - cp).max()
     check("cam_follow_base_dr=0 keeps the legacy (world-fixed) camera", e > 1e-3, f"{1000 * e:.1f} mm")
+    # 2026-10-15: per-camera DR widths (the wrist hand-eye is ~1 cm uncertain, the scene is not)
+    from env.sim2real import RealCameraConfig
+    plain = RealCameraConfig(name="x", pos=(0.1, 0, 0))
+    check("a camera without dr_* overrides uses the cell-wide widths",
+          plain.dr_widths(cell) == (cell.dr_cam_pos, cell.dr_cam_rot_deg, cell.dr_cam_fovy_deg))
+    check("randomize: false still means no DR",
+          dataclasses.replace(plain, randomize=False, dr_pos=0.01).dr_widths(cell) == (0.0, 0.0, 0.0))
+    check("per-axis widths come back as tuples",
+          dataclasses.replace(plain, dr_pos=(0.001, 0.002, 0.003)).dr_widths(cell)[0] == (0.001, 0.002, 0.003))
+    wcam = [c for c in cell.cameras if c.name == "robot0_eye_in_hand"][0]
+    want_pos, want_rot = (0.006, 0.010, 0.020), (3.0, 3.0, 4.5)
+    check("10-14 wrist camera: per-axis widths +-(6,10,20) mm / (3,3,4.5) deg / fovy 1",
+          wcam.dr_widths(cell) == (want_pos, want_rot, 1.0), str(wcam.dr_widths(cell)))
+    scam = [c for c in cell.cameras if c.name == "agentview"][0]
+    check("10-14 scene camera: own widths +-15 mm / 1.5 deg / fovy 1 (cell-wide)",
+          scam.dr_widths(cell) == (0.015, 1.5, cell.dr_cam_fovy_deg), str(scam.dr_widths(cell)))
+    env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                         camera_names=["agentview", "robot0_eye_in_hand"],
+                         rl_cameras=["agentview", "robot0_eye_in_hand"], use_state=True,
+                         obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                         hand_init_perturb_joint_sigma=0.0, sim2real=cell)
+    wp, fv = [], []
+    for seed in range(24):
+        np.random.seed(seed)
+        env.reset()
+        m, d = env.env.sim.model, env.env.sim.data        # hard reset: re-fetch
+        hid, cid = m.body_name2id("robot0_right_hand"), m.camera_name2id("robot0_eye_in_hand")
+        R = d.body_xmat[hid].reshape(3, 3)
+        wp.append(R.T @ (d.cam_xpos[cid] - d.body_xpos[hid]) - np.array(wcam.pos))
+        fv.append(float(m.cam_fovy[cid]))
+    wp = np.abs(np.array(wp)).max(0)
+    check("wrist position jitter stays inside its per-axis box (hand frame)",
+          np.all(wp <= np.array(want_pos) + 1e-6), f"max {np.round(1000 * wp, 2)} mm")
+    check("... and uses it: z reaches past the x width",
+          wp[2] > want_pos[0] + 1e-3, f"max {np.round(1000 * wp, 2)} mm")
+    fv = np.array(fv)
+    check("wrist fovy jitters within +-1 deg", np.abs(fv - wcam.fovy).max() <= 1.0 + 1e-6 and fv.std() > 0.1,
+          f"[{fv.min():.2f}, {fv.max():.2f}] nominal {wcam.fovy}")
+
+
+def test_prop_frame():
+    """2026-10-15: prop_frame "base" -- the prop is FK(q) in the base frame, on the robot and in the sim."""
+    print("\nM. prop_frame: base-frame prop is blind to the base DR and matches the deploy FK")
+    import dataclasses
+    import env.threading_variants as tv
+    from env.robosuite_wrapper import PROP_KEYS
+    from env.sim2real import apply_prop_frame, load_sim2real, quat_wxyz2mat
+    cell = load_sim2real(tv.REAL_CELL_ROBOTIQ_YAML)
+    check("10-14 cell sets prop_frame: base", cell.prop_frame == "base")
+    check("default is world (every other cell unchanged)", Sim2RealConfig().prop_frame == "world")
+    q = np.array(cell.init_qpos) + np.array([0.1, -0.05, 0.08, 0.1, -0.07, 0.05, 0.3])
+    g = tv.robotiq_real_to_sim(0.44)
+    check("Robotiq map: 0 -> 0, 0.440 -> 0.499, closed 0.786 -> stall 0.556",
+          np.allclose(tv.robotiq_real_to_sim(0.0), 0) and abs(g[0] - 0.499) < 1e-3
+          and np.allclose(tv.robotiq_real_to_sim(0.786), tv.ROBOTIQ_SIM_STALL), str(np.round(g, 4)))
+    env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                         camera_names=["agentview"], rl_cameras=["agentview"], use_state=True,
+                         obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                         hand_init_perturb_joint_sigma=0.0, sim2real=cell)
+
+    def at_q(e):
+        rob = e.robots[0]
+        e.sim.data.qpos[rob._ref_joint_pos_indexes] = q
+        for n, v in zip(tv.ROBOTIQ_DRIVER_JOINTS, g):
+            e.sim.data.qpos[e.sim.model.get_joint_qpos_addr(n)] = v
+        e.sim.forward()
+        o = e._get_observations(force_update=True)
+        world = np.concatenate([np.asarray(o[k], np.float64) for k in PROP_KEYS])
+        apply_prop_frame(e.sim, cell, o)
+        return world, np.concatenate([np.asarray(o[k], np.float64) for k in PROP_KEYS])
+
+    worlds, bases, same, rot_ok = [], [], [], []
+    for seed in range(8):
+        np.random.seed(seed)
+        ob, _ = env.reset()
+        same.append(np.abs(ob["prop"].numpy() - ob["state"].numpy()[:9]).max())
+        w, b = at_q(env.env)
+        worlds.append(w); bases.append(b)
+        m, d = env.env.sim.model, env.env.sim.data
+        Rb = d.body_xmat[m.body_name2id("robot0_base")].reshape(3, 3)
+        Rh = d.body_xmat[m.body_name2id("robot0_right_hand")].reshape(3, 3)
+        x, y, z, w_ = b[3:7]
+        rot_ok.append(np.abs(quat_wxyz2mat((w_, x, y, z)) - Rb.T @ Rh).max())
+    worlds, bases = np.array(worlds), np.array(bases)
+    check("wrapper: prop == state[:9] (trainers slice prop out of state)", max(same) < 1e-6)
+    check("world-frame eef moves with the base DR", np.ptp(worlds[:, :3], 0).max() > 2e-3,
+          f"spread {np.round(1000 * np.ptp(worlds[:, :3], 0), 1)} mm")
+    check("base-frame prop is identical across base DR draws", np.ptp(bases, 0).max() < 1e-6,
+          f"max spread {np.ptp(bases, 0).max():.2e}")
+    check("base-frame quat = R_base^T R_hand", max(rot_ok) < 1e-6, f"{max(rot_ok):.1e}")
+    check("base-frame position is base-scale (|z| < 0.8 m, not world ~1.x)", abs(bases[0, 2]) < 0.8,
+          str(np.round(bases[0, :3], 3)))
+    # the deploy server's FK: same function of (q, real knuckle)
+    from real2sim.deploy.policy_server import ReferenceArm
+    arm = ReferenceArm("Threading_RealCellRobotiq", tv.REAL_CELL_ROBOTIQ_YAML)
+    arm.set_state(q, np.zeros(7), [0.44])
+    pd = arm.prop([0.44]).astype(np.float64)
+    check("deploy ReferenceArm.prop == training-env prop at the same q / gripper",
+          np.abs(pd - bases[0]).max() < 1e-5, f"max |d| {np.abs(pd - bases[0]).max():.1e}")
 
 
 def main():
@@ -797,6 +898,7 @@ def main():
     test_dr_ranges()
     test_square_realcell()
     test_robotiq_cell()
+    test_prop_frame()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"FAILED ({len(FAILED)}):")

@@ -48,6 +48,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, JointState
 from std_msgs.msg import Float32
 
 IMPEDANCE_CONTROLLER = "joint_impedance_controller"
+ROBOTIQ_KNUCKLE = "robotiq_85_left_knuckle_joint"
 COMMAND_RATE_HZ = 100.0
 ROBOT_STATE_TIMEOUT_S = 1.0
 CAMERA_INFO_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -80,6 +81,8 @@ class Args:
     scene_info_topic: str = "/cameras/scene/left/camera_info"
     wrist_info_topic: str = "/cameras/wrist/left/camera_info"
     joint_prefix: str = "fr3_joint"
+    joint_log: str = ""
+    """Save EVERY joint-state message and every 100 Hz command to this .npz (tracking test)."""
 
 
 # ------------------------------------------------------------ wire (policy_server)
@@ -120,6 +123,8 @@ class RunnerNode(Node):
         self.imgs: Dict[str, Tuple[bytes, float]] = {}
         self.info: Dict[str, dict] = {}
         self.gello_cmd: Optional[List[float]] = None
+        self.jlog = [] if a.joint_log else None     # (t, q, dq) of every joint-state message
+        self.clog = [] if a.joint_log else None     # (t, q) of every published command
 
         self.create_subscription(JointState, a.robot_joint_topic, self._on_robot, 10)
         self.create_subscription(JointState, a.gripper_state_topic, self._on_gripper, 10)
@@ -150,9 +155,16 @@ class RunnerNode(Node):
         if pos is not None:
             with self._lock:
                 self.q, self.dq, self.q_at = pos, vel, time.monotonic()
+                if self.jlog is not None:
+                    self.jlog.append((self.q_at, pos, vel))
 
     def _on_gripper(self, msg):
-        if len(msg.position) >= 2:
+        # Robotiq (/gripper/joint_states): ONE knuckle angle, the server maps it onto the sim
+        if ROBOTIQ_KNUCKLE in msg.name:
+            with self._lock:
+                self.fingers = [msg.position[list(msg.name).index(ROBOTIQ_KNUCKLE)]]
+                self.fingers_at = time.monotonic()
+        elif len(msg.position) >= 2:
             with self._lock:
                 self.fingers, self.fingers_at = [msg.position[0], msg.position[1]], time.monotonic()
 
@@ -253,6 +265,8 @@ class InterpolatingHolder:
             q = self.current()
             if q is not None:
                 self.node.publish_target(q)
+                if self.node.clog is not None:
+                    self.node.clog.append((time.monotonic(), q))
             self._stop.wait(1.0 / COMMAND_RATE_HZ)
 
 
@@ -299,7 +313,7 @@ def main(a: Args):
             q, _, _, fing, _, imgs = node.snapshot()
             raise SystemExit(f"inputs missing after 15 s: joints={q is not None} gripper="
                              f"{fing is not None} images={sorted(imgs)} camera_info={sorted(node.info)}")
-        send_msg(sock, {"type": "hello", "camera_info": node.info})
+        send_msg(sock, {"type": "hello", "camera_info": node.info, "hz": a.hz})
         h, _ = recv_msg(sock)
         if "error" in h:
             raise SystemExit(f"server: {h['error']}")
@@ -344,7 +358,8 @@ def main(a: Args):
             stale = {k2: round(v, 3) for k2, v in ages.items() if v > a.max_age}
             if stale:
                 raise SystemExit(f"stale inputs {stale}; stopping.")
-            send_msg(sock, {"type": "step", "q": q, "dq": dq, "fingers": fing,
+            send_msg(sock, {"type": "step", "q": q, "dq": dq, "fingers": fing, "t_mono": now,
+                            "ages": {k2: round(v, 4) for k2, v in ages.items()},
                             "cams": ["scene", "wrist"]}, [imgs["scene"][0], imgs["wrist"][0]])
             res, _ = recv_msg(sock)
             if "error" in res:
@@ -366,6 +381,9 @@ def main(a: Args):
                     node.publish_gripper(res["gripper_close"])
                     last_grip = res["gripper_close"]
             last_target = tgt
+            if res.get("done"):
+                print("script finished.")
+                break
         print("episode finished.")
     except KeyboardInterrupt:
         print("\ninterrupted.")
@@ -387,6 +405,16 @@ def main(a: Args):
             except ProcessLookupError:
                 pass
         holder.stop()
+        if node.jlog:
+            os.makedirs(os.path.dirname(os.path.abspath(a.joint_log)), exist_ok=True)
+            np.savez(a.joint_log,
+                     joint_t=np.array([x[0] for x in node.jlog]),
+                     joint_q=np.array([x[1] for x in node.jlog]),
+                     joint_dq=np.array([x[2] for x in node.jlog]),
+                     cmd_t=np.array([x[0] for x in node.clog]) if node.clog else np.zeros(0),
+                     cmd_q=np.array([x[1] for x in node.clog]) if node.clog else np.zeros((0, 7)),
+                     hz=a.hz)
+            print(f"joint log: {len(node.jlog)} states, {len(node.clog or [])} commands -> {a.joint_log}")
         sock.close()
         node.destroy_node()
         rclpy.try_shutdown()

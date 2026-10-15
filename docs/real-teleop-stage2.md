@@ -51,6 +51,65 @@ pixel 臂的 stage-2 BC 只读前 9 维，所以零占位是安全的 —— **�
 
 ---
 
+## 2b. ★ Robotiq cell（10-14 起）：prop 改成 **base 系**（2026-10-15，owner 选的方案 A）
+
+**上面 §2 的表和「坑 1」只适用于旧的 Franka 手爪 cell。** `calib_20261014/threading_real_cell_20261014.yaml`
+设了 `prop_frame: base`：
+
+| 字段 | Robotiq cell 上的定义 |
+|---|---|
+| `robot0_eef_pos` (3) | TCP（`gripper0_grip_site`）在 **`robot0_base` 系**里的位置（米） |
+| `robot0_eef_quat` (4) | `robot0_right_hand` body 在 **`robot0_base` 系**里的姿态，xyzw |
+| `robot0_gripper_qpos` (2) | 两个 Robotiq 驱动关节 = `robotiq_real_to_sim(真机 knuckle)` 写两遍：`clip(1.134 × knuckle, 0, 0.556)` |
+
+**为什么。** 真机上 prop 是拿实测 q 过 sim 的 FK 算出来的。在世界系下，它还隐含了「base 相对桌面放在哪」，
+而 sim 正在对这个量做 DR（`dr_base_xy` ±7 mm、`dr_base_yaw_deg` ±1.5°、`dr_base_height` ±7.5 mm）。
+实测同一个 q 下，世界系 eef 在 8 次 DR 抽样里的散布是 **(9, 27, 18) mm**：
+sim 里 prop 等于「末端相对桌面的真值」，真机上却等于「名义 base + FK」，两者之差真机上没人知道。
+base 系下，prop 就是 **FK(q)**：sim 和真机是同一个函数，不含任何标定。
+base 与桌面的相对关系只通过图像进入策略，这和真机上的情况一致。
+
+**已验证（`scripts/test_sim2real.py` M 节）：**
+- 8 次 base DR 抽样下，base 系 prop 的差 ≤ 1e-15；
+- `prop == state[:9]`；
+- 部署端 `ReferenceArm.prop` 与训练 env 在同一个 q 和夹爪读数下差 1.5e-8。
+
+**参考值**（DROID home，sim 名义）：
+- `eef_pos` = (0.3597, 0.0000, 0.3319)
+- `eef_quat`(xyzw) = (0.9238, 0.3829, 0, 0)
+- 夹爪张开时 `gripper_qpos` = (0, 0)；夹住 40 mm 柄时 = (0.499, 0.499)
+
+### 真机侧要做的
+
+1. **不要自己算 prop，存原始量。** 每个控制 tick 记录：
+   - `fr3_joint1..7` 的实测 q（rad，顺序和零位与 sim 一致；DROID home 的帧 0 应在 0.01 rad 以内）和 dq；
+   - `/gripper/joint_states` 里 `robotiq_85_left_knuckle_joint` 的值（rad，**一个数**）；
+   - 关节和每路相机帧的时间戳（同一个单调时钟）。
+
+   prop 由我们离线用 sim FK 算（重放契约：约定改了只要重算，不用重采）。
+   以前那条「加 (−0.489, −0.034, 0.912) 换到世界系」**在这个 cell 上是错的，不要做**。
+2. **base 的标定不再影响 prop，但仍然影响图像和摆放。** 相机外参（base 系）、桌面高度、物体摆放都还是相对 base 量的，照常标定。
+   需要补一次 **xy touch-off**：
+   - 夹爪闭合，用指尖依次轻触板子上 ≥ 4 个已知位置的点（ChArUco 角点或贴胶带做标记，记下每个点的编号）；
+   - 每个点停稳后记录 q，以及场景和腕相机各一帧；
+   - 再触 needle 柄的两端各一次。
+
+   这样能量出 base→桌面的 xy 和 yaw（现在只有 z：0.0287 ± 0.0012），同时验证 needle 的摆放。工具：`calib_20261014/tools/touch.py`。
+3. **部署：**
+   - `robot_client.py --gripper-state-topic /gripper/joint_states`：客户端认出 `robotiq_85_left_knuckle_joint` 后只发这一个值，映射在 server 里做；
+   - `policy_server.py` 对非 PegInsertion 任务**必须显式给 `--z_min`**（grip site 的 sim 世界系 z）。
+     sim 估计：桌面 0.9405，指尖贴桌时 grip site 比最低的指尖高约 10 mm，即 ≈ 0.950。
+     请在真机上做一次闭合指尖的 touch-off，dry run 读 server 打印的 `eef[2]`，取该值 + 2 mm。
+4. **图像比 prop 旧**（§3b）：请保留每帧的 capture 时间戳，部署前我们要量一次延迟。
+5. ⚠️ **控制频率仍未定**（真机 10 Hz vs sim 20 Hz，铁律 #37）。sim、录制器和 runner 必须用同一个频率，定了之后才能重新生成专家和数据。
+
+### sim 侧还没做的（不影响真机采集，只影响转换）
+`scripts/convert_real_teleop.py` 和 `scripts/validate_real_demos.py` 还是 Franka 手爪时代的代码（READY 位姿、
+指宽、世界系范围）。转换脚本遇到 `prop_frame: base` 或 Robotiq 会**直接拒绝**，不会悄悄写出错的 prop。
+等控制频率定了再移植（改用 `env.sim2real.eef_in_base` + `robotiq_real_to_sim` + DROID home）。
+
+---
+
 ## 3. 观测记录：两路相机
 
 | 相机 | 真机 | 处理流程 | 结果必须等于 |

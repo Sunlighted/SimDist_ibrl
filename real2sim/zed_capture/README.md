@@ -19,7 +19,8 @@ the same order as the whole chain's 6.1 mm).
 
 `/home/yifanr/scan_run2` — right-eye images, `*_depth.npy`, `*_confidence.npy`
 (586 MB). Excluded because the calibration is **2D PnP only**: ZED stereo depth
-fits the board to just 18 mm (external) / 33 mm (wrist), against a board model
+fits the board to just 18 mm (external) / 33 mm (wrist) [⚠️ 2026-10-15: those two numbers came from an
+intrinsics bug (fx scaled 1.725x too far); fixed they are 3.5 / 1.6 mm, docs/real2sim.md §2d-x], against a board model
 whose own self-consistency is sub-millimetre, so depth is the weak link and is no
 longer used. Also `/home/yifanr/scan_run1` (superseded).
 

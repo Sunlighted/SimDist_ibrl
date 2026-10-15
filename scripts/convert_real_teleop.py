@@ -140,6 +140,14 @@ class SimFK:
         cfg = pyrallis.load(  # type: ignore
             train_rl.MainConfig, open(os.path.join(os.path.dirname(expert), "cfg.yaml")))
         cell = load_sim2real(cell_path)
+        # Franka-hand era (READY pose, finger width, world-frame prop). The 10-14 Robotiq
+        # cell changes all three (DROID home, ONE knuckle angle via robotiq_real_to_sim,
+        # prop_frame "base" via env.sim2real.eef_in_base) -- port before using it there,
+        # do not let it write a silently wrong prop (docs/real-teleop-stage2.md §2b).
+        if cell.prop_frame != "world" or "Robotiq" in str(cell.gripper_types):
+            raise SystemExit(f"{cell_path}: prop_frame={cell.prop_frame!r} / gripper "
+                             f"{cell.gripper_types!r} -- this converter is not ported to that "
+                             f"cell yet (docs/real-teleop-stage2.md §2b)")
         # Geometry only. Base-pose DR would move the WORLD<-BASE transform that
         # every prop value is expressed in, so it must be off.
         for f in dataclasses.fields(Sim2RealConfig):
