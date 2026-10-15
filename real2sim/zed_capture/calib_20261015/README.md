@@ -71,6 +71,39 @@ figure `figs/track_sim_ref_1015.jpg`, table `data/summary_sim_ref_1015.txt`.
     1–2 step lead (Recommendation step 2). Without that, the dynamics gap is persistent, which is the bad kind
     (findings §27).
 
+## §3 wrist re-calibration (10-15 evening): the wrist camera moved 6 mm / 0.8° since 10-13
+
+Session `~/simdist/calib/run_1015_1915` (raw PNGs stay there, 105 MB; joints + solver outputs in
+`data/wrist_run_1015_1915/`). Setup: ChArUco taped flat on the table, needle at about (0.556, −0.110) yaw −110°,
+tripod removed (it hid the board). 28 samples, 27 used, **10 tilted ≥ 35°**, needle in the wrist view in 19.
+Scene camera **not bumped**: `scene_rot_delta.py` vs the 10-14 `home_droid` frame gives 0.015°.
+
+| | value |
+|---|---|
+| joint solve (`calib_20261010/tools/solve_calib.py`) | wrist per-view median 3.4 px, LOO median 4.5 px; wrist LOO ≤ 3.1 mm / 0.39° |
+| ⚠️ its scene pose | **14.6 mm / 1.1° off the cell's**, although the camera did not move ⇒ the joint solve's base↔board chain carries ~1.5 cm of systematic error (FK / joint compliance; the per-view residuals reach 10 px while each view's own PnP is 0.1–0.7 px; 10-13: median 2.6, max 6.9 px) |
+| **wrist with the scene FIXED** at the cell's validated pose (`tools/solve_wrist_fixed_scene.py`) | per-view median 2.9 px, LOO 4.1 px, **LOO ≤ 2.6 mm / 0.32°**; square 42.00 mm |
+| it vs the joint solve | **0.9 mm / 0.06°**: the wrist result does not depend on the scene pose |
+| **it vs the cell (10-13 solve)** | **6.2 mm / 0.79°**: in camera axes (x right, y down, z optical) −0.1 / −5.6 / −2.6 mm |
+| new wrist pose (frame hand) | pos `[-0.07452, -0.03588, 0.01144]`, quat wxyz `[0.92782, -0.15101, 0.03893, -0.33888]` |
+
+Held-out check (`tools/check_wrist_needle.py`, `figs/wrist_needle_check_1015.jpg`). The needle pose is fitted in
+the scene camera (IoU 0.84), the wrist view is then rendered with each pose, and nothing here was used in the solve:
+- **Gripper silhouette IoU: 0.690 (cell) → 0.755 (new)**, better in 24 of 27 views.
+- **Needle in the wrist view: unchanged**, IoU median 0.39 → 0.40, centroid offset median ≈ 2.5–3 px at 224.
+  The outlines sit on the real needle in most views; the 10–24 px cases are views where the needle is cut by the
+  image edge or the fingers.
+- ⇒ The 10-14 "needle 12 mm / 7° off in the wrist" is gone with either pose at this placement. The new pose is
+  at least as good on the world and better on the gripper. The gripper IoU stays ≤ 0.85, so part of the
+  remaining gripper misfit is the Robotiq geometry / mount, not the camera.
+- Drift across sessions continues (10-10 → 10-10 late → 10-13 → 10-15): the mount is probably loosening.
+  Tighten it before the demos, or re-check it with one board shot per session.
+
+**Not changed yet (sim side, offline):** the cell's wrist nominal pose → the pose above. The wrist DR is
+±(6, 10, 20) mm / ±(3, 3, 4.5)°, set wide on purpose (owner). The measured error is now ≤ 3 mm / 0.3° within a
+session and 6 mm / 0.8° between sessions, so something like ±(6, 6, 8) mm / ±(1.5, 1.5, 2)° would cover it.
+To decide with the owner.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
