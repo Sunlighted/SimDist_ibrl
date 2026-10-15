@@ -1,0 +1,137 @@
+# 2026-10-15 robot visit: tracking-lag test (NEXT_VISIT.md §0–§1) and what it means for the controller
+
+Plan: `../calib_20261014/NEXT_VISIT.md`. Done today: §0 (sync + smoke) and §1 (tracking test at 20 and 10 Hz).
+§2 (control rate) has a recommendation below, but the decision is still open. §3–§6 are not done yet.
+
+## TL;DR
+
+- **Overshoot is not what put the gripper into the table.** It is at most 1.6 mm at either rate.
+- **The real arm follows the commanded target like a first-order lag with τ ≈ 100 ms.** The measured joints lag
+  the 100 Hz command by 98 ms at 20 Hz and 103 ms at 10 Hz. Per step, the fraction of the motion completed is
+  1 − e^(−dt/τ) = 0.39 at 20 Hz and 0.63 at 10 Hz; the z moves measured 0.33–0.45 and 0.48–0.63. The sim
+  assumes 1.0.
+- **Horizontal moves barely happen: x completes 1–4 % per step.** The cause is how we generate the target,
+  not the controller.
+  - Our server (`real2sim/deploy/policy_server.py`, `ReferenceArm`) restarts the sim arm at the **measured** q on
+    every step. The commanded target therefore stays about 0.007 rad ahead of the arm, which is
+    240 × 0.007 ≈ 1.7 N·m on j4. That is below the joint's static friction, so the arm does not move.
+  - z works because gravity helps on the way down.
+  - **The owner already measured and fixed this on 09-25**, in the docstring of
+    `~/simdist/gello_software/SimDist_ibrl/real2sim/deploy/real_policy_server.py:208`: "sim_shadow kept the error at
+    ~0.01 rad, ~2 Nm: below friction, so the arm moved ~11 % per step".
+  - The fix was `--action_map sim_ref`, which every 09-24/25 Threading eval used (`~/simdist/real_runs/eval/*`).
+    It only ever lived in that local copy of the repo, so the 10-15 Robotiq port of `policy_server.py` left it out.
+- **Same controller then and now: no polymetis anywhere.** Policy inference and teleop both pause
+  `gello_publisher` and stream `/gello/joint_states` at 100 Hz to the franka_ros2
+  `franka_fr3_arm_controllers/joint_impedance_controller`.
+  - That controller is a pure PD: `tau = K (q_goal − q) − D dq_filt`, with no integral and no friction
+    compensation (`src/joint_impedance_controller.cpp:203`).
+  - Gains: K = 240 240 240 240 100 60 20, D = 20 20 20 10 10 10 5.
+  - The polymetis server running on the NUC today was DROID's, left over from someone else. It held the
+    Robotiq serial port and was killed.
+
+| | 20 Hz | 10 Hz | sim |
+|---|---|---|---|
+| done/step z (amp 0.2 / 0.5 / 1.0) | 1.29 / 0.45 / 0.33 | 0.80 / 0.63 / 0.48 | 1.00 |
+| done/step x (amp 0.2 / 0.5 / 1.0) | **0.01 / 0.02 / 0.01** | **0.01 / 0.04 / 0.01** | 1.00 |
+| real speed z, amp 1.0 | 2.3 cm/s (cmd 6.9) | 1.9 cm/s (cmd 3.9) | = cmd |
+| overshoot (max) | 1.5 mm | 1.6 mm | 0 |
+| joint lag vs the 100 Hz command | 98 ms | 103 ms | 0 |
+| image age at the client, p50 (ROS receive time, a lower bound) | 7–11 ms | 17–19 ms | — |
+| client step latency p50 / p95 / max | 34 / 55 / 82 ms | 35 / 55 / 88 ms | — |
+
+Figure: `figs/track_20_vs_10hz_1015.jpg`. Raw data: `data/track{20,10}_*` (`steps.jsonl`, `joints.npz`,
+`tracking_report.json`, client / server logs). Table: `data/summary_1015.txt`.
+
+## Recommendation
+
+**Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
+today is middleware:
+
+| part | measured | would polymetis change it? |
+|---|---|---|
+| joint state at the client | 0–2 ms | no, it is already negligible |
+| image age | 7–19 ms | no: the cameras stay on ROS / V4L2 |
+| server step (preprocess + reference arm) | ~35 ms | no: it runs on the workstation |
+| **joint lag ~100 ms** | **PD tracking + the per-period linear ramp of the client** | **no**: polymetis' default joint impedance is also PD; with the same gains it gives the same lag and the same friction deadband |
+
+Switching would cost a new gRPC client (arm + Robotiq) with cameras still on ROS. It would also mean swapping stacks
+between teleop / recording and inference: the two cannot own the arm together, which is exactly how today's
+gripper-port clash happened. And it would add an untested variable on top of all the existing real data.
+
+What to do instead, in this order:
+
+1. **Port `sim_ref` into the main repo's `policy_server.py`** (default on for the real-cell tasks).
+   - The sim reference arm keeps its own q and qvel and is stepped by the actions exactly as in training. The real
+     arm is sent that trajectory, so a lagging arm builds up error, and therefore torque, until it moves.
+   - It is re-synced to the measured q only if the two TCPs drift more than `resync_m` apart (09-25: 0.08 m, e.g.
+     when blocked by contact).
+   - Keep the 09-25 hard limits from `_speed_caps`: the target is never more than `max_lead` (0.03 m) ahead of the
+     measured TCP, `max_tcp_speed` is 0.08 m/s, `max_rot_speed` is 0.4 rad/s, and a capped step pulls the reference
+     back (no wind-up).
+   - Then re-run `tools/run_tracking_test.sh`; the operator presses `g` once. Pass criterion: x done/step ≈ z
+     done/step, and overshoot still ≤ a few mm.
+2. **Model the lag in the sim, whatever the rate.**
+   - Add a first-order lag of τ ≈ 100 ms between the OSC target and the arm, plus delay DR around it. The real speed
+     is about 2 cm/s at both rates, so 10 Hz alone does not remove the gap; it only makes the per-step ratio look
+     better.
+   - Re-measure τ after step 1: part of the 100 ms is the client's one-period ramp and part is the deadband.
+3. **Only if the lag is still large after 1–2:** stiffer gains. This is a shared teleop config, it changes the
+   feel of teleop, and it needs the owner's OK. libfranka's own joint-impedance example uses roughly
+   K 600 600 600 600 250 150 50; check that before using it. An integral term or friction compensation in the
+   controller is the last resort: it is C++ rebuilt on the NUC.
+4. If polymetis is still wanted, decide it with data: run the same scripted moves through DROID's polymetis
+   (installed on the NUC) and compare the step response like for like.
+
+Control rate (§2): no reason to prefer 20 Hz over 10 Hz was found today. Decide after step 1. With `sim_ref`
+the rate mostly sets how far ahead the reference runs, and 10 Hz is what the owner found stable.
+
+## What was fixed / added today (needed to get §1 to run)
+
+- **`real2sim/deploy/robot_client.py`**
+  - **Loop starvation.** The loop only spun ROS for whatever was left of the period. After one step slower than the
+    period that was 0 s forever, so every input went stale together and the client stopped at step 32. It now
+    always drains for ≥ 5 ms, and when it is late it skips the missed ticks instead of bursting.
+  - **New `--activate`.** If the impedance controller is inactive, the client pauses the GELLO, holds the
+    **measured** pose and then activates. Without this, the arm would jump to a misaligned GELLO (1.57 rad off
+    today).
+- **`tools/run_tracking_test.sh`**: §1 in one command, run on the host. It does the following:
+  - brings up the stack;
+  - loads the controller inactive (the robot launches with `spawn_controller:=false`, and only teleop's hand-over
+    loads it);
+  - per rate: `reset_arm --no-resume`, the scripted server, the live client with `--activate`, the analysis;
+  - stops if overshoot exceeds 10 mm;
+  - asks once, before the arm moves.
+
+  `--down` tears the stack down.
+- **`tools/bringup_stack.py`** (container, `/workspace/simdist_runner/`): the `run_teleop_session.py` bring-up
+  (cameras, robot, Robotiq, GELLO) **without** reset, matching gate or controller activation.
+- **`tools/wrist_camera_info.py`**: a stop-gap. The ZED-M **HID interface did not enumerate**, so its serial was
+  unreadable and `publish_zed_uvc.py` sent no wrist `camera_info`. This script publishes it from
+  `SN16478414.conf`. The server takes the wrist K / D from `calib_20261010/data/wrist_intrinsics.json`
+  anyway, so only the image size comes from `camera_info`. A USB replug of the ZED-M should fix the root cause
+  (exposure is re-locked on every open).
+- **Deploy copy `~/simdist/deploy_simdist_1015/`** (host, not in git): the repo's code plus the old bundle's
+  compiled `common_utils/build`. Overwriting the 09-23 `~/simdist/deploy_simdist` was refused. The client in the
+  container is `/workspace/simdist_runner/robot_client_1015.py`; the old `robot_client.py` is untouched.
+
+## Traps hit today
+
+- **NUC: DROID's polymetis was left running** (started 14:20 NUC time as root: `launch_gripper.py` on
+  `/dev/ttyUSB0`, plus `run_server -p 50051`). Symptom: the Robotiq driver aborts with
+  `SerialException device reports readiness to read but returned no data`. Check with
+  `fuser -v /dev/ttyUSB0` on the NUC. DROID's `scripts/server/run_server.py` (PID 4521) is still running.
+- **DDS:** any standalone ROS command in the container needs
+  `CYCLONEDDS_URI=file:///workspace/ros2/cyclonedds_ws.xml`. Without it the client sees nothing
+  (`inputs missing after 15 s: joints=False ...`).
+- **`reset_arm.py` returns early when the arm is already at the start pose** ("already at the start pose."),
+  **without activating the controller**.
+- **Teleop launched with an empty `--cameras`** publishes no cameras, and the client waits for both.
+
+## Next step
+
+1. Port `sim_ref` + `_speed_caps` into `policy_server.py`, and test offline against the scripted track (no robot).
+2. On the robot: `bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh` again, then compare with this table.
+3. Then continue `NEXT_VISIT.md`: §2 rate with the owner, §3 wrist re-calibration (teleop without cameras +
+   `record_calib.py`; the stack from step 2 must be down first: `run_tracking_test.sh --down`),
+   §4 touch-offs, §5 layout / exposure drift, §6 demos.

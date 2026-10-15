@@ -29,7 +29,7 @@ with **four** measured changes, each documented where it is set in the yaml:
 
 ## Sim-side status (2026-10-15)
 
-**Next robot visit: [`NEXT_VISIT.md`](NEXT_VISIT.md)** (tracking-lag test → control rate → wrist re-calibration with both eyes → touch-offs → layout/exposure → demos). New tools: `tools/record_calib.py` (10-15: right eye + factory `.conf`, exposure lock, `--touch`), `tools/analyze_tracking.py`.
+**Next robot visit: [`NEXT_VISIT.md`](NEXT_VISIT.md)** (10-15: §0–§1 done, see [`../calib_20261015/README.md`](../calib_20261015/README.md)) (tracking-lag test → control rate → wrist re-calibration with both eyes → touch-offs → layout/exposure → demos). New tools: `tools/record_calib.py` (10-15: right eye + factory `.conf`, exposure lock, `--touch`), `tools/analyze_tracking.py`.
 
 | # | item | result |
 |---|---|---|

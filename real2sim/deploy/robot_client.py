@@ -70,6 +70,10 @@ class Args:
     """Refuse to act on camera / joint data older than this (s)."""
     yes: bool = False
     """Skip the confirmation before a live episode."""
+    activate: bool = False
+    """Live, impedance controller inactive (e.g. after reset_arm found the arm already at the
+    start pose): pause the GELLO, hold the MEASURED pose and activate the controller, so the arm
+    does not jump to wherever the GELLO is."""
     namespace: str = ""
     """Controller-manager namespace (reset_arm.py reads it from the robot config; usually empty)."""
     robot_joint_topic: str = "/franka/joint_states"
@@ -322,16 +326,22 @@ def main(a: Args):
 
         if a.live:
             states = node.controller_states()
-            if states.get(IMPEDANCE_CONTROLLER) != "active":
+            activate = a.activate and states.get(IMPEDANCE_CONTROLLER) == "inactive"
+            if states.get(IMPEDANCE_CONTROLLER) != "active" and not activate:
                 raise SystemExit(f"{IMPEDANCE_CONTROLLER} is not active ({states.get(IMPEDANCE_CONTROLLER)}). "
-                                 "Start a teleop session (or run reset_arm.py) first.")
+                                 "Start a teleop session (or run reset_arm.py, or pass --activate) first.")
             paused = gello_publisher_pid()
             if paused is None:
                 raise SystemExit("gello_publisher not found; it must be paused so it stops commanding the arm.")
             spin_for(node, 0.2)
-            held = node.gello_cmd or node.snapshot()[0]
+            # inactive: the GELLO pose is not where the arm is, so hold the measured pose
+            held = node.snapshot()[0] if activate else (node.gello_cmd or node.snapshot()[0])
             os.kill(paused, signal.SIGSTOP)            # GELLO stops commanding now
             holder.start(held)                          # ...and we feed the watchdog within 0.5 s
+            if activate:
+                time.sleep(0.2)                         # the controller has a target the moment it starts
+                node.switch(activate=[IMPEDANCE_CONTROLLER], deactivate=[])
+                print(f"{IMPEDANCE_CONTROLLER} activated, holding the measured pose")
             controller_on = True
             spin_for(node, 0.3)
             q_now = node.snapshot()[0]
@@ -349,8 +359,10 @@ def main(a: Args):
         last_grip = None
         t_next = time.monotonic()
         for k in range(a.steps):
-            spin_for(node, max(0.0, t_next - time.monotonic()))
-            t_next += period
+            # always drain callbacks: a step slower than the period used to leave 0 s here forever,
+            # so nothing was received any more and every input went stale together
+            spin_for(node, max(0.005, t_next - time.monotonic()))
+            t_next = max(t_next + period, time.monotonic())   # late: skip the missed ticks, no burst
             now = time.monotonic()
             q, dq, q_at, fing, f_at, imgs = node.snapshot()
             ages = {"joints": now - q_at, "gripper": now - f_at,
