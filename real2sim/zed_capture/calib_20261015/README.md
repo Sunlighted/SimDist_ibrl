@@ -43,6 +43,34 @@ Plan: `../calib_20261014/NEXT_VISIT.md`. Done today: §0 (sync + smoke) and §1 
 Figure: `figs/track_20_vs_10hz_1015.jpg`. Raw data: `data/track{20,10}_*` (`steps.jsonl`, `joints.npz`,
 `tracking_report.json`, client / server logs). Table: `data/summary_1015.txt`.
 
+## Re-test with `sim_ref` (10-15 evening): passes at both rates
+
+Same scripted moves, same stack, `--action_map sim_ref` (default now). Runs: `data/track{20,10}_sim_ref_*`,
+figure `figs/track_sim_ref_1015.jpg`, table `data/summary_sim_ref_1015.txt`.
+
+| | 20 Hz reseed (afternoon) | **20 Hz sim_ref** | **10 Hz sim_ref** |
+|---|---|---|---|
+| real speed x (amp 0.2 / 0.5 / 1.0), cm/s | 0.0 / 0.1 / 0.1 | **4.9 / 4.7 / 6.2** | **2.7 / 5.8 / 5.3** |
+| real speed z, cm/s | ~0.5–2.3 | 5.4 / 7.2 / 8.0 | 2.5 / 6.6 / 7.5 |
+| real / ref speed (x, z) | — | 0.93–1.06 | 0.96–1.23 |
+| steady lag behind the target, x / z | — | 13–19 mm / 6–10 mm | 10–19 mm / 4–12 mm |
+| past the final target (real overshoot) | ≤ 1.6 mm | ≤ 7.3 mm (z down, amp 1) | ≤ 6.2 mm (z down, amp 1) |
+| speed-capped steps | 0 | 119 / 869 | 24 / 508 |
+| lowest TCP / z_min | | 1.169 / 1.091 | 1.166 / 1.091 |
+
+- **x now moves**: about 50× faster than with reseed, and the arm keeps up with the reference (`real/ref` ≈ 1).
+- **The lag is now about 0.1 s in z and 0.25–0.4 s in x** (lag mm / speed). The joint fit gives
+  222–240 ms (j6). x lags more than z, which fits friction rather than a pure first-order lag.
+- **The real overshoot is now ≤ 7 mm**, mostly going down at amp 1. Near the table the policy run uses
+  `--z_slow_band 0.06` (≤ 3 mm/step descent), which the scripted test turns off.
+- **Rate (§2): recommend 10 Hz, to confirm with the owner.**
+  - Both rates are capped at 8 cm/s, so per step the real arm moves about 2.5–4 mm at 20 Hz and 5–7 mm at 10 Hz.
+    The sim's 50 ms OSC step moves farther than either, and 10 Hz is the closer match.
+  - 10 Hz has slightly less overshoot, has 5× fewer capped steps, and is what the owner ran stably on 09-24/25.
+  - Either way, the sim must model what the real arm does: the speed cap, the ~0.1–0.4 s lag and the
+    1–2 step lead (Recommendation step 2). Without that, the dynamics gap is persistent, which is the bad kind
+    (findings §27).
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
@@ -146,7 +174,7 @@ the rate mostly sets how far ahead the reference runs, and 10 Hz is what the own
      contrast counts. Dry run with the real inputs (arm not moving): runs, and the target stops 3 cm ahead (`capped(lead)`).
    - Note: the speed cap (8 cm/s) is below the sim's OSC speed at |a| ≥ 0.2 (≈ 20+ cm/s at 20 Hz), so on the real arm
      all three amplitudes run at the cap. That is the owner's 09-25 limit; the sim does not model it yet (step 2).
-2. On the robot: `bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh` again (now `sim_ref`; runs are named
+2. ~~On the robot: re-run~~ **done, passes** (section above). (`run_tracking_test.sh` now runs `sim_ref`; runs are named
    `runs/track{HZ}_sim_ref_*`). It stops between rates on `past tgt mm` > 10. Pass: x `real/ref` ≈ z `real/ref` ≈ 1,
    real x speed of several cm/s (10-15: 0.1 cm/s), `past tgt mm` ≤ a few mm.
 3. Then continue `NEXT_VISIT.md`: §2 rate with the owner, §3 wrist re-calibration (teleop without cameras +
