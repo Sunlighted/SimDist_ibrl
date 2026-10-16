@@ -1,4 +1,11 @@
-# 2026-10-15 robot visit: tracking-lag test (NEXT_VISIT.md §0–§1) and what it means for the controller
+# 2026-10-15 robot visit: tracking-lag test, sim_ref, 10 Hz, wrist re-calibration, touch-offs, first demos
+
+> **Day summary.** §0–§5 done, §6 started (5 demos). x stalled because the server re-seeded the reference at the measured q;
+> porting the owner's `sim_ref` fixed it (x 0.1 → 2.7–6.2 cm/s). **Rate decided: 10 Hz** (the sim is retrained).
+> The wrist camera moved 6.2 mm / 0.8° since 10-13 and is re-solved; the scene camera did not move. The recorder
+> was dropping the Robotiq state (fixed). Sections below are in order of the day.
+
+## (original title) tracking-lag test (NEXT_VISIT.md §0–§1) and what it means for the controller
 
 Plan: `../calib_20261014/NEXT_VISIT.md`. Done today: §0 (sync + smoke) and §1 (tracking test at 20 and 10 Hz).
 §2 (control rate) has a recommendation below, but the decision is still open. §3–§6 are not done yet.
@@ -140,6 +147,46 @@ so **Robotiq demos would have had no gripper state at all**. `collect_demos.py` 
 `observation/gripper_knuckle` (rad, 0 open .. ~0.79 closed), and `run_teleop_session.py --gripper robotiq` passes
 `--gripper-state-topic /gripper/joint_states`. Checked in the container: the extractor returns the knuckle, and
 the recorder command carries the topic.
+
+## §5 layout + exposure, §6 first demos (10-15 evening)
+
+**Layout** (`~/simdist/calib/layout_1015_2008/sample_000`, `figs/layout_shot_1015_scene.jpg`, fit in
+`data/layout_1015/layout_fit_1015.json`). Scene-camera render fit:
+- needle (0.5561, −0.1108) yaw −110.2°, IoU 0.85, the same as in the wrist session;
+- tripod (0.5204, 0.1832) yaw −36.0°, IoU 0.91, the same as on 10-14.
+
+Both are inside the cell's ranges. The tripod yaw sits at the −35.6° edge, so centre it nearer −40° for the demos.
+(The 8-DoF wrist correction this tool also prints is not used: one frame at DROID home barely sees the objects,
+so the fit is ill-posed.)
+
+**Exposure drift** (locked controls, empty board, centre-third mean grey):
+
+| time | scene | wrist |
+|---|---|---|
+| 20:08 | 166.7 | 168.7 |
+| 20:26 (after the demos) | 166.6 (−0.1 %) | 170.1 (+0.8 %) |
+
+That is only 18 minutes apart, so it does not test the ~10 % seen across hours on 10-14. Repeat across a longer
+session.
+
+**Demos, first 5** (`~/simdist/gello_software/demos/threading_robotiq_1015/episode_000{1..5}.h5`, 230 MB, not in
+git). Recorded by `run_teleop_session.py --gripper robotiq --rate 10` with the recorder fix:
+- 21–31 s each, 100.0 ms per frame, no stale or dropped frames;
+- the knuckle is recorded (0.0 open, ≈ 0.44 on the needle handle) and the gripper closes at frames 60–79;
+- the GELLO command leads the measured joints by up to 7–12° during fast moves;
+- the operator pressed SPACE before releasing the gripper, so the last frame = success, gripper still closed;
+- the start pose was "forced", with up to 3.6° off the DROID home on j2.
+
+The rest (to 20–30) was deferred on purpose: replay these 5 in the 10 Hz sim first, then decide the protocol.
+
+## Next (offline, sim side)
+
+1. Sim `control_freq` 10, plus the real arm's behaviour around a step: the sim_ref cap of 8 cm/s, the
+   0.1–0.4 s lag, the lead.
+2. Convert and replay the 5 demos in the sim (`scripts/convert_real_teleop.py` needs the Robotiq knuckle and
+   10 Hz). Where they fail is the real-vs-sim gap.
+3. Cell: wrist nominal pose → the §3 pose. Wrist DR narrowing is the owner's call.
+4. Then regenerate MimicGen at 10 Hz from the replayable demos, and run stage-1.
 
 ## Recommendation
 
