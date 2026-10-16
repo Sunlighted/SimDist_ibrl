@@ -104,6 +104,27 @@ the scene camera (IoU 0.84), the wrist view is then rendered with each pose, and
 session and 6 mm / 0.8° between sessions, so something like ±(6, 6, 8) mm / ±(1.5, 1.5, 2)° would cover it.
 To decide with the owner.
 
+## §4 touch-offs (10-15 evening, hand-guided): base ↔ scene confirmed, needle position confirmed, z_min not usable
+
+Session `~/simdist/calib/touch_1015_1957`. Joints + results are in `data/touch_1015_1957/`; analysis
+`tools/touch_1015.py`; figure `figs/touch_fingertips_on_scene_1015.jpg`.
+
+**How it was done.** The arm was moved by hand in Desk Programming mode. The robot driver ran read-only (no
+controller loaded, no cameras) through `simdist_runner/bringup_stack.py --cameras`, and `/franka/joint_states`
+streamed at 1 kHz throughout. The fingertip is FK of the measured q on the cell model, with the Robotiq closed
+and `gripper_mount_z 0.0135`. The board was re-detected by the scene camera at the cell's pose: pooled PnP
+0.44 px, per-sample spread ≤ 3 mm.
+
+| point | result |
+|---|---|
+| all 7, **FK gripper projected into the scene image** | it lies on the real gripper in all 7 photos, within a few px at 1280 ⇒ base ↔ scene camera ↔ FK agree again (as on 10-14) |
+| needle_end_a / b | midpoint **(0.5564, −0.1098)** vs the scene-camera render fit (0.5564, −0.1097): **0.1 mm**. The line through the two touches is 14° off the fit's yaw; the "end" touches landed on the corner of the 2 cm handle cube, so the render fit (IoU 0.84) is the better yaw |
+| c1–c4 | ⚠️ touched at the clipboard / outer print corners, not at the inner chessboard corners (the near corners were out of reach) ⇒ 12–31 mm from the nearest outer chessboard corner, so **no xy / yaw number for base ↔ table from these**. The projection check above covers base ↔ scene |
+| zmin | fingertip **0.0337** vs the work surface 0.0285 (+5.2 mm). On 10-14, five touches in execution mode gave **0.0287 ± 0.0012**. In the projection the red tip sits slightly above the real tip, so this hand-guided touch most likely did not reach the surface. **Keep 0.0285**, do not use this value |
+
+⇒ For `dr_base_xy` / `dr_base_yaw_deg`, a future touch-off needs inner chessboard corners that are within reach,
+with the board placed accordingly, or a GELLO-driven touch in execution mode for z.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
