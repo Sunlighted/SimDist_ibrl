@@ -342,6 +342,34 @@ z from the FR3 flange: irrelevant while x = y = 0. Then **re-run the probe**. Fi
 by the j2 + j4 fit and j2's static error at home < 2 mrad (now −5.4). The wrist stiction stays (a ±1 cm-class effect
 at the TCP over the approach direction); it is a property of the real arm, not of the payload.
 
+### Payload fixed in Desk (10-16, later): **verified**
+
+The owner's side changed Desk → End-Effector to **1.20 kg, CoM (0, 0, 0.065) m**, inertia unchanged, Flange→TCP
+unchanged. **Old values, for rollback: 0.90 kg, CoM (0, 0, 0.057), I = diag(0.00277, 0.00315, 0.00056).**
+robot_state confirms the new `inertia_ee` with `inertia_load` = 0. Re-probe `payload_probe_1016_2144.json`
+(summary `payload_1016/payload_probe_1016_2144_after_desk_summary.json`):
+
+| | before (0.90 kg) | after (1.20 kg) | target |
+|---|---|---|---|
+| missing mass, j2 + j4 fit | 0.336–0.343 kg | **−0.003 / +0.006 kg** | ≤ 0.03 |
+| missing mass, static PD error | 0.294 kg | **−0.009 kg** | ≈ 0 |
+| missing mass, all joints (wrist stiction inside) | 0.25 / 0.36 kg | 0.04 / 0.07 kg | — |
+| j2 static error at the DROID home | −5.4 mrad | **−1.1 mrad** | < 2 |
+| j4 static error at the DROID home | +6.0 mrad | +1.5 mrad | — |
+
+⇒ **Pass.** The static sag is gone; at the needle's reach about 2–3 mm of the 6 mm sag was j2's share. What is left
+is wrist stiction: j5 / j6 still sit ±9–14 mrad off depending on the approach direction, as before.
+
+Consequences:
+- **Demos and runs recorded before this change carry the sag**: the 10-15 demos, the tracking tests, the
+  threading* sets. `ref_inverse` labels from the GELLO command are unaffected (the convention is the same); the
+  measured-q side of those files is ~6 mm low near the table.
+- The sim needs no sag model any more. Re-measure the TCP lag in the next tracking / demo run, since the gravity
+  error no longer adds to the PD error.
+- Teleop feels slightly different, because the arm no longer droops under the gripper.
+- Interrupting the probe with the **User Stop** kills the whole robot driver (libfranka `User Stop pressed`):
+  use Ctrl-C, which holds and hands back the GELLO.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
