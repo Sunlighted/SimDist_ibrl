@@ -1,5 +1,7 @@
 # 下次上机清单（2026-10-16 写）
 
+> **10-16 晚进度**：§0 同步完成（部署副本已 rsync，容器里 `simdist_runner/payload/` 放了 probe + 新版 `robot_client.py`，`robot_client_1016.py` = 新版客户端）。**§1 做完**：缺约 **0.30 kg**（四种估计 0.25–0.36），质心辨识不出来（腕部关节静摩擦和信号同量级），见 README「Payload probe on the robot」。改 Desk 负载待 owner：建议总质量 1.20 kg、质心 (0, 0, 0.065)。§2 的原始数据已经补进 git（之前被 `data/` 的 gitignore 跳过了）。
+
 背景在同目录 [`README.md`](README.md) 的「Offline re-analysis」「Sim replay」「Follow-up」三节，sim 侧进度在 [`SIM_TODO.md`](SIM_TODO.md)。
 
 ## 0. 同步

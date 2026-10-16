@@ -1,0 +1,124 @@
+{
+ "kind": "touch",
+ "mode": "hd720",
+ "size": [
+  1280,
+  720
+ ],
+ "eye": "left+right",
+ "rectified": false,
+ "points": [
+  "c1",
+  "c2",
+  "c3",
+  "c4",
+  "needle_end_a",
+  "needle_end_b",
+  "zmin"
+ ],
+ "controls": {
+  "scene": {
+   "aecagc": [
+    false,
+    false
+   ],
+   "exposure_raw": [
+    275,
+    275
+   ],
+   "gain_raw": [
+    200,
+    200
+   ],
+   "wb_auto": 0,
+   "wb_temperature": 3300
+  },
+  "wrist": {
+   "aecagc": [
+    false,
+    false
+   ],
+   "exposure_raw": [
+    275,
+    275
+   ],
+   "gain_raw": [
+    200,
+    200
+   ],
+   "wb_auto": 0,
+   "wb_temperature": 3300
+  }
+ },
+ "board": {
+  "type": "charuco",
+  "squares": [
+   5,
+   7
+  ],
+  "dict": "DICT_5X5_50",
+  "square_m_nominal": 0.0424,
+  "marker_m_nominal": 0.031
+ },
+ "cameras": {
+  "scene": {
+   "serial": 31011113,
+   "K": [
+    [
+     534.85,
+     0.0,
+     629.425
+    ],
+    [
+     0.0,
+     534.945,
+     346.2305
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "D": [
+    -0.0593442,
+    0.0310242,
+    0.000547329,
+    -0.000333487,
+    -0.0111621
+   ],
+   "intrinsics_file": "/home/tisl-robotics/simdist/SimDist_ibrl/release/cfgs/sim2real/zed_factory_intrinsics.json"
+  },
+  "wrist": {
+   "serial": 16478414,
+   "K": [
+    [
+     771.808,
+     0.0,
+     652.745
+    ],
+    [
+     0.0,
+     771.705,
+     351.798
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "D": [
+    -0.1013,
+    0.054,
+    0.0,
+    0.0001,
+    0.0422
+   ],
+   "intrinsics_file": "/home/tisl-robotics/simdist/SimDist_ibrl/release/cfgs/sim2real/zed_factory_intrinsics.json"
+  }
+ },
+ "joint_source": "/franka/joint_states via joint_tap.py",
+ "joint_order": "fr3_joint1..7",
+ "created": "2026-10-15 19:57:35"
+}

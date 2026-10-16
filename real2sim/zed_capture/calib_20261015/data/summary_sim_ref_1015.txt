@@ -1,0 +1,29 @@
+
+=== /home/tisl-robotics/simdist/SimDist_ibrl/real2sim/zed_capture/calib_20261015/data/track20_sim_ref_1015_185953  (20 Hz, 869 steps)
+axis  amp | cmd cm/s real cm/s done/step | overshoot mm settle s | ref cm/s real/ref lag mm past tgt mm
+z     0.2 |     11.0       5.4      0.48 |          9.7     0.20 |      5.2     1.02    5.5         4.3
+z     0.5 |     16.1       7.2      0.43 |          9.9     0.10 |      6.8     1.06    8.1         5.8
+z     1.0 |     19.8       8.0      0.42 |         11.8     0.10 |      7.9     1.01    9.9         7.3
+x     0.2 |     25.9       4.9      0.19 |         18.1     0.65 |      5.1     0.95   12.9         0.0
+x     0.5 |     31.9       4.7      0.14 |         21.2     0.70 |      5.0     0.93   15.9         1.0
+x     1.0 |     38.6       6.2      0.16 |         13.7     0.60 |      5.9     1.06   19.3         3.0
+  age joints   p50     0 ms  p90     1 ms
+  age gripper  p50     0 ms  p90     2 ms
+  age wrist    p50     7 ms  p90    16 ms
+  age scene    p50     5 ms  p90    16 ms
+  joint 6: measured lags the 100 Hz command by 222 ms (residual 8.03 mrad), joint states at 420 Hz
+
+=== /home/tisl-robotics/simdist/SimDist_ibrl/real2sim/zed_capture/calib_20261015/data/track10_sim_ref_1015_190048  (10 Hz, 508 steps)
+axis  amp | cmd cm/s real cm/s done/step | overshoot mm settle s | ref cm/s real/ref lag mm past tgt mm
+z     0.2 |      4.1       2.5      0.62 |          4.6     0.40 |      2.6     0.96    4.1         1.2
+z     0.5 |     11.2       6.6      0.62 |         14.3     1.00 |      6.5     1.03   11.2         3.6
+z     1.0 |     11.7       7.5      0.60 |         10.7     0.10 |      6.1     1.23   11.7         6.2
+x     0.2 |     10.0       2.7      0.26 |         12.0     0.80 |      2.6     1.03   10.0         0.0
+x     0.5 |     17.6       5.8      0.33 |         31.8     1.10 |      5.6     1.04   17.6         0.0
+x     1.0 |     19.0       5.3      0.27 |         19.9     1.30 |      5.0     1.05   19.0         1.6
+  age joints   p50     0 ms  p90     1 ms
+  age gripper  p50     2 ms  p90     2 ms
+  age scene    p50     5 ms  p90     7 ms
+  age wrist    p50    24 ms  p90    26 ms
+  joint 6: measured lags the 100 Hz command by 240 ms (residual 7.31 mrad), joint states at 709 Hz
+wrote /home/tisl-robotics/simdist/SimDist_ibrl/real2sim/zed_capture/calib_20261015/figs/track_sim_ref_1015.jpg

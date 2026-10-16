@@ -305,6 +305,43 @@ The full checklist, in dependency order and with the numbers, is in **[`SIM_TODO
 3. Cell: wrist nominal pose → the §3 pose. Wrist DR narrowing is the owner's call.
 4. Then regenerate MimicGen at 10 Hz from the replayable demos, and run stage-1.
 
+## Payload probe on the robot (10-16 evening): **≈ 0.3 kg missing, confirmed; the CoM is not identifiable**
+
+`tools/payload_probe.py` was run (NEXT_VISIT §1): 15 poses, each held 4 s, 50 robot states + ~2500 joint messages
+per pose. Raw json is on the workstation, `~/simdist/gello_software/simdist_runner/payload/payload_probe_1016_2120.json`
+(25 MB). Per-pose means are in `payload_1016/payload_probe_1016_2120_summary.json`; the dry run (configured load
+only) is `payload_dryrun_1016_2116.json` next to the raw file.
+
+**Configured now** (robot_state): `inertia_ee` m **0.90 kg**, CoM (0, 0, 0.057) m, I = diag(0.00277, 0.00315,
+0.00056); `inertia_load` 0 kg. (Not the 0.73 kg Franka Hand value; someone set 0.9 kg.)
+
+| estimate | missing mass | ⇒ total | CoM of the total (hand frame, mm) |
+|---|---|---|---|
+| torque, all joints, no bias (`fit_payload_probe.py`) | 0.247 kg | 1.15 kg | (−1, −17, 70) |
+| torque, all joints + per-joint bias | 0.364 kg | 1.26 kg | (−8, −2, 56) |
+| torque, j2 + j4 only + bias (gravity-dominant, stiff joints) | 0.336–0.343 kg | 1.24 kg | z not consistent (−57 for the missing part) |
+| static PD error, j1–j6 (position) | 0.294 kg | 1.19 kg | (0, −23, 74) |
+| 10-16 offline sag fit (183 still frames, earlier) | 0.30 kg | 1.20 kg | — |
+
+⇒ **The missing mass is 0.25–0.36 kg by every method; about 0.30 kg.** The CoM is NOT identified:
+- **The wrist joints are dominated by stiction, not gravity.** The static error of j5 / j6 / j7 flips with the
+  direction the pose was approached from: j5 +11 / −13 mrad, j6 ±13 mrad, j7 +20 / −27 mrad. At K = 100 / 60 / 20
+  that is 0.4–1.3 N·m. `tau_ext_hat_filtered` on j5 follows the same sign (+0.7 … +0.9 vs −0.94 N·m), so the
+  link-side torque sensor sees the holding torque too, and the cables (ZED-M, Robotiq) probably pull on the wrist
+  as well. This is the same size as the gravity signal of a CoM offset, so CoM x/y/z swing between fits (cz from
+  −57 to +119 mm for the missing part).
+- j1 (vertical axis, no gravity torque) reads −0.8 N·m in 14 poses and +0.75 N·m at j1 +0.6: the same stiction
+  pattern. That bounds what a bias term can absorb.
+- Static error at the DROID home: j2 −5.4 mrad (q is lower than the command), j4 +6.0 mrad. ×240 ≈ 1.3–1.4 N·m:
+  consistent with 0.3 kg at ~0.45 m.
+
+**Recommendation (owner's call, Desk → end effector):** total mass **1.20 kg** (0.90 + 0.30), CoM keep on the
+flange axis at **z ≈ 0.065 m** (between the fits' 0.056–0.074; physically Robotiq 2F-85 + coupling + ZED-M on the
+back of the hand), keep x = y = 0 and the inertia. ⚠️ The hand frame here is robosuite's `robot0_right_hand`, 45° about
+z from the FR3 flange: irrelevant while x = y = 0. Then **re-run the probe**. Fixed means a missing mass ≤ 0.03 kg
+by the j2 + j4 fit and j2's static error at home < 2 mrad (now −5.4). The wrist stiction stays (a ±1 cm-class effect
+at the TCP over the approach direction); it is a property of the real arm, not of the payload.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
