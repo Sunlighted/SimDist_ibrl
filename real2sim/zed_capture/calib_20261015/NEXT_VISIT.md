@@ -2,6 +2,7 @@
 
 > **10-16 晚进度**：§0 同步完成（部署副本已 rsync，容器里 `simdist_runner/payload/` 放了 probe + 新版 `robot_client.py`，`robot_client_1016.py` = 新版客户端）。**§1 做完**：缺约 **0.30 kg**（四种估计 0.25–0.36），质心辨识不出来（腕部关节静摩擦和信号同量级），见 README「Payload probe on the robot」。改 Desk 负载待 owner：建议总质量 1.20 kg、质心 (0, 0, 0.065)。§2 的原始数据已经补进 git（之前被 `data/` 的 gitignore 跳过了）。
 > **负载已在 Desk 改成 1.20 kg / 质心 (0, 0, 0.065) 并验证通过**：缺失质量 −0.003…+0.006 kg，j2 静态偏差 −5.4 → −1.1 mrad。旧值 0.90 kg / (0, 0, 0.057)。改之前录的数据都带着约 6 mm 的下垂。
+> **§5 的 demo 推迟到下次**（用户决定）：下次采的 demo 就是无下垂的第一批。采之前先跑一次 `run_tracking_test.sh` 重新量滞后（负载修好后可能变小）。
 
 背景在同目录 [`README.md`](README.md) 的「Offline re-analysis」「Sim replay」「Follow-up」三节，sim 侧进度在 [`SIM_TODO.md`](SIM_TODO.md)。
 
