@@ -1,0 +1,8 @@
+{
+ "_source": "calib_20261014/tools/fit_layout_wrist.py step 1 on each demo's frame 0 (scene camera, render-IoU fit), 2026-10-16. base frame (x, y m, yaw deg). needle IoU 0.77-0.89, tripod 0.90-0.91",
+ "episode_0001": {"needle": [0.5515, -0.1092, -110.2], "tripod": [0.5228, 0.1828, -34.9]},
+ "episode_0002": {"needle": [0.5519, -0.1092, -109.3], "tripod": [0.5216, 0.1833, -38.3]},
+ "episode_0003": {"needle": [0.5537, -0.1082, -104.1], "tripod": [0.5225, 0.1833, -34.2]},
+ "episode_0004": {"needle": [0.5528, -0.1121, -120.3], "tripod": [0.5216, 0.1836, -34.4]},
+ "episode_0005": {"needle": [0.5508, -0.1079, -102.8], "tripod": [0.5185, 0.1841, -33.3]}
+}

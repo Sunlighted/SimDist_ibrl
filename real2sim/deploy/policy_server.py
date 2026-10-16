@@ -176,6 +176,8 @@ class ReferenceArm:
         self.e.reset()
         self.raw = self.e.env
         self.sim = self.raw.sim
+        # one action = one OSC step of 1/control_freq s, as in training (cell control_freq)
+        self.control_freq = float(self.raw.control_freq)
         m = self.sim.model
         self.rob = self.raw.robots[0]
         self.jidx = np.array(self.rob._ref_joint_pos_indexes)
@@ -387,9 +389,10 @@ class Server:
             rl_cameras = self.agent.rl_cameras
         self.S = int(self.cfg.rl_image_size)
         self.cammap = sim_camera_map(rl_cameras)    # ROS cam -> sim cam
-        self.hz = 20.0
         self.fovy, self.cell_cam = self._sim_cameras()
         self.arm = ReferenceArm(self.cfg.task_name, self.cfg.sim2real_cell)
+        self.hz = self.arm.control_freq
+        print(f"[server] reference arm control_freq {self.hz:g} Hz (the client must run at it)", flush=True)
         if self.a.z_min is None and self.script is not None and self.arm.table_top_z is not None:
             # free-space test: never let a target come within 15 cm of the table
             self.a.z_min = self.arm.table_top_z + 0.15
@@ -439,7 +442,15 @@ class Server:
         return {c: pf[c] for c in sims}, {c: None for c in sims}
 
     def hello(self, h):
-        self.hz = float(h.get("hz", 20.0))
+        hz = float(h.get("hz", 20.0))
+        if hz != self.arm.control_freq:
+            msg = (f"client runs at {hz:g} Hz but the model's env steps at {self.arm.control_freq:g} Hz "
+                   f"(cell control_freq): one action would mean another duration on the robot")
+            if self.script is None:
+                raise ValueError(msg + " -- start robot_client.py with --hz "
+                                 f"{self.arm.control_freq:g}")
+            print(f"[server] ⚠️ {msg} (scripted test: allowed)", flush=True)
+        self.hz = hz
         self._reset_ref()
         for cam, ci in h["camera_info"].items():
             if cam not in self.cammap:

@@ -830,7 +830,7 @@ def test_prop_frame():
     from env.robosuite_wrapper import PROP_KEYS
     from env.sim2real import apply_prop_frame, load_sim2real, quat_wxyz2mat
     cell = load_sim2real(tv.REAL_CELL_ROBOTIQ_YAML)
-    check("10-14 cell sets prop_frame: base", cell.prop_frame == "base")
+    check("Robotiq cell sets prop_frame: base", cell.prop_frame == "base")
     check("default is world (every other cell unchanged)", Sim2RealConfig().prop_frame == "world")
     q = np.array(cell.init_qpos) + np.array([0.1, -0.05, 0.08, 0.1, -0.07, 0.05, 0.3])
     g = tv.robotiq_real_to_sim(0.44)
@@ -883,6 +883,43 @@ def test_prop_frame():
           np.abs(pd - bases[0]).max() < 1e-5, f"max |d| {np.abs(pd - bases[0]).max():.1e}")
 
 
+def test_control_freq():
+    """2026-10-15: the Robotiq cell runs at 10 Hz (cell control_freq), in every path that builds the env."""
+    print("\nN. control_freq: the cell's rate reaches the wrapper, a bare robosuite.make and the deploy arm")
+    import robosuite
+    import env.threading_variants as tv
+    from env.sim2real import load_sim2real
+    cell = load_sim2real(tv.REAL_CELL_ROBOTIQ_YAML)
+    check("Robotiq default cell sets control_freq 10", cell.control_freq == 10, str(cell.control_freq))
+    check("default is None (every other cell unchanged)", Sim2RealConfig().control_freq is None)
+    old = load_sim2real(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml"))
+    check("10-14 cell has no control_freq (its 20 Hz data stays 20 Hz)", old.control_freq is None)
+    env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                         camera_names=["agentview"], rl_cameras=["agentview"], use_state=True,
+                         obs_stack=1, state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                         hand_init_perturb_joint_sigma=0.0, sim2real=cell)
+    e = env.env
+    check("wrapper env: control_freq 10, 50 physics substeps per action",
+          e.control_freq == 10 and int(round(e.control_timestep / e.model_timestep)) == 50,
+          f"{e.control_freq} Hz, {e.control_timestep / e.model_timestep:.0f} substeps")
+    bare = robosuite.make("Threading_RealCellRobotiq", robots="Panda", has_renderer=False,
+                          has_offscreen_renderer=False, use_camera_obs=False)
+    check("bare robosuite.make (MimicGen / replay path) also runs at 10 Hz", bare.control_freq == 10)
+    try:
+        robosuite.make("Threading_RealCellRobotiq", robots="Panda", has_renderer=False,
+                       has_offscreen_renderer=False, use_camera_obs=False, control_freq=20)
+        refused = False
+    except AssertionError:
+        refused = True
+    check("a 20 Hz caller (e.g. a 20 Hz dataset's env_meta) is refused", refused)
+    s2 = make_env(None)
+    check("Threading_D0 without a cell: still 20 Hz", s2.env.control_freq == 20)
+    from real2sim.deploy.policy_server import ReferenceArm
+    arm = ReferenceArm("Threading_RealCellRobotiq", tv.REAL_CELL_ROBOTIQ_YAML)
+    check("deploy ReferenceArm steps at the cell's 10 Hz", arm.control_freq == 10)
+
+
 def main():
     test_default_off()
     test_geometry()
@@ -899,6 +936,7 @@ def main():
     test_square_realcell()
     test_robotiq_cell()
     test_prop_frame()
+    test_control_freq()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"FAILED ({len(FAILED)}):")

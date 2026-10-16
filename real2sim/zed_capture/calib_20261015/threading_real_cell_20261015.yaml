@@ -1,0 +1,61 @@
+# 2026-10-15 cell (Threading, Robotiq) = calib_20261014/threading_real_cell_20261014.yaml with TWO changes,
+# both from the 10-15 visit (calib_20261015/README.md):
+#   1. control_freq 10 (README §2, decided with the owner): one action = 100 ms of OSC. Every 20 Hz
+#      expert / dataset / stage-1 is invalid on this cell (CLAUDE.md rule #37). The real side runs
+#      run_teleop_session.py --rate 10 and robot_client.py --hz 10; policy_server refuses another rate.
+#   2. wrist camera nominal pose re-solved (README §3, scene camera held FIXED at its validated pose,
+#      tools/solve_wrist_fixed_scene.py; LOO <= 2.6 mm / 0.32 deg; held-out gripper IoU 0.690 -> 0.755).
+#      Moved 6.2 mm / 0.79 deg vs the 10-13 solve. The solver output (data/wrist_run_1015_1915/) is on
+#      the workstation, not in git (data/ is ignored); the numbers below are the README's.
+#      Wrist DR left at the 10-14 width on purpose: narrowing it is the owner's call (README §3 suggests
+#      +-(6, 6, 8) mm / +-(1.5, 1.5, 2) deg).
+# NOT changed: tripod yaw range [-45.6, -35.6] (the real tripod sat at -36.0, at the edge: centre it at
+#   ~-40 on the next visit or widen the range), table height (0.0285, the 10-15 hand touch is unusable).
+inherit: ../calib_20261014/threading_real_cell_20261014.yaml
+control_freq: 10
+# `cameras` is replaced wholesale by inherit (env/sim2real.py load_sim2real): agentview restated verbatim
+cameras:
+- name: agentview
+  frame: base
+  pos:
+  - 0.23173
+  - 0.55526
+  - 0.52272
+  # 2026-10-15: own DR widths, wider than the cell-wide 11 mm / 1 deg (owner: cover what can go wrong). Measured
+  #   error is far smaller (validated 1-2 px; one cable bump = 0.30 deg, translation <~1 mm): +-15 mm / +-1.5 deg
+  #   leaves 5x for another bump. Fovy +-1 (cell-wide).
+  dr_pos: 0.015
+  dr_rot_deg: 1.5
+  # 2026-10-14: rotated 0.30 deg (bump), pos unchanged. 10-13: [0.15479, -0.29452, 0.85353, -0.40097]
+  quat:
+  - 0.15341
+  - -0.29297
+  - 0.85476
+  - -0.40002
+  fovy: 50.0
+- name: robot0_eye_in_hand
+  frame: hand
+  # 2026-10-15 (README "Camera DR"): randomize true with its OWN, PER-AXIS widths, wide on purpose (owner:
+  #   cover what can go wrong; the wrist is re-solved on the next visit). The render fit against the real wrist
+  #   frames (tools/fit_layout_wrist.py) needs, in the hand frame, x -0.8..1.8 / y 5.1..6.1 / z 7.2..15.5 mm and
+  #   tilts <= 2.1 deg, roll up to 4.0 deg depending on the model => +-(6, 10, 20) mm, +-(3, 3, 4.5) deg (x/y tilt,
+  #   z roll about the optical axis), fovy +-1. (An isotropic +-20 mm / +-4.5 deg box moved the needle 20 px median,
+  #   44 px max in the 224 wrist view and dropped the gripper IoU vs nominal to 0.55 -- far beyond the real error,
+  #   which matches the OLD +-10 mm / 0.5 deg box's 0.73.) Nominal pose: the 10-15 fixed-scene solve (header).
+  #   10-13 solve was pos [-0.07053, -0.03118, 0.01228], quat [0.93013, -0.14733, 0.03582, -0.33447].
+  randomize: true
+  dr_pos: [0.006, 0.010, 0.020]
+  dr_rot_deg: [3.0, 3.0, 4.5]
+  dr_fovy_deg: 1.0
+  # real side: undistort wrist frames with the REFITTED K/D (factory D is wrong)
+  real_intrinsics: ../calib_20261010/data/wrist_intrinsics.json
+  pos:
+  - -0.07452
+  - -0.03588
+  - 0.01144
+  quat:
+  - 0.92782
+  - -0.15101
+  - 0.03893
+  - -0.33888
+  fovy: 49.014

@@ -295,6 +295,14 @@ class Sim2RealConfig:
     # depth moves. Every expert, demo set and stage-1 built on the Panda hand is
     # incompatible with a cell that sets this.
     gripper_types: Optional[str] = None
+    # CONTROL RATE of the real cell (Hz), as robosuite's `control_freq`. None = the
+    # task's default (robosuite 20). CONSTRUCTION-time like gripper_types: the
+    # wrapper passes it to robosuite.make. 2026-10-15: the Robotiq cell runs at
+    # 10 Hz (calib_20261015/README.md §2; HD720@30 fps = 3 frames/step). One
+    # action = 1/control_freq s of OSC, so the world model's p(s'|s,a), every
+    # expert and every dataset are tied to it (CLAUDE.md rule #37): data at
+    # another rate does not transfer. policy_server refuses a client at another hz.
+    control_freq: Optional[float] = None
     # Mount of the gripper on robot0_right_hand: yaw about the hand z axis (deg)
     # and an offset along it (m), applied to the gripper's root body. 0/0 = the
     # robosuite mount (byte-for-byte legacy). robosuite bolts the gripper to
@@ -1466,4 +1474,6 @@ def load_sim2real(path) -> Sim2RealConfig:
     for c in cfg.cameras:
         c.rotation_opencv()        # validate now, not mid-dataset-generation
     assert cfg.prop_frame in ("world", "base"), f"{path}: prop_frame {cfg.prop_frame!r}"
+    assert cfg.control_freq is None or 1 <= float(cfg.control_freq) <= 500, (
+        f"{path}: control_freq {cfg.control_freq!r}")
     return cfg

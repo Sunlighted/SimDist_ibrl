@@ -48,6 +48,17 @@ Usage:
       --expert  exps/mimicgen/threading_realcell_ibrl_seed1/model0.pt \
       --cell    release/cfgs/sim2real/threading_real_cell_calibrated_wrist.yaml \
       --success release/cfgs/sim2real/threading_atm_success.csv
+
+ROBOTIQ CELL (2026-10-16, calib_20261015/): pass the Robotiq cell and no --expert needed --
+  python scripts/convert_real_teleop.py --raw_dir realdata/threading_robotiq_1015 \
+      --cell real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml \
+      --out /user_data/Chenyang/real_stage2/threading_robotiq_1015/dataset.hdf5 --assume_success_last
+  The FK / prop oracle is then the DEPLOY ReferenceArm (real2sim/deploy/policy_server.py), so the
+  offline prop is the live policy's prop by construction: base frame (prop_frame "base"), the one
+  real knuckle angle -> the two sim driver joints (robotiq_real_to_sim), start pose = the cell's
+  init_qpos (DROID home), control rate = the cell's control_freq (10 Hz). Actions stay OSC deltas of
+  the WORLD grip-site pose (the OSC acts in world axes; the deploy arm has no base DR, so world =
+  base axes there).
 """
 import argparse
 import dataclasses
@@ -134,6 +145,8 @@ def read_success_spec(path, names):
 class SimFK:
     """The sim, used only as a forward-kinematics oracle in the WORLD frame."""
 
+    robotiq = False
+
     def __init__(self, expert, cell_path):
         _RES_OVERRIDE["image_size"] = 84
         _RES_OVERRIDE["rl_image_size"] = 84
@@ -169,6 +182,8 @@ class SimFK:
         self.hand = m.body_name2id("robot0_right_hand")
         self.base = self.sim.data.body_xpos[m.body_name2id("robot0_base")].copy()
         self.cell = cell
+        self.ready = READY
+        self.control_hz = float(cell.control_freq or 20.0)
 
     def fk(self, q, width=None):
         d = self.sim.data
@@ -182,6 +197,69 @@ class SimFK:
 
     def close(self):
         self.env.env.close()
+
+
+class RobotiqFK:
+    """FK / prop oracle for the Robotiq cell = the deploy ReferenceArm (same code as the live policy)."""
+
+    robotiq = True
+
+    def __init__(self, cell_path):
+        from real2sim.deploy.policy_server import ReferenceArm
+        self.arm = ReferenceArm("Threading_RealCellRobotiq", cell_path)
+        self.cell = self.arm.cell
+        self.ready = np.asarray(self.cell.init_qpos, np.float64)
+        self.control_hz = float(self.arm.control_freq)
+        m = self.arm.sim.model
+        self.hand = m.body_name2id("robot0_right_hand")
+        self.base = self.arm.sim.data.body_xpos[m.body_name2id("robot0_base")].copy()
+
+    def fk(self, q, knuckle=None):
+        self.arm.set_state(q, None, [0.0 if knuckle is None else knuckle])
+        d = self.arm.sim.data
+        return self.arm.eef(), d.body_xmat[self.hand].reshape(3, 3).copy()
+
+    def prop(self, q, knuckle):
+        """-> 9-dim prop exactly as the policy server builds it (base frame, 2 driver joints)."""
+        self.arm.set_state(q, None, [knuckle])
+        return self.arm.prop([knuckle])
+
+    def ref_inverse(self, q_cmd, a_grip, iters=6):
+        """--action_source ref_inverse: the OSC actions that make the SIM REFERENCE ARM (its own q AND
+        qvel, as policy_server --action_map sim_ref steps it) trace the GELLO command trajectory.
+
+        Per step, from the reference's saved state: shoot an action, see where one OSC step lands, correct
+        by the miss (the OSC covers ~0.4 of a delta per 10 Hz step, so the update divides by that), repeat.
+        Deploy-consistent by construction: the policy's action -> the same reference step -> a command
+        like the GELLO's -> the real arm follows it with its own lag (and sag). The real arm's static sag
+        therefore stays out of the labels; it is a dynamics property of the real domain."""
+        arm, T_ = self.arm, len(q_cmd)
+        arm.set_state(q_cmd[0], np.zeros(7), [0.0])
+        q, v = np.array(q_cmd[0], np.float64), np.zeros(7)
+        acts = np.zeros((T_, 7))
+        miss = np.zeros(T_)
+        for t in range(T_ - 1):
+            p_star, R_star = arm.site_pose(q_cmd[t + 1])
+            a = np.zeros(6)
+            for _ in range(iters):
+                arm.set_state(q, v, [0.0])
+                arm.step(np.r_[a, -1.0])
+                p, R = arm.site_pose(np.array(arm.sim.data.qpos[arm.jidx]))
+                dp = p_star - p
+                dr = mat_to_axisangle(R_star @ R.T)
+                a = np.clip(a + np.r_[dp / (OSC_POS_SCALE * 0.4), dr / (OSC_ROT_SCALE * 0.4)], -1, 1)
+            arm.set_state(q, v, [0.0])
+            arm.step(np.r_[a, -1.0])
+            q = np.array(arm.sim.data.qpos[arm.jidx])
+            v = np.array(arm.sim.data.qvel[arm.jvel])
+            miss[t] = np.linalg.norm(arm.site_pose(q)[0] - p_star)
+            acts[t, :6] = a
+        acts[:, 6] = a_grip
+        acts[-1, :6] = 0.0
+        return acts, miss
+
+    def close(self):
+        self.arm.raw.close()
 
 
 def mat_to_quat_xyzw(R):
@@ -200,16 +278,22 @@ def convert_episode(path, fk, args, spec):
     T = int(h.attrs["num_frames"])
     q_meas = np.asarray(h["observation/joint_positions"], dtype=np.float64)
     q_cmd = np.asarray(h["action/joint_positions"], dtype=np.float64)
-    width = np.asarray(h["observation/gripper_width"], dtype=np.float64)
+    if fk.robotiq:
+        # one knuckle angle (rad, 0 open .. ~0.79 closed); "openness" for the polarity test
+        knuckle = np.asarray(h["observation/gripper_knuckle"], dtype=np.float64)
+        width, openness = knuckle, -knuckle
+    else:
+        width = np.asarray(h["observation/gripper_width"], dtype=np.float64)
+        openness = width
     g_cmd = np.asarray(h["action/gripper_width_percent"], dtype=np.float64)
     wall = np.asarray(h["time/wall"], dtype=np.float64)
     intr = json.loads(h.attrs["camera_intrinsics"])
 
     # --- sanity: does frame 0 sit on the ready pose the sim inits from? -------
-    d0 = np.degrees(q_meas[0] - READY)
+    d0 = np.degrees(q_meas[0] - fk.ready)
     if np.abs(d0).max() > args.ready_tol_deg:
         raise SystemExit(
-            f"{name}: frame 0 is {np.abs(d0).max():.1f} deg from the Franka ready pose "
+            f"{name}: frame 0 is {np.abs(d0).max():.1f} deg from the start pose {np.round(fk.ready, 4).tolist()} "
             f"(per joint {np.round(d0,2).tolist()}). Either the recorder did not force "
             f"the start pose, or the joint ORDER/zero disagrees with the sim model -- "
             f"in which case every prop value below would be wrong. Raise "
@@ -225,8 +309,8 @@ def convert_episode(path, fk, args, spec):
     # --- gripper polarity, decided from the data and reported ------------------
     # The contract is SIGN ONLY (g > 0 closes). Which end of gripper_width_percent
     # means "closed" is a recorder convention, so it is measured, not assumed.
-    fin = np.isfinite(g_cmd) & np.isfinite(width)
-    corr = float(np.corrcoef(g_cmd[fin], width[fin])[0, 1]) if fin.sum() > 2 else float("nan")
+    fin = np.isfinite(g_cmd) & np.isfinite(openness)
+    corr = float(np.corrcoef(g_cmd[fin], openness[fin])[0, 1]) if fin.sum() > 2 else float("nan")
     mid = 0.5 * (np.nanmax(g_cmd) + np.nanmin(g_cmd))
     closing = (g_cmd < mid) if (np.isnan(corr) or corr >= 0) else (g_cmd > mid)
     a_grip = np.where(closing, 1.0, -1.0)
@@ -238,13 +322,25 @@ def convert_episode(path, fk, args, spec):
     dp_dm[:-1] = (p_meas[1:] - p_meas[:-1]) / OSC_POS_SCALE
     dr_dm[:-1] = np.array([mat_to_axisangle(R_meas[t + 1] @ R_meas[t].T)
                            for t in range(T - 1)]) / OSC_ROT_SCALE
-    src = dict(cmd_fk=(dp_cmd, dr_cmd), delta_meas=(dp_dm, dr_dm))[args.action_source]
-    actions = np.clip(np.concatenate([src[0], src[1], a_grip[:, None]], axis=1), -1.0, 1.0)
+    ref_miss = None
+    if args.action_source == "ref_inverse":
+        if not fk.robotiq:
+            raise SystemExit("--action_source ref_inverse needs the Robotiq cell's deploy reference arm")
+        actions, ref_miss = fk.ref_inverse(q_cmd, a_grip)
+        src = (actions[:, 0:3], actions[:, 3:6])
+    else:
+        src = dict(cmd_fk=(dp_cmd, dr_cmd), delta_meas=(dp_dm, dr_dm))[args.action_source]
+        actions = np.clip(np.concatenate([src[0], src[1], a_grip[:, None]], axis=1), -1.0, 1.0)
 
     # --- prop -------------------------------------------------------------------
-    eef_pos = p_meas.astype(np.float32)
-    eef_quat = np.array([mat_to_quat_xyzw(R_meas[t]) for t in range(T)], dtype=np.float32)
-    grip_qpos = np.stack([width / 2.0, -width / 2.0], axis=1).astype(np.float32)
+    if fk.robotiq:
+        # the deploy server's prop, frame by frame (base frame, 2 sim driver joints)
+        P9 = np.array([fk.prop(q_meas[t], width[t]) for t in range(T)], dtype=np.float32)
+        eef_pos, eef_quat, grip_qpos = P9[:, 0:3], P9[:, 3:7], P9[:, 7:9]
+    else:
+        eef_pos = p_meas.astype(np.float32)
+        eef_quat = np.array([mat_to_quat_xyzw(R_meas[t]) for t in range(T)], dtype=np.float32)
+        grip_qpos = np.stack([width / 2.0, -width / 2.0], axis=1).astype(np.float32)
 
     # --- trim -------------------------------------------------------------------
     lo = 0
@@ -314,6 +410,8 @@ def convert_episode(path, fk, args, spec):
         eef_pos=eef_pos[lo:hi], eef_quat=eef_quat[lo:hi], gripper=grip_qpos[lo:hi],
         timestamp=wall[lo:hi], capture=cap, frames=frames, crop=crop_info,
         grip_corr=corr, succ_idx=succ_idx - lo if ok else -1,
+        q_meas=q_meas[lo:hi], q_cmd=q_cmd[lo:hi], grip_raw=width[lo:hi],
+        ref_miss=None if ref_miss is None else ref_miss[lo:hi - 1],
         diag=dict(a_cmd=np.abs(np.concatenate([dp_cmd, dr_cmd], 1)[lo:hi]).max(0),
                   a_dm=np.abs(np.concatenate([dp_dm, dr_dm], 1)[lo:hi]).max(0),
                   clipped=float((np.abs(np.concatenate([src[0], src[1]], 1)[lo:hi]) > 1).mean())),
@@ -343,7 +441,9 @@ def main():
     ap.add_argument("--trim_idle_deg", type=float, default=0.05,
                     help="per-step max joint motion counted as 'moving' (deg)")
     ap.add_argument("--trim_idle_keep", type=int, default=10, help="steps kept before it")
-    ap.add_argument("--action_source", default="cmd_fk", choices=("cmd_fk", "delta_meas"))
+    ap.add_argument("--action_source", default=None, choices=("cmd_fk", "delta_meas", "ref_inverse"),
+                    help="default: ref_inverse on the Robotiq cell (deploy-consistent, no sag in it), "
+                         "cmd_fk elsewhere (the Franka-hand era convention)")
     ap.add_argument("--ready_tol_deg", type=float, default=5.0,
                     help="the start-pose check is there to catch a joint ORDER/zero "
                          "mismatch (which shows up as tens of degrees), not to reject "
@@ -384,9 +484,13 @@ def main():
     names = [os.path.basename(p)[:-3] for p in good]
     spec = read_success_spec(args.success, names) if args.success else {}
 
-    fk = SimFK(args.expert, args.cell)
-    print(f"[fk] base in world = {np.round(fk.base, 4).tolist()}  "
-          f"(prop is WORLD frame; base-frame storage is the classic 0.912 m error)")
+    cell0 = load_sim2real(args.cell)
+    fk = RobotiqFK(args.cell) if "Robotiq" in str(cell0.gripper_types) else SimFK(args.expert, args.cell)
+    if args.action_source is None:
+        args.action_source = "ref_inverse" if fk.robotiq else "cmd_fk"
+    print(f"[actions] {args.action_source}")
+    print(f"[fk] base in world = {np.round(fk.base, 4).tolist()}  prop frame "
+          f"{fk.cell.prop_frame} | {fk.control_hz:g} Hz | start pose {np.round(fk.ready, 4).tolist()}")
 
     eps = [convert_episode(p, fk, args, spec) for p in good]
     fk.close()
@@ -402,6 +506,10 @@ def main():
             o.create_dataset("robot0_gripper_qpos", data=e["gripper"])
             o.create_dataset("object", data=np.zeros((e["T"], OBJECT_DIM), np.float32))
             o.create_dataset("timestamp", data=e["timestamp"])
+            # raw robot side, for sim replay (scripts/replay_real_demos_sim.py); trainers ignore it
+            o.create_dataset("real_joint_pos", data=e["q_meas"].astype(np.float32))
+            o.create_dataset("real_joint_cmd", data=e["q_cmd"].astype(np.float32))
+            o.create_dataset("real_gripper", data=e["grip_raw"].astype(np.float32))
             for cam, arr in e["frames"].items():
                 _write_image_dataset(o, f"{cam}_image", arr, args.jpeg_quality)
                 o.create_dataset(f"{cam}_capture_ts", data=e["capture"][cam])
@@ -414,11 +522,15 @@ def main():
         g.attrs["num_demos"] = len(eps)
         g.attrs["total"] = int(sum(e["T"] for e in eps))
 
-    side = dict(env_name=args.env_name, control_hz=20.0,
+    env_name = ("Threading_RealCellRobotiq" if fk.robotiq and args.env_name == "Threading_D0"
+                else args.env_name)
+    side = dict(env_name=env_name, control_hz=fk.control_hz, prop_frame=fk.cell.prop_frame,
                 action_source=args.action_source,
                 osc_pos_scale=OSC_POS_SCALE, osc_rot_scale=OSC_ROT_SCALE,
                 cell=args.cell, cell_sha256=sha256(args.cell),
-                expert=args.expert, fk="sim model (gripper0_grip_site / robot0_right_hand)",
+                expert=None if fk.robotiq else args.expert,
+                fk=("deploy ReferenceArm (policy_server.py)" if fk.robotiq
+                    else "sim model (gripper0_grip_site / robot0_right_hand)"),
                 base_in_world=np.round(fk.base, 6).tolist(),
                 crops=eps[0]["crop"], jpeg_quality=args.jpeg_quality,
                 raw_dir=args.raw_dir,
@@ -433,7 +545,8 @@ def main():
               f"{c['src'][0]} about ({c['cx']:.1f},{c['cy']:.1f}) -> 224"
               + ("   ⚠ needed padding" if c["padded"] else ""))
     print(f"  [gripper] corr(cmd_pct, measured_width) = {eps[0]['grip_corr']:+.3f} "
-          f"-> {'low pct = closing' if eps[0]['grip_corr'] >= 0 else 'high pct = closing'}")
+          f"-> {'low pct = closing' if eps[0]['grip_corr'] >= 0 else 'high pct = closing'}"
+          + ("  (Robotiq: vs -knuckle)" if fk.robotiq else ""))
     print(f"\n{'episode':14s} {'T':>5s} {'kept':>11s} {'succ':>5s} {'@':>5s}  "
           f"{'max|a| cmd_fk (xyz|rpy)':<34s} {'max|a| delta_meas':<26s} clip%")
     for e in eps:
@@ -443,11 +556,28 @@ def main():
               f"{np.round(c[:3],2).tolist()}|{np.round(c[3:],2).tolist()}  "
               f"{np.round(m[:3],2).tolist()}|{np.round(m[3:],2).tolist()}  "
               f"{100*e['diag']['clipped']:.1f}")
+    # A P-type follower's (target - measured) is zero-mean over an episode that returns to rest;
+    # a steady offset means the arm does not reach its command at rest (2026-10-16: the Robotiq cell
+    # sits ~6 mm BELOW the GELLO command, gravity comp without the Robotiq payload), and the OSC reads
+    # it as a constant velocity: the stored actions then drift the sim arm 0.5-0.8 m up per episode
+    # (scripts/replay_real_demos_sim.py --mode open). Do not train on actions that fail this.
+    if eps[0]["ref_miss"] is not None:
+        M = np.concatenate([e["ref_miss"] for e in eps])
+        print(f"\n  [ref_inverse] reference vs GELLO command TCP per step: p50 {1e3 * np.median(M):.2f} "
+              f"p99 {1e3 * np.percentile(M, 99):.2f} max {1e3 * M.max():.2f} mm")
+    A = np.concatenate([e["actions"][:, :3] for e in eps])
+    bias = A.mean(0)
+    print(f"\n  [action bias] mean a xyz {np.round(bias, 3).tolist()} (= {np.round(1e3 * OSC_POS_SCALE * bias, 1).tolist()} mm)"
+          + ("   ⚠ steady target-measured offset: not usable as OSC actions as-is"
+             if np.abs(bias).max() > 0.03 and args.action_source == "cmd_fk" else "")
+          + ("   (ref_inverse: velocity-like, its mean is the net displacement -- check with "
+             "scripts/replay_real_demos_sim.py --mode open)" if args.action_source == "ref_inverse" else ""))
     P = np.concatenate([e["eef_pos"] for e in eps])
-    print(f"\n  eef_pos (world) median {np.round(np.median(P,0),3).tolist()}  "
+    print(f"\n  eef_pos ({fk.cell.prop_frame}) median {np.round(np.median(P,0),3).tolist()}  "
           f"x[{P[:,0].min():.3f},{P[:,0].max():.3f}] y[{P[:,1].min():.3f},{P[:,1].max():.3f}] "
           f"z[{P[:,2].min():.3f},{P[:,2].max():.3f}]")
-    print( "  sim stage-1 1%-99%:            x[-0.373,0.350] y[-0.543,0.790] z[0.925,1.473]")
+    if not fk.robotiq:
+        print( "  sim stage-1 1%-99%:            x[-0.373,0.350] y[-0.543,0.790] z[0.925,1.473]")
     print(f"\nnext: python scripts/validate_real_demos.py --dataset {args.out}")
 
 

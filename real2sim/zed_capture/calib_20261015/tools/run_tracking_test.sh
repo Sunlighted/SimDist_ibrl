@@ -19,7 +19,7 @@ ROSENV='export CYCLONEDDS_URI=file:///workspace/ros2/cyclonedds_ws.xml; source /
 D="$HOME/simdist/deploy_simdist_1015"
 PY="$HOME/anaconda3/envs/simdist/bin/python"
 RUNNER_HOST="$HOME/simdist/gello_software/simdist_runner"
-CELL=real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml
+CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
 SCRIPTS=/workspace/ros2/src/franka_gello_state_publisher/scripts
 MAX_OVERSHOOT_MM=10
 ACTION_MAP=${ACTION_MAP:-sim_ref}

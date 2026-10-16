@@ -159,7 +159,7 @@ class Threading_RealCell(Threading_D0):
 # ---------------------------------------------------------------------------
 REAL_CELL_ROBOTIQ_YAML = _os.environ.get("THREADING_ROBOTIQ_CELL_YAML") or _os.path.join(
     _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-    "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml")
+    "real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml")
 ROBOTIQ_DRIVER_JOINTS = ("gripper0_finger_joint", "gripper0_right_outer_knuckle_joint")
 # Real Robotiq knuckle (/gripper/joint_states robotiq_85_left_knuckle_joint, rad) -> sim driver
 # joints. In-contact anchor 0.440 real <-> 0.499 sim on the 40 mm handle, clipped at the sim
@@ -205,6 +205,15 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         got = gripper_types[0] if isinstance(gripper_types, (list, tuple)) else gripper_types
         assert got in ("default", None, want), (
             f"Threading_RealCellRobotiq is the {want} cell; got gripper_types={gripper_types!r}")
+        # the cell's control rate, forced here too (not only by the wrapper) so that a
+        # bare robosuite.make -- MimicGen generation, replay scripts -- runs at it; a
+        # caller that passes another rate (e.g. a 20 Hz source dataset's env_meta) fails.
+        hz = _robotiq_cell().control_freq
+        if hz is not None:
+            got_hz = kwargs.get("control_freq", hz)
+            assert float(got_hz) == float(hz), (
+                f"Threading_RealCellRobotiq runs at the cell's {hz:g} Hz; got control_freq={got_hz!r}")
+            kwargs["control_freq"] = float(hz)
         super().__init__(*args, gripper_types=want, **kwargs)
 
     def _cell(self):

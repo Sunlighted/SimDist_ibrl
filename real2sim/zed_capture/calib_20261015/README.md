@@ -78,6 +78,121 @@ figure `figs/track_sim_ref_1015.jpg`, table `data/summary_sim_ref_1015.txt`.
     1–2 step lead (Recommendation step 2). Without that, the dynamics gap is persistent, which is the bad kind
     (findings §27).
 
+## Offline re-analysis (10-16): per-joint lag, a static z sag, and humans exceed the 8 cm/s cap
+
+Inputs: the two reseed runs' `joints.npz` (the `track*_sim_ref_*` raw dirs were **not** brought back, only the figure)
+and the 5 Robotiq demos (GELLO command `action/joint_positions` vs measured q at 10 Hz is a tracking test at
+human speed with no server in the loop). Scripts: `tools/fit_joint_lag_1016.py`, `tools/demo_joint_lag_1016.py`,
+`tools/demo_tcp_lag_1016.py` (Panda DH FK, flange + 0.17 m; only mm-scale differences are read from it).
+
+1. **"τ ≈ 100 ms" is joint 4 only.** Delay + first-order fits, cmd → measured:
+
+   | joint | reseed runs (20 / 10 Hz) | 5 demos (delay + τ) |
+   |---|---|---|
+   | j1–j4 | j4 τ 120 ms; j2 τ 200–240 ms | 60–100 ms + 0–100 ms, consistent over 5 demos |
+   | j5, j6 | j6 τ 680–720 ms (pure-delay fit 390 ms) | τ 180–220 ms (j5 one at 420) |
+   | j7 | — | τ 320–500 ms, residual 9–18 mrad (stick-slip) |
+
+   Overdamped PD would give τ ≈ D/K = 42 / 83 / 167 ms for j4 / j2 / j6; the excess is friction. The wrist
+   joints carry the orientation, which is what threading needs.
+2. **At the TCP the demos lag the command by 0.13 s (x) / 0.16 s (y) / 0.13 s (z)** (regression of
+   `TCP(q) − TCP(cmd)` on the command velocity, pooled). No x-vs-z difference ⇒ the 0.25–0.4 s "x lag" under
+   sim_ref is probably the cap/lead mechanics, not the arm.
+3. **Static sag: the measured TCP sits 6.3 mm below the command** (bias of the same regression; x −2.7,
+   y −1.5 mm; residual sd 3–5 mm). It comes from j2 at **+9–10 mrad in all 5 demos** regardless of the per-episode
+   GELLO offset ⇒ gravity compensation does not carry the Robotiq + ZED-M payload. The sim_ref figure shows the
+   same thing at the high test pose (holds settle 2–3 mm below the target), so the "past target ≤ 7 mm" there is
+   about half sag, half overshoot.
+   - ⚠️ `--z_min` and `--z_slow_band` clamp the **reference** TCP (`policy_server.py:502`, `:545`). The real
+     fingertip can be one sag (≈ 6 mm at the needle's reach) plus one overshoot (3–4 mm) below it. Raise `z_min`
+     by ~1 cm or clamp on the measured TCP + sag; fixing the payload in the franka config is the clean fix (owner).
+   - The sim has no sag. A pose-dependent persistent offset is the harmful kind of model error (findings §27).
+4. **Humans move faster than the deploy cap.** Demo TCP speed p50 2.6, p90 12.0, p99 22.5 cm/s; **18 % of steps
+   exceed 8 cm/s** (5 cm/s: 31 %). Last 3 cm of descent p90 2.8–4.7 cm/s (under the cap and the 3 mm/step slow
+   band). ⇒ data derived from these demos (replay, MimicGen seeds, BC prior) must go through the same cap, or the
+   policy learns transport speeds the real arm will not be allowed to execute.
+5. Command → measured TCP distance: median 9–11 mm, max 30–62 mm (during fast moves).
+
+## Sim replay of the 5 demos (10-16)
+
+Converted with the ported `scripts/convert_real_teleop.py` (Robotiq cell `threading_real_cell_20261015.yaml`, 10 Hz,
+prop from the deploy `ReferenceArm`) to `/user_data/Chenyang/real_stage2/threading_robotiq_1015/dataset.hdf5`, then
+`scripts/replay_real_demos_sim.py` in the 10 Hz cell with every DR off. Objects at each demo's own frame-0 fit
+(`demo_layout/layout_demos_1015.json`, `figs/fit_demos_frame0_1016.jpg`).
+
+**Track mode** (OSC servo onto the measured grip-site path, gain 2.5): TCP error p50 0.6–1.2 mm, max 9–40 mm.
+
+| demo (episode) | sim | needle in hand, wrist IoU sim/real, centroid Δ | sim tripod pushed | real tripod moved (frame 0 → last) |
+|---|---|---|---|---|
+| 0 (ep 1) | carried, misses the ring by 21.7 mm (z +20.8) | 0.18, 23 px: **slid ~2 cm in the sim grasp** | 13 mm | 21 mm, 23° |
+| 1 (ep 2) | not grasped | — | 0 | 3 mm |
+| 2 (ep 3) | needle knocked over | 0.04 | 0 | 5 mm |
+| 3 (ep 4) | carried, misses by 19.9 mm sideways | 0.51, 6 px (matches) | 21.5 mm | **42 mm**, 14° |
+| 4 (ep 5) | **success** at step 307 | 0.59, 4.5 px (matches) | 13.4 mm | 6.5 mm |
+
+- The sim grasp of the needle handle is marginal: moving the needle 4 mm (layout shot vs the per-demo fit) flips
+  demo 1 between lifted and not lifted.
+- The operator pushes the tripod while threading (up to 42 mm / 23°) and corrects by eye. An open-loop replay cannot
+  reproduce that contact, so a sim failure in the threading phase is not by itself a sim gap.
+- **Open mode** with the old `cmd_fk` actions: 0/5, the arm drifts 0.5–0.8 m **up**. They carry the static sag:
+  mean a = (+0.070, +0.044, +0.115) = (3.5, 2.2, 5.7) mm while the real TCP goes 12 cm down. Replaced by
+  `ref_inverse` (follow-up below); the converter flags `cmd_fk` bias (`[action bias]`).
+### Follow-up (10-16, later): the problem is the grasp; sag and the action convention are solved
+
+**Initialisation matches** (`tools/demo_frame_check_1016.py`, `figs/demo_frame_check_1016.jpg`): at frame 0 the
+scene needle / tripod IoU is 0.67–0.76 / 0.80–0.82 and the wrist gripper IoU 0.84. **Right before the close**, the
+needle in the wrist view is at IoU 0.39–0.54, centroid 4–9 px ≈ 2–5 mm (demo 4: 18 px). The one success (demo 4)
+has the largest offset, so a few mm before the close is not what decides the grasp.
+- ⚠️ Mask trap: the handle cube in the gripper's shadow is RGB ~(20, 0, 12) and fails `R − max(G, B) > 22`
+  (it first read IoU 0.03). The check uses `R − G > 12 and R ≥ B`.
+- Object size matches: real needle = 4 cm cube handle, 16 cm overall (owner), sim = 40 mm cube, shaft −80..+40 mm
+  = 160 mm. (§4 above calls it "the 2 cm handle cube": that is the half size.) The wrist-view handle widths agree
+  (~70 px sim and real).
+
+**The grasp is what fails, and per demo it is deterministic.** Needle perturbed ±2 mm / ±3° (9 variants × 5 demos):
+
+| variant | lifted > 10 cm | demo 0 / 1 / 2 / 3 / 4 |
+|---|---|---|
+| sim as is | 22/45 | 9 / 2 / 0 / 9 / 2 |
+| needle mass ×5 (sim 7.6 g) | 19/45 | 9 / 1 / 0 / 9 / 0 |
+| condim 4 on pads + handle | 19/45 | 9 / 0 / 0 / 9 / 1 |
+| both | 19/45 | 9 / 0 / 0 / 9 / 1 |
+
+Real: 5/5. Mass and torsional friction are not it. In demos 1 and 4 the sim's inner knuckles touch the handle
+top during the approach, before the close; in demo 1 the close squeezes the needle out (5–7 cm).
+- Gripper timing: the real Robotiq is position-controlled from the GELLO trigger, so it starts closing 1–2 steps
+  before the ±1 sign (cmd below mid-range) flips. Re-timing the sim close to the real knuckle onset (lead 0/1/2)
+  moves single demos both ways (demo 2 lifts, demo 4 drops) and does not change the total.
+- ⚠️ A kinematic penetration check is blind here: writing the two Robotiq driver joints does not move the passive
+  linkage (equality constraints act only in the dynamics), so "no penetration at the real q" proved nothing.
+- Still open: does the real gripper also touch the cube top before closing? A side photo of the real grasp
+  depth, or the operator's account, decides between "sim Robotiq geometry / linkage" and "sim is right, the real
+  fingers simply comply".
+
+**Static sag = missing payload 0.30 kg** (`tools/fit_payload_sag_1016.py`, 183 still frames). j2 torque rms
+2.43 → 0.94 N m with the fit; the CoM along the hand axis is not identifiable from these poses (the axis is near
+vertical), the mass is. 0.30 kg ≈ Robotiq 2F-85 (~0.93) + ZED-M + mount (~0.1) − Franka Hand (0.73), i.e. the
+controller is still configured for the Franka Hand. Predicted sag at the DROID home: TCP −4.0 mm z, −1.6 mm x.
+Cross-check on the Franka-hand teleop data (same script, CoM fixed 60 mm along the hand axis): threading4
+0.17 kg, threading6 0.22 kg missing ⇒ the sag predates the Robotiq; most likely the back-of-hand ZED-M + mount were
+never in the load config, and the heavier Robotiq added ~0.1 kg on top. (The 09-22 `realdata/episode_000*` cannot
+be used: their command carries an uncorrected GELLO offset of 0.1–0.2 rad.) The camera calibration sessions cannot
+replace this: they store only the measured q (joint_tap), no command, and the link-side encoders already include the
+sag, so FK(q) vs PnP cannot see it either. Any later teleop recording with still frames re-measures it
+(`tools/fit_payload_sag_1016.py <dir>`); add a few tilted-wrist holds to also identify the CoM.
+⇒ Fix at the source: set the end-effector load in Desk (or franka_ros2 set_load) to the Robotiq assembly
+(~1.03–1.1 kg, CoM ~6 cm along the flange axis), then re-measure the sag. That fixes teleop and deploy alike.
+Fallback without Desk access: a feed-forward `q_cmd += K⁻¹ τ(m = 0.30 kg)` in `policy_server` (not done).
+
+**Action convention: `ref_inverse`** (converter default on the Robotiq cell). Per step, shoot the OSC action that
+moves the sim REFERENCE arm (own q and qvel, as `--action_map sim_ref` steps it) onto the next GELLO command pose.
+The reference follows the command to p50 0.08 / p99 3.1 / max 20 mm (clipped fast moves). Open-loop replay in the
+sim no longer drifts: 12–26 mm from the measured TCP (= the command's lead + sag), was 0.2–0.8 m with `cmd_fk`.
+The labels mean what the policy's actions mean at deploy; the sag stays a real-side dynamics property.
+
+- Bug found on the way: patching `_get_initial_placement_bounds` does not fix the layout, because the wrapper's
+  `apply_cell_layout` re-wraps it on the instance with the cell's full ranges. The replay places objects directly.
+
 ## §3 wrist re-calibration (10-15 evening): the wrist camera moved 6 mm / 0.8° since 10-13
 
 Session `~/simdist/calib/run_1015_1915` (raw PNGs stay there, 105 MB; joints + solver outputs in
@@ -125,7 +240,7 @@ and `gripper_mount_z 0.0135`. The board was re-detected by the scene camera at t
 | point | result |
 |---|---|
 | all 7, **FK gripper projected into the scene image** | it lies on the real gripper in all 7 photos, within a few px at 1280 ⇒ base ↔ scene camera ↔ FK agree again (as on 10-14) |
-| needle_end_a / b | midpoint **(0.5564, −0.1098)** vs the scene-camera render fit (0.5564, −0.1097): **0.1 mm**. The line through the two touches is 14° off the fit's yaw; the "end" touches landed on the corner of the 2 cm handle cube, so the render fit (IoU 0.84) is the better yaw |
+| needle_end_a / b | midpoint **(0.5564, −0.1098)** vs the scene-camera render fit (0.5564, −0.1097): **0.1 mm**. The line through the two touches is 14° off the fit's yaw; the "end" touches landed on the corner of the 4 cm handle cube (owner: 4 cm cube, 16 cm overall), so the render fit (IoU 0.84) is the better yaw |
 | c1–c4 | ⚠️ touched at the clipboard / outer print corners, not at the inner chessboard corners (the near corners were out of reach) ⇒ 12–31 mm from the nearest outer chessboard corner, so **no xy / yaw number for base ↔ table from these**. The projection check above covers base ↔ scene |
 | zmin | fingertip **0.0337** vs the work surface 0.0285 (+5.2 mm). On 10-14, five touches in execution mode gave **0.0287 ± 0.0012**. In the projection the red tip sits slightly above the real tip, so this hand-guided touch most likely did not reach the surface. **Keep 0.0285**, do not use this value |
 

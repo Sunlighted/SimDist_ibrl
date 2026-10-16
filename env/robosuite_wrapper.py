@@ -278,6 +278,11 @@ class PixelRobosuite:
             assert env_kwargs.get("gripper_types", sim2real.gripper_types) == sim2real.gripper_types, \
                 "env_kwargs.gripper_types disagrees with the sim2real cell"
             env_kwargs["gripper_types"] = sim2real.gripper_types
+        if sim2real is not None and sim2real.enabled and sim2real.control_freq is not None:
+            # construction-time cell field: the real cell's control rate (env/sim2real.py)
+            assert float(env_kwargs.get("control_freq", sim2real.control_freq)) == float(sim2real.control_freq), \
+                "env_kwargs.control_freq disagrees with the sim2real cell"
+            env_kwargs["control_freq"] = sim2real.control_freq
         self.env = robosuite.make(
             env_name=env_name,
             robots=robots,

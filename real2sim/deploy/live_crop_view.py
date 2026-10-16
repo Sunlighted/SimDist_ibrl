@@ -35,7 +35,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _REPO)
 from real2sim.deploy.preprocess import Rectifier  # noqa: E402
 
-CELL = os.path.join(_REPO, "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml")
+CELL = os.path.join(_REPO, "real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml")
 FACTORY = os.path.join(_REPO, "release/cfgs/sim2real/zed_factory_intrinsics.json")
 JOINTS = os.path.expanduser("~/simdist/gello_software/simdist_runner/joint_state_latest.json")
 # Locked exposure / gain / white balance, same file and code as the camera publisher.
