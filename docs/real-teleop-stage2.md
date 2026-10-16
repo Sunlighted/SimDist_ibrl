@@ -6,6 +6,12 @@
 下面每一条都来自代码（robosuite `OSC_POSE` / `PandaGripper` / `rl/sequence_replay.py::load_demos_to_sequence_buffer`），
 数值取自 sim 实测。**采完先跑 `scripts/validate_real_demos.py`**（§7），它会抓出下面最常见的几类错。
 
+> ⚠️ **2026-10-15 更新（Robotiq cell）**：控制和录制频率定为 **10 Hz**（不是下文写的 20 Hz），sim 按 10 Hz 重训。
+> 录制器之前**不录 Robotiq 夹爪状态**（只认两指的 Franka Hand），已修：夹爪状态现在存在 `observation/gripper_knuckle`
+> （rad，0 张开 … 约 0.79 全闭），`run_teleop_session.py --gripper robotiq --rate 10`。前 5 条 demo 在
+> `~/simdist/gello_software/demos/threading_robotiq_1015/`（不进 git）。转换器还没移植到 Robotiq / base 系 prop：
+> 见 `real2sim/zed_capture/calib_20261015/SIM_TODO.md` §4。
+
 ---
 
 ## 1. 控制端：动作约定（遥操作设备 → 机器人，必须逐条实现）

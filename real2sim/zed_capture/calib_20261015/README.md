@@ -181,6 +181,8 @@ The rest (to 20–30) was deferred on purpose: replay these 5 in the 10 Hz sim f
 
 ## Next (offline, sim side)
 
+The full checklist, in dependency order and with the numbers, is in **[`SIM_TODO.md`](SIM_TODO.md)**.
+
 1. Sim `control_freq` 10, plus the real arm's behaviour around a step: the sim_ref cap of 8 cm/s, the
    0.1–0.4 s lag, the lead.
 2. Convert and replay the 5 demos in the sim (`scripts/convert_real_teleop.py` needs the Robotiq knuckle and

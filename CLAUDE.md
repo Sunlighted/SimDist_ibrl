@@ -28,6 +28,7 @@ Last updated: 2026-09-25
 | `docs/pixel-gap-closing-prompt.md` | ~230 | 要接着推 pixel 的时候：交给 agent 的完整任务书（Phase A 增广 / B 数据对齐 state / C 224+ResNet-18），含活跃任务共用 checkout 的风险与回归门。
 | **`docs/real-teleop-requirements-EN.md`** | ~200 | **发给真机那边的英文需求书**（20 Hz、动作约定、两套栈的 EE 坐标系差异、相机原生内参与不裁剪、摆放、成功标注、逐次 checklist），含已收到 4 条数据的验收结论。 |
 | **`docs/real-teleop-stage2.md`** | ~140 | **真机采 stage-2 遥操作 demo 之前必读**：动作约定（20 Hz、相对实测 TCP、左乘、只看夹爪符号）、prop 的两个坑（世界系而非 base 系 / 位置是 TCP 姿态是 hand body）· **★§2b Robotiq cell 起 prop 改成 base 系（`prop_frame: base`，FK(q)，不含标定）—— 上面那条「世界系」只对旧 cell 成立**、相机裁剪、hdf5 契约；采完跑 `scripts/validate_real_demos.py`。 |
+| **`real2sim/zed_capture/calib_20261015/SIM_TODO.md`** | ~80 | **★ 10-15 真机之后 sim 侧要做的事（按依赖顺序）**：sim 改 10 Hz、把 sim_ref 限速和滞后放进 sim、手腕相机新位姿、5 条 Robotiq demo 的转换和回放。结果在同目录 `README.md`。 |
 | **`docs/threading-sim2real-camera-plan.md`** | ~150 | **Threading 真机重做相机之前必读**：上次 transfer 失败的诊断（摆放表过期 / 腕相机位姿未验证且插入时 0% 可见 / 全局相机太远 / value 失效是下游症状）+ 腕相机移到手背、全局相机拉近的方案与对齐门槛。 |
 | **`docs/real2sim.md`** | ~90 | **真机方向（sim2real via real2sim）的唯一真源**。架构决定 = MuJoCo + `_GaussianRenderer` batched gsplat、**不用 PolaRiS/Isaac**（全部实测：PolaRiS 3.98 steps/s、Isaac 固定地板 173 ms/step vs gsplat 558 tps/GPU@2cam·763k）；vertical slice 已通（PolaRiS 机器人 splat MIT+metric，丢 `panda_link0`，per-body 校正 + 4 个坑）；任务 = 方形 peg-in-hole ~3 mm/边（§39 地板 1.3 mm）；阶段 A–F 现状表。job 提交用 `aip-rhinehar`（FairShare 远好于 aip-gigor）。 |
 | **`CLAUDE_ARCHIVE.md`** | ~2020 | 只在需要回查已归档分支（§10/11/13/14/15/16/18/19/20/21/22/23）时。代码在本地 `_archive/`，不随仓库发布。 |
@@ -188,6 +189,10 @@ Threading target 的参考线阶梯（同一 harness，n≥300）：
     `p(s'|s,a)`，15 Hz 部署就是 66.7 ms，**33% 的持久动力学误差**，而 stage 3 只修 dynamics
     头 ⇒ 正好撞在 findings §27 的天花板律上。**未决**：HD1080@30fps 抽到 20 Hz（要按该模式
     重读内参、crop 变 1078 px），还是按 15 Hz 重生成。
+    ✅ **2026-10-15 已决：Threading Robotiq cell 用 10 Hz**（相机 HD720@30fps，每步 3 帧）；sim 按
+    `control_freq` 10 重训，旧的 20 Hz 数据和 ckpt 不能沿用。依据和 sim 侧清单见
+    `real2sim/zed_capture/calib_20261015/{README,SIM_TODO}.md`。部署走 `policy_server.py --action_map sim_ref`
+    （每步从实测 q 重算目标会被关节静摩擦卡住，x 只走 1–4 %/步）。
 
 38. ★ **训练用什么观测，eval 就必须用什么观测 —— 否则 loss 全正常、分数恒为 0。**
     `train_simdist.py:398-413` 的 train/eval env 都是从 **config** 建的，而 `splat_obs`
