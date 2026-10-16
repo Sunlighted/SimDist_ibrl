@@ -125,6 +125,22 @@ and `gripper_mount_z 0.0135`. The board was re-detected by the scene camera at t
 ⇒ For `dr_base_xy` / `dr_base_yaw_deg`, a future touch-off needs inner chessboard corners that are within reach,
 with the board placed accordingly, or a GELLO-driven touch in execution mode for z.
 
+## §2 decided (10-15 evening): **10 Hz**, the sim is retrained at 10 Hz
+
+The decision is made with the user. The sim, the recorder (`run_teleop_session.py --rate 10`) and the runner
+(`robot_client.py --hz 10`) all use 10 Hz. The sim needs `control_freq` 10 (100 ms per step), regenerated MimicGen
+data and a new stage-1; the old 20 Hz data and checkpoints do not carry over (CLAUDE.md rule #37). The sim also
+needs the real arm's behaviour around that step: the sim_ref speed cap (8 cm/s), the 0.1–0.4 s lag and the
+1–2 step lead.
+
+**Recorder fix before §6** (gello is an upstream clone; diffs in
+`calib_20261014/tools/gello_patch/*_robotiq_state_1015.diff`, backups `*.bak_20261015` next to the scripts):
+the teleop recorder subscribed to the Franka Hand topic and dropped any gripper state with fewer than two joints,
+so **Robotiq demos would have had no gripper state at all**. `collect_demos.py` now stores the one knuckle angle as
+`observation/gripper_knuckle` (rad, 0 open .. ~0.79 closed), and `run_teleop_session.py --gripper robotiq` passes
+`--gripper-state-topic /gripper/joint_states`. Checked in the container: the extractor returns the knuckle, and
+the recorder command carries the topic.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured

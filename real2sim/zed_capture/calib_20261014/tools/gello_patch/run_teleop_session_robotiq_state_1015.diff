@@ -1,0 +1,12 @@
+--- /home/tisl-robotics/simdist/gello_software/ros2/src/franka_gello_state_publisher/scripts/run_teleop_session.py.bak_20261015	2026-10-15 20:15:21.496690611 -0400
++++ /home/tisl-robotics/simdist/gello_software/ros2/src/franka_gello_state_publisher/scripts/run_teleop_session.py	2026-10-15 20:15:21.508690888 -0400
+@@ -1197,6 +1197,9 @@
+             command += ["--robot-state-topic", ""]
+         if args.gripper == "none":
+             command += ["--gripper-state-topic", ""]
++        elif args.gripper == "robotiq":
++            # the recorder's default is the Franka Hand topic; the Robotiq client publishes here
++            command += ["--gripper-state-topic", "/gripper/joint_states"]
+     return command
+ 
+ 

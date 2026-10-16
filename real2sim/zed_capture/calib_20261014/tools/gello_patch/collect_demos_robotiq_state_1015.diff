@@ -1,0 +1,16 @@
+--- /home/tisl-robotics/simdist/gello_software/ros2/src/franka_gello_state_publisher/scripts/collect_demos.py.bak_20261015	2026-10-15 20:15:21.492690518 -0400
++++ /home/tisl-robotics/simdist/gello_software/ros2/src/franka_gello_state_publisher/scripts/collect_demos.py	2026-10-15 20:15:27.024817997 -0400
+@@ -271,7 +271,12 @@
+ 
+ 
+ def gripper_state_extractor(msg: JointState) -> Optional[Dict[str, np.ndarray]]:
+-    """Franka Hand width is the sum of the two finger joints."""
++    """Franka Hand width is the sum of the two finger joints. The Robotiq 2F-85 reports ONE
++    joint (robotiq_85_left_knuckle_joint, rad, 0 open .. ~0.79 closed): stored as is."""
++    if len(msg.position) == 1:
++        return {
++            "observation/gripper_knuckle": np.array(msg.position[0], dtype=np.float64),
++        }
+     if len(msg.position) < 2:
+         return None
+     return {
