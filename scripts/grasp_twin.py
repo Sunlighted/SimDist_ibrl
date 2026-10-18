@@ -62,8 +62,9 @@ def place(m, d, base, obj, x, y, yaw):
     d.qvel[v:v + 6] = 0.0
 
 
-def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True):
-    """One grasp trial in the sim with the needle at `needle` (base frame). -> dict."""
+def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True, grid_point=None):
+    """One grasp trial in the sim with the needle at `needle` (base frame). `grid_point` = the trial's
+    (height, along, across); default default_grid()[trial] (a --grasp_trials run renumbers its trials from 0). -> dict."""
     from env.grasp_script import GraspGeometry, GraspScript, default_grid
     np.random.seed(0)
     env.reset()
@@ -77,7 +78,8 @@ def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True):
     home = np.asarray(cell.init_qpos, np.float64)
     geo = GraspGeometry.from_sim(e.sim, rob, home)
     nominal = tuple(args.nominal)
-    sc = GraspScript(geo=geo, needle=nominal, grid=[default_grid()[trial]], hz=float(e.control_freq), wait_forever=False)
+    gp = tuple(grid_point) if grid_point is not None else default_grid()[trial]
+    sc = GraspScript(geo=geo, needle=nominal, grid=[gp], hz=float(e.control_freq), wait_forever=False)
     place(m, d, base, "needle", *needle)
     if park_tripod:
         a = m.get_joint_qpos_addr("tripod_obj_joint0")[0]
@@ -108,7 +110,7 @@ def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True):
         kn[ph] = float(d.qpos[m.get_joint_qpos_addr("gripper0_finger_joint")])
         if ph == "hold_up":
             lifted_now = float(d.body_xpos[nb][2]) - z0
-    return dict(trial=trial, grid=default_grid()[trial], needle=[round(float(v), 5) for v in needle],
+    return dict(trial=trial, grid=list(gp), needle=[round(float(v), 5) for v in needle],
                 lifted_mm=round(1e3 * lifted_now, 1), max_rise_mm=round(1e3 * (zmax - z0), 1),
                 driver_at_hold=round(kn.get("hold_up", np.nan), 3), table_contact_steps=table_hits,
                 success=bool(lifted_now > 0.07))
@@ -173,7 +175,7 @@ def real_mode(env, cell, args):
         rect = Rectifier(K, D, raw.shape[1], raw.shape[0], 448, wcam.resolved_fovy())
         real = rect(raw)
         needle = fit_needle(env, cell, S["q"], S["fingers"][0], real, np.array(args.nominal))
-        row = run_trial(env, cell, args, t, needle, q_start=first_q.get(t))
+        row = run_trial(env, cell, args, t, needle, q_start=first_q.get(t), grid_point=S.get("grid"))
         row["operator"] = ops.get(t)
         rows.append(row)
         print(json.dumps(row), flush=True)
