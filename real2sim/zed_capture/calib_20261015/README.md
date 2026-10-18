@@ -521,6 +521,19 @@ gripper**, e.g. `convert_real_teleop.py` `ref_inverse` labels / prop of the 5 de
 - One robot `communication_constraints_violation` reflex happened during the grasp grid (not in this run). Watch
   for it; if it repeats, check the NUC's network / RT load.
 
+### Demos, first sag-free batch (NEXT_VISIT §3)
+
+`~/simdist/gello_software/demos/threading_robotiq_1018/episode_00{01..10}.h5` (510 MB, **not in git**): 10 episodes,
+24–36 s each, 100 ms per frame, no stale or dropped frames, the knuckle recorded (0 open, 0.44 on the handle), both
+cameras in every frame. Recorded with the 1.20 kg payload, so no static sag. Episodes 1–2 were recorded at 12:35,
+3–10 at 18:24–18:35.
+- ⚠️ **The 1 s hover above the needle was mostly not held.** The stillest 1 s window before the grasp moves 1.2–2.4°
+  (max joint) and is usually the last second of the descent, right before closing. Only episode 7 has a real pause
+  (0.34°). Fit the per-episode needle pose from the scene camera at frame 0 (`fit_layout_wrist.py` step 1), or from
+  the wrist frame just before closing where the needle is visible.
+- Gripper state at the end: as on 10-15, the operator saved before releasing.
+- `ref_inverse` labels must be computed with the fixed ReferenceArm (b481b54).
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
