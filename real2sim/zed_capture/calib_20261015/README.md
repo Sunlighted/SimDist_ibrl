@@ -534,6 +534,26 @@ cameras in every frame. Recorded with the 1.20 kg payload, so no static sag. Epi
 - Gripper state at the end: as on 10-15, the operator saved before releasing.
 - `ref_inverse` labels must be computed with the fixed ReferenceArm (b481b54).
 
+### Robotiq driver settings (NEXT_VISIT §4)
+
+The driver runs on the NUC (`tisl-nuc13`, ros2_control `robotiq_driver/RobotiqGripperHardwareInterface`). Values are
+from its own start-up log (`demos/.session_logs/20261018_182353/gripper.log`) and from the installed
+`robotiq_description/urdf/2f_85.ros2_control.xacro`:
+
+| setting | value | where |
+|---|---|---|
+| `gripper_speed_multiplier` | **1.0** (full speed, 2F-85 spec ≈ 150 mm/s) | driver log |
+| `gripper_force_multiplier` | **0.5** | driver log |
+| client `max_effort` per goal | 1.0 (normalised), so the grip force is ≈ 0.5 of the range: about 130 N if linear over the spec's 20–235 N (not measured) | `franka_gripper_manager/robotiq_gripper_client.py` |
+| `gripper_closed_position` | 0.7929 rad | xacro (the log does not print it) |
+| controller | `position_controllers/GripperActionController`, effort + speed interfaces, 500 Hz | `config/robotiq_controllers.yaml` |
+| serial | slave 9, `/dev/serial/by-id/usb-FTDI_USB_TO_RS-485_DABC0JQR-if00-port0` | driver log + `example_fr3_config_robotiq.yaml` |
+| client deadband | a new goal only if the GELLO trigger moves > 0.02 | client |
+| measured closing onto the 40 mm handle | knuckle 0 → 0.44 in ~3 frames (≈ 0.3 s at 10 Hz) | 10-18 grasp grid |
+
+For the sim: the closing time (~0.3 s to the handle) and a grip force of about half the range are what the
+critically damped contact model should reproduce.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured
