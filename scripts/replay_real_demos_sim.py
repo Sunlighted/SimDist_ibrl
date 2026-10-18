@@ -84,6 +84,10 @@ def main():
                     help="track: servo gain on the per-step pose error (sim OSC moves ~0.4 of a "
                          "commanded delta per 10 Hz step)")
     ap.add_argument("--extra_steps", type=int, default=20, help="hold the last target this long")
+    ap.add_argument("--exec_layer", default="auto", choices=("auto", "on", "off"),
+                    help="the cell's execution layer (env/exec_layer.py). auto: ON for open (the deploy-consistent test: "
+                         "ref_inverse actions through the same chain as on the robot), OFF for track (a servo onto the "
+                         "measured path, which the layer's lag would only blur)")
     ap.add_argument("--demos", default="", help="comma list of demo indices (default all)")
     ap.add_argument("--video", default="", help="dir for per-demo side-by-side mp4")
     ap.add_argument("--video_every1", action="store_true", help="video: every step, not every 2nd")
@@ -94,6 +98,9 @@ def main():
     ap.add_argument("--grip_onset", type=float, default=0.05)
     ap.add_argument("--needle_mass_scale", type=float, default=1.0,
                     help="DIAGNOSTIC: scale the needle's mass + inertia (sim 7.6 g)")
+    ap.add_argument("--grip_solref", type=float, nargs=2, default=None,
+                    help="DIAGNOSTIC: solref of every Robotiq collision geom (robosuite: fingers/tips 0.01 0.25 = stiff "
+                         "and underdamped, pads/inner knuckles 0.02 1)")
     ap.add_argument("--grasp_condim", type=int, default=0,
                     help="DIAGNOSTIC: condim for the Robotiq pads/fingertips and the needle handle (sim 3 = "
                          "no torsional friction); 0 = unchanged")
@@ -117,10 +124,12 @@ def main():
         import json
         per_demo = {k: v for k, v in json.load(open(args.layout_json)).items() if not k.startswith("_")}
     cams = ["agentview", "robot0_eye_in_hand"]
+    el = (args.mode == "open") if args.exec_layer == "auto" else (args.exec_layer == "on")
+    from robosuite.controllers import load_controller_config  # noqa: F401
     env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 10 ** 6, image_size=224, rl_image_size=224,
                          camera_names=cams, rl_cameras=cams, use_state=True, device="cpu",
-                         hand_init_perturb_joint_sigma=0.0, sim2real=cell)
-    print(f"[replay] {env.env.control_freq:g} Hz | mode {args.mode} | layout "
+                         hand_init_perturb_joint_sigma=0.0, sim2real=cell, env_kwargs={"exec_layer": el})
+    print(f"[replay] {env.env.control_freq:g} Hz | mode {args.mode} | exec layer {'ON' if el else 'off'} | layout "
           f"{args.layout_json or LAYOUT_1015}")
 
     f = h5py.File(args.dataset, "r")
@@ -141,7 +150,7 @@ def main():
             acts = acts.copy()
             acts[:, 6] = np.where(closed[idx], 1.0, -1.0)
         src = d.attrs.get("source_episode", name)
-        layout = {k: tuple(v) for k, v in per_demo.get(src, LAYOUT_1015).items()}
+        layout = {k: tuple(v) for k, v in per_demo.get(src, LAYOUT_1015).items() if k in ("needle", "tripod")}
         if args.perturb:
             px, py, pyaw = (float(v) for v in args.perturb.split(","))
             x, y, yaw = layout["needle"]
@@ -161,6 +170,11 @@ def main():
                 if (m.body_id2name(b) or "").startswith("needle"):
                     m.body_mass[b] *= args.needle_mass_scale
                     m.body_inertia[b] *= args.needle_mass_scale
+        if args.grip_solref is not None:
+            for g in range(m.ngeom):
+                n = m.geom_id2name(g) or ""
+                if n.startswith("gripper0") and "collision" in n:
+                    m.geom_solref[g] = args.grip_solref
         if args.grasp_condim:
             for g in range(m.ngeom):
                 n = m.geom_id2name(g) or ""
@@ -194,6 +208,12 @@ def main():
         sim.forward()
         rob.controller.update(force=True)
         rob.controller.reset_goal()
+        if getattr(e, "exec_layer", None) is not None:
+            # the reference starts where ref_inverse started it: the GELLO command of frame 0 (the forced start
+            # leaves the arm ~2.5 cm from it); the arm itself starts at the measured q[0]
+            qc0 = np.asarray(d["obs/real_joint_cmd"][0], np.float64) if "obs/real_joint_cmd" in d else q[0]
+            e.exec_layer.q_ref, e.exec_layer.v_ref = qc0.copy(), np.zeros(7)
+            e.exec_layer.start = e.exec_layer.goal = e.exec_layer.last_target = np.array(q[0])
         nb = m.body_name2id("needle_obj_main") if "needle_obj_main" in [
             m.body_id2name(i) for i in range(m.nbody)] else \
             [i for i in range(m.nbody) if (m.body_id2name(i) or "").startswith("needle")][0]

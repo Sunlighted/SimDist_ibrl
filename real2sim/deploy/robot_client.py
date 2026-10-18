@@ -14,7 +14,8 @@ Modes
       (i.e. a teleop session is running) and asks for confirmation first.
 
 Safety (in addition to the server's z / workspace / joint-limit refusals)
-  - per-policy-step joint change clipped to --max_step_rad (default 0.03 rad = 0.6 rad/s)
+  - per-policy-step joint change clipped to --max_step_rad (default: what the server's cell says --
+    none on the 10-15 Robotiq cell, the same as the sim's execution layer; 0.03 rad for older servers)
   - stale inputs (> --max_age s) or a server error stop the episode
   - any exit path (end, Ctrl-C, error) holds the last measured pose, deactivates the
     impedance controller (the arm holds), then resumes gello_publisher -- exactly
@@ -64,8 +65,9 @@ class Args:
     hz: float = 20.0
     """Policy rate. The policy was trained at 20 Hz; lower = the arm gets longer per target."""
     server: str = "127.0.0.1:5555"
-    max_step_rad: float = 0.03
-    """Largest joint change per policy step (rad)."""
+    max_step_rad: Optional[float] = None
+    """Largest joint change per policy step (rad). Default: the server's (= the cell exec_layer the sim trains
+    with); negative = off."""
     max_age: float = 0.25
     """Refuse to act on camera / joint data older than this (s)."""
     yes: bool = False
@@ -322,6 +324,11 @@ def main(a: Args):
         if "error" in h:
             raise SystemExit(f"server: {h['error']}")
         print(f"server ready: {h}")
+        if a.max_step_rad is None:
+            a.max_step_rad = h.get("max_step_rad", 0.03) if "max_step_rad" in h else 0.03
+        elif a.max_step_rad < 0:
+            a.max_step_rad = None
+        print(f"per-step joint clip: {a.max_step_rad} rad")
         send_msg(sock, {"type": "reset"}); recv_msg(sock)
 
         if a.live:
@@ -378,7 +385,7 @@ def main(a: Args):
                 raise SystemExit(f"server error: {res['error']}")
             tgt = np.asarray(res["q_target"])
             base = np.asarray(last_target if last_target is not None else q)
-            step = np.clip(tgt - base, -a.max_step_rad, a.max_step_rad)
+            step = tgt - base if a.max_step_rad is None else np.clip(tgt - base, -a.max_step_rad, a.max_step_rad)
             clipped = bool(np.any(np.abs(step - (tgt - base)) > 1e-9))
             tgt = base + step
             lat = (time.monotonic() - now) * 1e3

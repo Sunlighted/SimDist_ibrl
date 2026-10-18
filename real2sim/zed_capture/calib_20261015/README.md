@@ -370,6 +370,101 @@ Consequences:
 - Interrupting the probe with the **User Stop** kills the whole robot driver (libfranka `User Stop pressed`):
   use Ctrl-C, which holds and hands back the GELLO.
 
+## Execution layer in the sim (10-17)
+
+The deploy chain between an action and the arm now exists in the sim too (`env/exec_layer.py`, cell field
+`exec_layer`, enabled in `threading_real_cell_20261015.yaml`). Per action: the deploy reference-arm OSC from its own
+state (a shadow copy of the model, nominal parameters, objects parked) -> the TCP caps and the workspace clamp
+(`cap_pose` / `clamp_box`, now the SAME functions in policy_server) -> robot_client's joint clip and 100 Hz ramp ->
+franka_ros2's joint impedance (K 240..20, D 20..5) on an arm with the fitted rotor inertia / stiction / damping.
+Installed by `Threading_RealCellRobotiq` itself (MimicGen and bare robosuite.make get it); `MG_Threading` is patched to
+read the REFERENCE pose when a layer is present (`env/threading_mg.py`), so generated labels mean what deploy actions
+mean. `exec_layer=False` (the deploy ReferenceArm) turns it off. Cost: 10.5 -> 18.9 ms per 10 Hz state-only step.
+
+**Equivalence**: the shadow reference = policy_server's ReferenceArm to 3.5e-5 rad over 6 steps (test_sim2real §O).
+Two robosuite OSC states had to be pinned to the deploy values: the nullspace target `initial_joint` and `goal_ori`
+(kept when a rotation delta is exactly 0), both = the cell home, not this episode's noisy start (they gave 1e-2 rad).
+
+**Arm fit** (`scripts/fit_arm_twin.py`, open loop: the real 100 Hz commands into a sim arm under the real controller,
+both 10-15 sim_ref runs, with the 0.30 kg the gravity comp did not know then; `arm_fit/`):
+
+| joint | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| armature (sim nominal 5 / 2.5 / 1.67 / 1.25 / 1 / 0.83 / 0.71) | (5.0) | 0.625 | 0.417 | 0.312 | 0.25 | 0.208 | 1.43 |
+| frictionloss N m (nominal 0.1) | (1.0) | 1.0 | 1.0 | 1.0 | 1.0 | 0.6 | 0.1 |
+| damping N m s (nominal 0.1 / 0.01) | (1.0) | 1.0 | 4.0 | 0.0 | 4.0 | 0.5 | 4.0 |
+| joint rms mrad, nominal -> fit | 4.0 -> 2.6 | 4.7 -> 2.6 | 2.6 -> 2.0 | 3.8 -> 1.9 | 9.4 -> 7.6 | 9.6 -> 4.5 | 1.8 |
+
+j1 is not identified (it barely moves in the test; values in brackets are placeholders). Several values sit on the
+grid edge (armature 0.25x, damping 4). j5 / j6 stay worst: approach-direction-dependent stiction (payload probe).
+
+**Validation**, closed loop, the 20 Hz sim_ref test run through the training env's layer (`scripts/exec_layer_track.py`):
+
+| | lag z (amp 0.2 / 0.5 / 1) mm | lag x mm | ref speed cm/s |
+|---|---|---|---|
+| real | 5.5 / 8.1 / 9.9 | 12.9 / 15.9 / 19.3 | 5.1-7.9 |
+| layer, nominal arm | 3.6 / 4.6 / 6.6 | 6.2 / 10.7 / 14.3 | 5.1-8.0 |
+| layer, fitted arm | 6.4 / 7.8 / 8.6 | 9.7 / 13.9 / 15.9 | 5.1-8.0 |
+
+Out of sample: the 10-15 RESEED run (not fitted) through the deploy code + fitted arm reproduces the x stall
+(done/step 0.00-0.02, real 0.01-0.04); with the nominal arm the twin drifted down instead.
+
+**Speed limits: none (owner, 10-17), in the sim AND on the robot.** With the 09-25 caps (8 cm/s, 0.4 rad/s, 3 cm lead)
+the human demos did not fit: open-loop replay of their `ref_inverse` actions through the layer ended 15-21 cm off
+(41 speed- and 13 rotation-capped steps in demo 0; a capped step's motion is lost for good). The human exceeds 8 cm/s
+on 18 % of steps. The cell's `exec_layer` now sets no caps, no lead limit, no slow band and no per-step joint clip;
+`policy_server` (and, through the hello reply, `robot_client`) take their defaults from the cell, so the robot
+runs the same chain as the sim. What stays: the z_min floor (`z_min_base` 0.038 -> world 0.950, set automatically in
+policy runs) and the 8 cm re-sync on contact.
+
+**Result -- the 5 demos replayed open loop through the layer** (no caps; reference starting at the GELLO cmd[0], as
+ref_inverse did; per-demo object fits):
+
+| demo | TCP vs real measured, p50 / max mm | needle | ring |
+|---|---|---|---|
+| 0 | 12.2 / 18.4 | lifted 189 mm | misses by 19.5 mm |
+| 1 | 7.9 / 18.9 | not grasped | -- |
+| 2 | 22.1 / 34.9 | lifted 64 mm (knocked) | -- |
+| 3 | 8.4 / 20.3 | lifted 187 mm | misses by 22.1 mm |
+| 4 | 8.2 / 20.0 | lifted 49 mm (slipped) | -- |
+
+30 s without feedback and the sim arm stays within ~1 cm of the real one (was 0.2-0.8 m with cmd_fk, 15-21 cm with
+the caps); part of the residual is the 6 mm sag these pre-fix demos carry. ⇒ **the execution layer is aligned.**
+**The grasp is not**: 0/5 threaded open loop, 1/5 with the measured-path servo, sim lifts 22/45 under +-2 mm / 3 deg
+vs real 5/5 (Follow-up above). The threading phase cannot be judged yet: the operator pushed the tripod 3-42 mm.
+
+## Object poses: the scene camera's needle yaw is biased; aligning the pose does NOT fix the grasp (10-17)
+
+**Can the object poses be made the same as on the robot?** Three independent measurements of the needle:
+- scene camera, frame 0, render-IoU fit (what the layout json and the cell's layout ranges are built on);
+- the wrist camera over the last 10 frames before the close (~10 cm from the handle; `tools/refit_needle_wrist_1017.py`
+  -> `demo_layout/layout_demos_1015_wristrefit.json`, `figs/needle_wrist_refit_1017.jpg`);
+- the 10-15 touch-off of both needle ends.
+
+The wrist refit moves the needle the SAME way in all 5 demos: base y −6…−10 mm, yaw **+8…+10°**; wrist IoU 0.5 -> 0.8
+while the scene IoU drops 0.76 -> 0.56, so the two cameras disagree by ~1 cm / 9° on this object. The touch-off sides
+with the wrist: its end-to-end line is at −5.6° vs the scene fit's −20.2° (axis of the long side; the end touches hit
+the cube corner, ±7° uncertain). ⇒ **the scene-camera fit underestimates the needle yaw by ~10°** (oblique view of a
+thin, partly shadowed shaft: the IoU is carried by the cube). Consequences: the cell's needle layout centre (−100°,
+from scene fits) is ~10° off the real placements; positions are fine to a few mm. Depth cannot help with these demos
+(only the left image is recorded) and would not beat RGB on a 1 cm shaft at 0.7 m (ZED ~1 % ≈ 7 mm); the close-range
+wrist view is the better instrument -- pausing the wrist over the needle before each demo would pin it to < 1 mm.
+
+**Grasp with the wrist-aligned poses: unchanged** (track 0/5 threaded, lifts demo 0 and 3 as before; open loop
+through the layer, demo 2's needle is EJECTED 12 m -- a contact blow-up). The relative gripper-needle pose before the
+close now matches the real wrist view (IoU ~0.8), so position is not what decides the grasp.
+
+**The finger contact model decides it**, deterministically per demo (track replay, ±2 mm / ±3° needle perturbations,
+wrist-aligned poses):
+
+| Robotiq collision solref | lifted > 10 cm | demo 0 / 1 / 2 / 3 / 4 |
+|---|---|---|
+| robosuite (fingers / tips 0.01 0.25: stiff, underdamped) | 21/45 | 9 / 1 / 1 / 9 / 1 |
+| all gripper geoms 0.02 1 (critically damped) | 27/45 | 0 / 9 / 0 / 9 / 9 |
+
+Changing only the contact flips WHICH demos lift; the real arm lifted all 5. Five demos cannot pin the contact model
+(each setting fits a different 2-3); a scripted grasp grid on the robot and in the sim (same moves) is the data that can.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured

@@ -1,0 +1,133 @@
+{
+ "_source": "refit_needle_wrist_1017.py: needle (x, y, yaw) from the frame-0 scene view + the last 10 wrist views before the close; tripod kept from the scene fit",
+ "episode_0001": {
+  "needle": [
+   0.55123,
+   -0.11833,
+   -100.98186
+  ],
+  "tripod": [
+   0.5228,
+   0.1828,
+   -34.9
+  ],
+  "scene_fit_needle": [
+   0.5515,
+   -0.1092,
+   -110.2
+  ],
+  "moved_mm_deg": [
+   -0.3,
+   -9.1,
+   9.2
+  ],
+  "loss_before_after": [
+   1.1152,
+   0.8186
+  ]
+ },
+ "episode_0002": {
+  "needle": [
+   0.55263,
+   -0.11762,
+   -100.83314
+  ],
+  "tripod": [
+   0.5216,
+   0.1833,
+   -38.3
+  ],
+  "scene_fit_needle": [
+   0.5519,
+   -0.1092,
+   -109.3
+  ],
+  "moved_mm_deg": [
+   0.7,
+   -8.4,
+   8.5
+  ],
+  "loss_before_after": [
+   1.1988,
+   0.8378
+  ]
+ },
+ "episode_0003": {
+  "needle": [
+   0.55433,
+   -0.11793,
+   -93.91478
+  ],
+  "tripod": [
+   0.5225,
+   0.1833,
+   -34.2
+  ],
+  "scene_fit_needle": [
+   0.5537,
+   -0.1082,
+   -104.1
+  ],
+  "moved_mm_deg": [
+   0.6,
+   -9.7,
+   10.2
+  ],
+  "loss_before_after": [
+   1.1805,
+   0.8282
+  ]
+ },
+ "episode_0004": {
+  "needle": [
+   0.54879,
+   -0.11852,
+   -112.43364
+  ],
+  "tripod": [
+   0.5216,
+   0.1836,
+   -34.4
+  ],
+  "scene_fit_needle": [
+   0.5528,
+   -0.1121,
+   -120.3
+  ],
+  "moved_mm_deg": [
+   -4.0,
+   -6.4,
+   7.9
+  ],
+  "loss_before_after": [
+   1.2596,
+   0.9361
+  ]
+ },
+ "episode_0005": {
+  "needle": [
+   0.54935,
+   -0.11827,
+   -92.69896
+  ],
+  "tripod": [
+   0.5185,
+   0.1841,
+   -33.3
+  ],
+  "scene_fit_needle": [
+   0.5508,
+   -0.1079,
+   -102.8
+  ],
+  "moved_mm_deg": [
+   -1.4,
+   -10.4,
+   10.1
+  ],
+  "loss_before_after": [
+   1.3012,
+   0.8282
+  ]
+ }
+}

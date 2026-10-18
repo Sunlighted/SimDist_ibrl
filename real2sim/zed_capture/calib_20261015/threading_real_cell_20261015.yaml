@@ -59,3 +59,41 @@ cameras:
   - 0.03893
   - -0.33888
   fovy: 49.014
+# 3. EXECUTION LAYER (2026-10-17, env/exec_layer.py; README "Execution layer in the sim"): what happens between an
+#    action and the arm on the robot -- the deploy reference-arm OSC, the TCP caps (8 cm/s, 0.4 rad/s, 3 cm lead),
+#    the 100 Hz ramp, franka_ros2 joint impedance with the real gains -- now also in the sim. Arm parameters:
+#    open-loop system ID on the two 10-15 sim_ref tracking runs (scripts/fit_arm_twin.py,
+#    arm_fit/arm_params_1015.json; joint rms 2.6 / 2.6 / 2.0 / 1.9 / 7.6 / 4.5 / 1.8 mrad, from 4.0 / 4.7 / 2.6 /
+#    3.8 / 9.4 / 9.6 / 1.8). Out of sample it reproduces the 10-15 reseed stall (x 0.00-0.02 done/step, real 0.01-0.04).
+#    ⚠️ j1 is not identified (it barely moves in the test): nominal armature, j2-like stiction / damping.
+#    ⚠️ PROVISIONAL: fitted before the 10-16 Desk payload fix; refit on the next tracking run (NEXT_VISIT).
+#    NO SPEED LIMITS (owner, 2026-10-17: as close to the GELLO teleop as possible; the human exceeds 8 cm/s on 18 % of
+#    steps): the TCP / rotation / lead caps, the slow band and robot_client's per-step joint clip are all off, here
+#    AND on the robot -- policy_server and robot_client take them from this block. What stays: the z_min floor
+#    (z_min_base 0.038 above the base = world 0.950 on the deploy reference; the demos' lowest grip site is 0.041) and
+#    the 8 cm re-sync when contact blocks the arm.
+exec_layer:
+  enabled: 1
+  armature: [5.0, 0.625, 0.4167, 0.3125, 0.25, 0.2083, 1.4286]
+  frictionloss: [1.0, 1.0, 1.0, 1.0, 1.0, 0.6, 0.1]
+  damping: [1.0, 1.0, 4.0, 0.0, 4.0, 0.5, 4.0]
+  z_min_base: 0.038
+  max_tcp_speed: null
+  max_rot_speed: null
+  max_lead: null
+  max_step_rad: null
+  z_slow_band: 0.0
+# 4. LAYOUT widened (2026-10-17, owner: cover the real placements with margin). Real placements of the 5 demos
+#    (needle by the close-range wrist refit, demo_layout/layout_demos_1015_wristrefit.json; tripod by the scene fit):
+#    needle x 0.549-0.554, y -0.118, yaw -92.7..-112.4 (mean -100.2: the old range was already centred on it);
+#    tripod x 0.519-0.523, y 0.183-0.184, yaw -33.3..-38.3 -- 4 of 5 OUTSIDE the old [-45.6, -35.6].
+#    New: needle yaw +-45 deg (was +-30), xy kept (+-75 / +-50 mm vs a real spread of +-3 mm); tripod +-40 mm in x/y
+#    (was +-30) and yaw [-50, -25]. Every corner keeps >= 13 px @224 inside the fovy-50 scene crop (needs >= 8).
+#    ⚠️ the tripod yaw also sets panda_joint7 at the insertion (gotcha: a tripod turned the wrong way pushes j7 into its
+#    +-166 deg limit): measure the MimicGen / expert success over the new range before trusting it.
+layout_needle_x: [0.475, 0.625]
+layout_needle_y: [-0.17, -0.07]
+layout_needle_z_rot_deg: [-145, -55]
+layout_tripod_x: [0.487, 0.567]
+layout_tripod_y: [0.136, 0.216]
+layout_tripod_z_rot_deg: [-50, -25]

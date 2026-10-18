@@ -920,6 +920,126 @@ def test_control_freq():
     check("deploy ReferenceArm steps at the cell's 10 Hz", arm.control_freq == 10)
 
 
+def test_exec_layer():
+    """2026-10-17: the real cell's execution layer (env/exec_layer.py) in the sim."""
+    print("\nO. exec_layer: the deploy chain in the sim (reference OSC = policy_server ReferenceArm, caps, ramp, PD)")
+    import robosuite
+    import env.threading_variants as tv
+    from env.exec_layer import SimRefController, cap_pose
+    from env.sim2real import load_sim2real
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base = load_sim2real(tv.REAL_CELL_ROBOTIQ_YAML)
+    check("default: no exec_layer in a cell", Sim2RealConfig().exec_layer is None)
+    tmp = os.path.join(here, "real2sim/zed_capture/calib_20261015/_test_exec_layer_cell.yaml")
+    with open(tmp, "w") as f:
+        f.write("inherit: ../calib_20261014/threading_real_cell_20261014.yaml\ncontrol_freq: 10\n"
+                "exec_layer:\n  enabled: 1\n  frictionloss: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]\n")
+    saved = tv.REAL_CELL_ROBOTIQ_YAML
+    try:
+        tv.REAL_CELL_ROBOTIQ_YAML = tmp
+        cell = load_sim2real(tmp)
+        from robosuite.controllers import load_controller_config
+        kw = dict(robots="Panda", has_renderer=False, has_offscreen_renderer=False, use_camera_obs=False,
+                  controller_configs=load_controller_config(default_controller="OSC_POSE"))
+        on = robosuite.make("Threading_RealCellRobotiq", **kw)
+        on.reset()
+        check("cell exec_layer installs SimRefController on robot.controller (bare robosuite.make)",
+              isinstance(on.robots[0].controller, SimRefController) and on.exec_layer is on.robots[0].controller)
+        jv = np.asarray(on.robots[0]._ref_joint_vel_indexes)
+        check("fitted arm parameters on the MAIN model, nominal on the shadow",
+              np.allclose(on.sim.model.dof_frictionloss[jv], 0.5)
+              and np.allclose(on.exec_layer.shadow.model._model.dof_frictionloss[jv], 0.1))
+        off = robosuite.make("Threading_RealCellRobotiq", exec_layer=False, **kw)
+        off.reset()
+        check("exec_layer=False (the deploy ReferenceArm) keeps robosuite's OSC",
+              off.exec_layer is None and not isinstance(off.robots[0].controller, SimRefController))
+        from real2sim.deploy.policy_server import ReferenceArm
+        arm = ReferenceArm("Threading_RealCellRobotiq", tmp)
+        check("policy_server ReferenceArm has no exec layer", arm.raw.exec_layer is None)
+        # the shadow reference == the deploy reference arm, step for step
+        rob = on.robots[0]
+        q0 = np.array(on.sim.data.qpos[rob._ref_joint_pos_indexes])
+        arm.ref_reset()
+        # small actions: no cap may bite (a capped step re-seeds the sim reference, which step_ref alone does not)
+        diffs, capped = [], 0
+        for a in ([0.15, 0, -0.1, 0, 0, 0, -1], [0, 0.15, 0, 0, 0, 0.1, -1], [0, 0, 0.15, 0, 0, 0, -1]) * 2:
+            on.step(np.array(a, float))
+            q_dep, _ = arm.step_ref(q0 if arm.q_ref is None else arm.q_ref, np.array(a, float), [0.0], 1.0)
+            capped += bool(on.exec_layer.last_caps)
+            diffs.append(np.abs(on.exec_layer.q_ref - q_dep).max())
+        # 1e-4 rad: the two Robotiq passive linkages start from slightly different states (6.8e-6 rad after 1 step)
+        check("shadow reference == deploy ReferenceArm.step_ref (6 uncapped steps)",
+              capped == 0 and max(diffs) < 1e-4, f"max |dq| {max(diffs):.1e} rad, {capped} capped")
+        check("no speed limits by default (owner 10-17): caps, lead, joint clip, slow band all off",
+              all(on.exec_layer.cfg[k] is None for k in ("max_tcp_speed", "max_rot_speed", "max_lead", "max_step_rad"))
+              and on.exec_layer.cfg["z_slow_band"] == 0)
+        # the cap mechanism itself, when a cell sets one: commanded TCP never faster than max_tcp_speed
+        on.reset()
+        L = on.exec_layer
+        L.cfg = dict(L.cfg, max_tcp_speed=0.08, max_rot_speed=0.4, max_lead=0.03)
+        prev, worst = None, 0.0
+        for _ in range(15):
+            on.step(np.array([1.0, 0, 0, 0, 0, 0, -1]))
+            p = L.last_cmd_pose[0]
+            if prev is not None:
+                worst = max(worst, np.linalg.norm(p - prev) / L.dt_ctrl)
+            prev = p
+        check("commanded TCP speed <= max_tcp_speed under |a| = 1", worst <= L.cfg["max_tcp_speed"] + 1e-6,
+              f"{100 * worst:.2f} cm/s (cap {100 * L.cfg['max_tcp_speed']:.0f})")
+        meas = np.array(on.sim.data.site_xpos[rob.eef_site_id])
+        check("the measured arm trails the reference (lag exists)",
+              np.linalg.norm(L.ref_site_pose()[:3, 3] - meas) > 1e-3,
+              f"{1e3 * np.linalg.norm(L.ref_site_pose()[:3, 3] - meas):.1f} mm")
+        p1, _, why = cap_pose(np.array([0.1, 0, 0]), np.eye(3), np.zeros(3), np.eye(3), np.zeros(3), 0.1,
+                              0.08, 0.4, 0.03)
+        check("cap_pose: 10 cm in 0.1 s -> speed cap 8 mm, lead cap 30 mm", np.isclose(np.linalg.norm(p1), 0.008)
+              and why == ["speed"])
+        try:
+            from mimicgen.env_interfaces.robosuite import MG_Threading
+            iface = MG_Threading(env=on)
+            check("MG_Threading under an exec layer reads the REFERENCE pose",
+                  np.allclose(iface.get_robot_eef_pose(), L.ref_site_pose()))
+        except ImportError:
+            print("  [skip] mimicgen not importable")
+        # workspace clamp in the base frame: never below z_min_base, slow band honoured
+        import dataclasses as _dc
+        L.cfg = dict(L.cfg, z_min_base=0.10, z_slow_band=0.06, z_slow_step=0.003)
+        on.reset()
+        L = on.exec_layer
+        L.cfg = dict(L.cfg, z_min_base=0.10, z_slow_band=0.06, z_slow_step=0.003)
+        bid = on.sim.model.body_name2id("robot0_base")
+        zs = []
+        for _ in range(60):
+            on.step(np.array([0, 0, -1.0, 0, 0, 0, -1]))
+            b = on.sim.data.body_xpos[bid]
+            zs.append(L.last_cmd_pose[0][2] - b[2])
+        zs = np.array(zs)
+        # both ends inside the band (the step that ENTERS it may drop to band_top - z_slow_step, as on the robot)
+        band = zs < 0.10 + 0.06
+        steps = -np.diff(zs)[band[1:] & band[:-1]]
+        check("clamp: commanded grip site never below z_min_base (base frame)", zs.min() >= 0.10 - 1e-4,
+              f"min {zs.min():.4f}")
+        check("clamp: inside the slow band the command descends <= z_slow_step per step",
+              steps.size > 0 and steps.max() <= 0.003 + 1e-4, f"max {1e3 * steps.max():.2f} mm/step")
+        # wrapper path + defaults unchanged
+        e2 = PixelRobosuite("Threading_RealCellRobotiq", "Panda", 400, image_size=64, rl_image_size=64,
+                            camera_names=["agentview"], rl_cameras=["agentview"], use_state=True, obs_stack=1,
+                            state_stack=1, prop_stack=1, flip_image=True, device="cpu",
+                            hand_init_perturb_joint_sigma=0.0, sim2real=cell)
+        e2.reset()
+        check("wrapper env with the cell: exec layer on", e2.env.exec_layer is not None)
+    finally:
+        tv.REAL_CELL_ROBOTIQ_YAML = saved
+        os.remove(tmp)
+    old_cell = load_sim2real(os.path.join(here, "real2sim/zed_capture/calib_20261014/threading_real_cell_20261014.yaml"))
+    plain = robosuite.make("Threading_RealCellRobotiq", robots="Panda", has_renderer=False, exec_layer=False,
+                           has_offscreen_renderer=False, use_camera_obs=False)
+    plain.reset()
+    check("10-14 cell has no exec_layer; exec_layer=False keeps robosuite's controller",
+          old_cell.exec_layer is None and plain.exec_layer is None)
+    check("the default Robotiq cell (10-15) enables the layer", bool(base.exec_layer))
+
+
 def main():
     test_default_off()
     test_geometry()
@@ -937,6 +1057,7 @@ def main():
     test_robotiq_cell()
     test_prop_frame()
     test_control_freq()
+    test_exec_layer()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"FAILED ({len(FAILED)}):")

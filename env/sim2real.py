@@ -485,6 +485,13 @@ class Sim2RealConfig:
     # are gripper-frame and do not care). Changes the obs contract: experts /
     # data / stage-1 built with "world" do not transfer.
     prop_frame: str = "world"
+    # EXECUTION LAYER of the real cell (env/exec_layer.py, 2026-10-17): the deploy chain between an action and
+    # the arm -- reference-arm OSC, TCP speed / lead caps, 100 Hz ramp, joint impedance with the real gains --
+    # plus the real arm's fitted armature / stiction / damping. A dict of env/exec_layer.py DEFAULTS keys
+    # (+ enabled). None = off: robosuite's OSC moves the arm itself (legacy, byte-for-byte). Installed by the
+    # task class (Threading_RealCellRobotiq), so MimicGen / bare robosuite.make get it too. Changes what an
+    # action does: experts / data / stage-1 made without it do not transfer.
+    exec_layer: Optional[dict] = None
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so
@@ -1474,6 +1481,9 @@ def load_sim2real(path) -> Sim2RealConfig:
     for c in cfg.cameras:
         c.rotation_opencv()        # validate now, not mid-dataset-generation
     assert cfg.prop_frame in ("world", "base"), f"{path}: prop_frame {cfg.prop_frame!r}"
+    if cfg.exec_layer:
+        from env.exec_layer import exec_layer_config
+        exec_layer_config(cfg.exec_layer)          # validate keys now
     assert cfg.control_freq is None or 1 <= float(cfg.control_freq) <= 500, (
         f"{path}: control_freq {cfg.control_freq!r}")
     return cfg

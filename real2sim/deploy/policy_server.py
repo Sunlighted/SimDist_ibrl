@@ -171,7 +171,9 @@ class ReferenceArm:
         self.e = PixelRobosuite(env_name=task, robots="Panda", episode_length=10 ** 9,
                                 camera_names=[], rl_cameras=[], use_state=True,
                                 state_only_no_render=True, device="cpu",
-                                hand_init_perturb_joint_sigma=0.0, sim2real=self.cell)
+                                hand_init_perturb_joint_sigma=0.0, sim2real=self.cell,
+                                # this arm IS the reference of the cell's execution layer: never stack one on it
+                                env_kwargs={"exec_layer": False} if self.robotiq else None)
         np.random.seed(0)
         self.e.reset()
         self.raw = self.e.env
@@ -381,9 +383,12 @@ class Server:
                 task_name, sim2real_cell, rl_image_size = a.task, a.cell, 224
             self.agent, self.cfg = None, _Cfg
             rl_cameras = ["agentview", "robot0_eye_in_hand"]
-            self.script = TrackScript(a.track_axes.split(","),
-                                      [float(x) for x in a.track_amps.split(",")],
-                                      a.track_dist, a.track_hold_s, a.track_max_move_s)
+            if a.scripted == "track":
+                self.script = TrackScript(a.track_axes.split(","),
+                                          [float(x) for x in a.track_amps.split(",")],
+                                          a.track_dist, a.track_hold_s, a.track_max_move_s)
+            else:
+                self.script = "grasp"                 # built once the reference arm exists (below)
         else:
             self.agent, self.cfg = load_agent(a.ckpt, a.device)
             rl_cameras = self.agent.rl_cameras
@@ -392,8 +397,11 @@ class Server:
         self.fovy, self.cell_cam = self._sim_cameras()
         self.arm = ReferenceArm(self.cfg.task_name, self.cfg.sim2real_cell)
         self.hz = self.arm.control_freq
+        if self.script == "grasp":
+            self.script = self._make_grasp_script()
+        self._resolve_limits()
         print(f"[server] reference arm control_freq {self.hz:g} Hz (the client must run at it)", flush=True)
-        if self.a.z_min is None and self.script is not None and self.arm.table_top_z is not None:
+        if self.a.z_min is None and isinstance(self.script, TrackScript) and self.arm.table_top_z is not None:
             # free-space test: never let a target come within 15 cm of the table
             self.a.z_min = self.arm.table_top_z + 0.15
             print(f"[server] --scripted: z_min = table top + 0.15 = {self.a.z_min:.3f}", flush=True)
@@ -417,8 +425,72 @@ class Server:
         self._reset_ref()
         print(f"[server] action map {a.action_map}"
               + (f" (resync {a.resync_m:g} m, z slow band {a.z_slow_band:g} m)" if a.action_map == "sim_ref" else "")
-              + f" | caps: {a.max_tcp_speed:g} m/s, {a.max_rot_speed:g} rad/s, lead {a.max_lead:g} m",
+              + f" | limits ({self.limits_from}): TCP {a.max_tcp_speed} m/s, rot {a.max_rot_speed} rad/s, lead "
+              f"{a.max_lead} m, client joint step {self.max_step_rad} rad",
               flush=True)
+
+    def _make_grasp_script(self):
+        from env.grasp_script import GraspGeometry, GraspScript, default_grid
+        cell = self.arm.cell
+        if self.a.grasp_needle:
+            nominal = tuple(float(v) for v in self.a.grasp_needle.split(","))
+        else:
+            nominal = tuple(float(np.mean(r)) for r in (cell.layout_needle_x, cell.layout_needle_y,
+                                                        cell.layout_needle_z_rot_deg))
+        geo = GraspGeometry.from_sim(self.arm.sim, self.arm.rob, np.asarray(cell.init_qpos, np.float64))
+        grid = default_grid()
+        if self.a.grasp_trials:
+            grid = [grid[int(i)] for i in self.a.grasp_trials.split(",")]
+        sc = GraspScript(geo=geo, needle=nominal, grid=grid, hz=self.hz)
+        self.grasp_outcomes = {}
+        import threading
+
+        def operator():
+            while not sc.done:
+                line = sys.stdin.readline()
+                if not line:
+                    return
+                ans = line.strip().lower()
+                if sc.steps[sc.pi][0] == "wait":
+                    self.grasp_outcomes[sc.trial] = ans
+                    if self.log:
+                        self.log.write(json.dumps({"operator": ans, "trial": sc.trial, "t": time.time()}) + "\n")
+                        self.log.flush()
+                    sc.released = True
+        threading.Thread(target=operator, daemon=True).start()
+        print(f"[server] GRASP grid: {len(grid)} trials, nominal needle {nominal} (base), tip drop "
+              f"{geo.tip_drop * 1e3:.1f} mm, table top {geo.table_top_base_z:.4f} (base)", flush=True)
+        return sc
+
+    def _resolve_limits(self):
+        """Speed limits / slow band / z_min: the command line, else the cell's exec_layer (what the sim trains with),
+        else the 09-25 deploy values. Negative = off."""
+        a = self.a
+        cfg = None
+        if self.arm.cell is not None and self.arm.cell.exec_layer:
+            from env.exec_layer import exec_layer_config
+            cfg = exec_layer_config(self.arm.cell.exec_layer)
+        legacy = dict(max_tcp_speed=0.08, max_rot_speed=0.4, max_lead=0.03, z_slow_step=0.003,
+                      z_slow_band=0.0 if self.script is not None else 0.06, max_step_rad=0.03)
+        self.limits_from = "cell exec_layer" if cfg is not None else "09-25 defaults"
+        for k in ("max_tcp_speed", "max_rot_speed", "max_lead", "z_slow_step", "z_slow_band"):
+            v = getattr(a, k)
+            if v is None:
+                v = cfg[k] if cfg is not None else legacy[k]
+            elif v < 0:
+                v = None
+            setattr(a, k, v)
+        if a.z_slow_band is None:
+            a.z_slow_band = 0.0
+        if a.z_slow_step is None:
+            a.z_slow_step = 0.003
+        # robot_client's per-step joint clip, handed over in the hello reply
+        self.max_step_rad = cfg["max_step_rad"] if cfg is not None else legacy["max_step_rad"]
+        if a.z_min is None and cfg is not None and cfg["z_min_base"] is not None and not isinstance(self.script, TrackScript):
+            base_z = float(self.arm.sim.data.body_xpos[self.arm.sim.model.body_name2id("robot0_base")][2])
+            a.z_min = cfg["z_min_base"] + base_z
+            print(f"[server] z_min = cell exec_layer z_min_base {cfg['z_min_base']:g} + base {base_z:.3f} = {a.z_min:.3f}",
+                  flush=True)
 
     def _reset_ref(self):
         """New episode / client: the reference re-seeds at the next measured q."""
@@ -468,7 +540,7 @@ class Server:
         if missing:
             raise ValueError(f"no camera_info for {missing}")
         return {"ok": True, "S": self.S, "task": self.cfg.task_name,
-                "color": sorted(self.color), "z_min": self.a.z_min}
+                "color": sorted(self.color), "z_min": self.a.z_min, "max_step_rad": self.max_step_rad}
 
     def obs_images(self, blobs, names):
         out = {}
@@ -490,8 +562,23 @@ class Server:
         torch = self.torch
         t1 = time.perf_counter()
         info = None
-        if self.script is not None:
+        if isinstance(self.script, TrackScript):
             action, info = self.script.act(eef, self.hz)
+        elif self.script is not None:                      # GraspScript: servo on the REFERENCE grip site
+            q_ref = getattr(self.arm, "q_ref", None)
+            ref_p, ref_R = self.arm.site_pose(q_ref if q_ref is not None else q)
+            action, info = self.script.act(ref_p, ref_R)
+            if info.get("save_raw") and self.a.save_dir:
+                for cam, buf in zip(h["cams"], blobs):
+                    with open(os.path.join(self.a.save_dir, f"hover_trial{info['trial']:02d}_{cam}.jpg"), "wb") as f:
+                        f.write(buf)
+                with open(os.path.join(self.a.save_dir, f"hover_trial{info['trial']:02d}_state.json"), "w") as f:
+                    json.dump({"q": q.tolist(), "fingers": fingers.tolist(), "trial": info["trial"],
+                               "grid": info["grid"]}, f)
+            if info.get("phase") == "wait" and info.get("k") == 0:
+                print(f"\n[grasp] trial {info['trial']} {info['grid']} finished (knuckle {fingers.round(3).tolist()}). "
+                      f"Was the needle LIFTED and held? type y / n / s(lipped), put the needle back on its mark, "
+                      f"then Enter.", flush=True)
         else:
             obs = {self.cammap[c]: torch.from_numpy(np.ascontiguousarray(im.transpose(2, 0, 1)))
                    for c, im in ims.items()}
@@ -502,6 +589,7 @@ class Server:
         action = np.clip(action, -1.0, 1.0)
         warn = []
         if self.a.action_map == "sim_ref":
+            q_ref_before = None if getattr(self.arm, "q_ref", None) is None else np.array(self.arm.q_ref)
             q_ref, resynced = self.arm.step_ref(q, action, fingers, self.a.resync_m)
             if resynced:
                 warn.append(f"reference re-synced to the real arm (TCPs > {self.a.resync_m * 100:.0f} cm apart)")
@@ -533,7 +621,10 @@ class Server:
                "ms": {"pre": round((t1 - t0) * 1e3, 1), "policy": round((t2 - t1) * 1e3, 1),
                       "osc": round((t3 - t2) * 1e3, 1)}}
         if self.log:
-            self.log.write(json.dumps(dict(res, step=self.n, q=q.round(5).tolist(),
+            extra = {}
+            if self.a.action_map == "sim_ref":
+                extra["q_ref_before"] = None if q_ref_before is None else q_ref_before.round(6).tolist()
+            self.log.write(json.dumps(dict(res, **extra, fingers=fingers.round(4).tolist(), step=self.n, q=q.round(5).tolist(),
                                            dq=dq.round(5).tolist(), eef_full=eef.round(6).tolist(),
                                            eef_target_full=eef_tgt.round(6).tolist(),
                                            ages=h.get("ages"), t_mono=h.get("t_mono"), hz=self.hz,
@@ -552,18 +643,14 @@ class Server:
         --z_slow_band above z_min the target may descend at most --z_slow_step per step (from
         the last COMMANDED height, so it never jumps back up): the lagging arm creeps onto the
         floor instead of ramming it."""
+        from env.exec_layer import clamp_box      # the same function the sim's execution layer uses
         a = self.a
-        lo = np.array([a.x_box[0], a.y_box[0], a.z_min])
-        hi = np.array([a.x_box[1], a.y_box[1], np.inf])
         p, R = self.arm.site_pose(q_ref)
-        band_top = a.z_min + a.z_slow_band
-        if a.z_slow_band > 0 and p[2] < band_top:
-            z_last = self.last_cmd_z if self.last_cmd_z is not None else eef[2]
-            lo[2] = max(lo[2], min(z_last, band_top) - a.z_slow_step)
-        p_cl = np.clip(p, lo, hi)
-        if np.all(np.abs(p_cl - p) <= 1e-9):
+        z_last = self.last_cmd_z if self.last_cmd_z is not None else eef[2]
+        p_cl, names = clamp_box(p, (a.x_box[0], a.y_box[0], a.z_min), (a.x_box[1], a.y_box[1], np.inf),
+                                z_last, a.z_slow_band, a.z_slow_step)
+        if not names:
             return q_ref
-        names = "".join(n for n, c in zip("xyz", np.abs(p_cl - p) > 1e-9) if c)
         warn.append(f"target {names} clamped {p.round(3).tolist()} -> {p_cl.round(3).tolist()}")
         q_ref = self.arm.ik_pose(q_ref, p_cl, R)
         self.arm.q_ref, self.arm.v_ref = np.array(q_ref), np.zeros(7)
@@ -574,25 +661,15 @@ class Server:
         --max_tcp_speed / --max_rot_speed (real time since the last step) from the previous
         command, and never more than --max_lead ahead of the MEASURED TCP (bounds the
         impedance pull). A capped step pulls the sim reference back onto it (no wind-up)."""
-        T = self.arm.T
+        from env.exec_layer import cap_pose       # the same function the sim's execution layer uses
         now = time.monotonic()
         dt = float(np.clip(now - self.last_step_t, 0.02, 0.25)) if self.last_step_t else 1.0 / self.hz
         self.last_step_t = now
         p_cmd, R_cmd = self.arm.site_pose(q_cmd)
         p_meas, R_meas = self.arm.site_pose(q)
         p_prev, R_prev = self.last_cmd_pose if self.last_cmd_pose is not None else (p_meas, R_meas)
-        why = []
-        dp = p_cmd - p_prev
-        vmax = self.a.max_tcp_speed * dt
-        if np.linalg.norm(dp) > vmax:
-            p_cmd = p_prev + dp * (vmax / np.linalg.norm(dp)); why.append("speed")
-        lead = p_cmd - p_meas
-        if np.linalg.norm(lead) > self.a.max_lead:
-            p_cmd = p_meas + lead * (self.a.max_lead / np.linalg.norm(lead)); why.append("lead")
-        rv = T.quat2axisangle(T.mat2quat(R_cmd @ R_prev.T))
-        rmax = self.a.max_rot_speed * dt
-        if np.linalg.norm(rv) > rmax:
-            R_cmd = T.quat2mat(T.axisangle2quat(rv * (rmax / np.linalg.norm(rv)))) @ R_prev; why.append("rot")
+        p_cmd, R_cmd, why = cap_pose(p_cmd, R_cmd, p_prev, R_prev, p_meas, dt, self.a.max_tcp_speed,
+                                     self.a.max_rot_speed, self.a.max_lead)
         if why:
             q_cmd = self.arm.ik_pose(q_cmd, p_cmd, R_cmd)
             if self.a.action_map == "sim_ref" and self.arm.q_ref is not None:
@@ -622,7 +699,7 @@ class Server:
                         elif h["type"] == "reset":
                             self.n = 0
                             self._reset_ref()
-                            if self.script is not None:
+                            if isinstance(self.script, TrackScript):    # the grasp grid keeps its trial count
                                 self.script = TrackScript(self.a.track_axes.split(","),
                                                           [float(x) for x in self.a.track_amps.split(",")],
                                                           self.a.track_dist, self.a.track_hold_s,
@@ -640,11 +717,17 @@ class Server:
                 conn.close()
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="", help="policy (not needed with --scripted)")
-    ap.add_argument("--scripted", default="", choices=("", "track"),
-                    help="track: fixed move/hold pattern instead of a policy (tracking-lag test)")
+    ap.add_argument("--scripted", default="", choices=("", "track", "grasp"),
+                    help="track: fixed move/hold pattern instead of a policy (tracking-lag test). grasp: the grasp "
+                         "grid of env/grasp_script.py (top-down to the needle handle at grid offsets, close, lift; "
+                         "hovers to save a raw wrist frame per trial; asks the operator between trials)")
+    ap.add_argument("--grasp_needle", default="",
+                    help="--scripted grasp: nominal needle pose 'x,y,yaw_deg' in the robot BASE frame "
+                         "(default: the centre of the cell's needle layout range)")
+    ap.add_argument("--grasp_trials", default="", help="--scripted grasp: comma list of trial indices to run")
     ap.add_argument("--task", default="", help="--scripted: the task whose arm is the OSC model")
     ap.add_argument("--cell", default="", help="--scripted: its cell yaml")
     ap.add_argument("--track_axes", default="z,x")
@@ -672,22 +755,28 @@ def main():
     ap.add_argument("--z_slow_band", type=float, default=None,
                     help="sim_ref: within this height above --z_min the target descends at most "
                          "--z_slow_step per step (m). Default 0.06, 0 with --scripted")
-    ap.add_argument("--z_slow_step", type=float, default=0.003)
-    ap.add_argument("--max_tcp_speed", type=float, default=0.08,
+    ap.add_argument("--z_slow_step", type=float, default=None, help="default: the cell's exec_layer, else 0.003")
+    # The speed limits below default to the cell's exec_layer (env/exec_layer.py) so the sim and the robot apply the
+    # same ones; the 10-15 cell has none (owner, 2026-10-17). Without an exec_layer: the 09-25 values. A negative value
+    # on the command line = off.
+    ap.add_argument("--max_tcp_speed", type=float, default=None,
                     help="HARD cap on the commanded TCP speed (m/s, real time)")
-    ap.add_argument("--max_rot_speed", type=float, default=0.4,
+    ap.add_argument("--max_rot_speed", type=float, default=None,
                     help="HARD cap on the commanded TCP rotation speed (rad/s, real time)")
-    ap.add_argument("--max_lead", type=float, default=0.03,
+    ap.add_argument("--max_lead", type=float, default=None,
                     help="HARD cap on how far the commanded TCP may lead the measured one (m)")
     ap.add_argument("--jpeg_reduce", type=int, default=2, choices=(1, 2, 4),
                     help="decode JPEGs at 1/r resolution (2: 37 -> ~10 ms/step, same 224 image)")
     ap.add_argument("--save_dir", default="", help="log steps.jsonl + policy-input images")
     ap.add_argument("--save_every", type=int, default=5)
+    return ap
+
+
+def main():
+    ap = build_parser()
     a = ap.parse_args()
     if not a.scripted and not a.ckpt:
         ap.error("--ckpt is required unless --scripted")
-    if a.z_slow_band is None:
-        a.z_slow_band = 0.0 if a.scripted else 0.06
     Server(a).serve()
 
 

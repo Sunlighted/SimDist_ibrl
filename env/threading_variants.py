@@ -200,7 +200,15 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         the Robotiq's position register onto it.
     """
 
-    def __init__(self, *args, gripper_types="default", **kwargs):
+    def __init__(self, *args, gripper_types="default", exec_layer=True, **kwargs):
+        # exec_layer=False: no execution layer even if the cell has one -- for the deploy ReferenceArm, which IS
+        # the reference of that layer (policy_server.py)
+        self._exec_layer_on = bool(exec_layer)
+        if self._exec_layer_on and _robotiq_cell().exec_layer and kwargs.get("controller_configs") is None:
+            # the layer's actions are OSC_POSE deltas on the reference arm (as on the robot); robosuite's Panda
+            # default would be JOINT_VELOCITY. An EXPLICIT other controller still fails in SimRefController.
+            from robosuite.controllers import load_controller_config
+            kwargs["controller_configs"] = load_controller_config(default_controller="OSC_POSE")
         want = _robotiq_cell().gripper_types
         got = gripper_types[0] if isinstance(gripper_types, (list, tuple)) else gripper_types
         assert got in ("default", None, want), (
@@ -239,6 +247,33 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         self.sim.data.qpos[rob._ref_gripper_joint_pos_indexes] = 0.0
         self.sim.data.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
         self.sim.forward()
+        self._install_exec_layer()
+
+    def _install_exec_layer(self):
+        """cell exec_layer -> the real arm's parameters on the arm + SimRefController (env/exec_layer.py).
+        robosuite rebuilds robot.controller on every reset, so this runs after each one."""
+        from env.exec_layer import SimRefController, apply_arm_params, exec_layer_config
+        cfg = exec_layer_config(self._cell().exec_layer) if self._exec_layer_on else None
+        self.exec_layer = None
+        if cfg is None:
+            return
+        import copy
+        rob = self.robots[0]
+        mm = self.sim.model._model
+        jv = np.asarray(rob._ref_joint_vel_indexes)
+        # a soft reset keeps the model, which already carries the fitted arm: restore the nominal values first
+        cache = getattr(self, "_exec_nominal_arm", None)
+        if cache is not None and cache[0] is mm:
+            mm.dof_armature[jv], mm.dof_frictionloss[jv], mm.dof_damping[jv] = (x.copy() for x in cache[1:])
+        else:
+            self._exec_nominal_arm = (mm, mm.dof_armature[jv].copy(), mm.dof_frictionloss[jv].copy(),
+                                      mm.dof_damping[jv].copy())
+        nominal = copy.deepcopy(mm)                         # the reference arm keeps the nominal sim parameters
+        apply_arm_params(mm, jv, cfg)
+        rob.controller = SimRefController(rob, cfg, nominal_model=nominal)
+        self.exec_layer = rob.controller
+        from env.threading_mg import patch
+        patch()                  # MimicGen labels actions relative to the REFERENCE pose from now on
 
     def _setup_observables(self):
         from robosuite.utils.observables import Observable, sensor
