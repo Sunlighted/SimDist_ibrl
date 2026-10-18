@@ -1,5 +1,11 @@
 # 下次上机清单（2026-10-17 写；上一版的负载辨识已做完，见 README「Payload probe」）
 
+> ⚠️ **10-18 抓取网格第 2 次试抓时参考臂发散**（提起时机械臂突然快速上移，目标被夹到工作区角上）。根因：部署端
+> `ReferenceArm.set_state` 只设 Robotiq 的 2 个主动关节，4 个从动关节留在上一步，夹爪一开合就互相穿透（16 mm），
+> 接触力把参考臂踢飞。已修（6 个关节一起设，`inner_knuckle = +driver`、`inner_finger = −driver`）；用记录的真机输入重放：
+> 修前在第 333 步开始发散、重新对齐 5 次，修后 0 次、提起平稳。exec_layer 等价测试仍通过（2.3e-5 rad）。
+> ⚠️ sim 侧：凡是用部署 `ReferenceArm` 且夹爪闭合的离线计算（例如 `convert_real_teleop.py` 的 `ref_inverse` 标签、prop）都可能受过影响，要重跑。
+
 目的：**定下 Robotiq 的抓取接触模型**，然后开始 sim 训练。其余各项只是顺手复查。全程约 1 小时。
 背景：sim 和真机的初始化、执行层都已对齐；剩下的是抓取。只改接触参数，sim 能抓起的 demo 就整批换掉，而 5 条人手 demo 定不住它
 （README「Object poses」）。dry run 里，robosuite 原接触参数下同一套脚本只抓起 **1/15**，临界阻尼时 **12/15**。真机结果就是判据。

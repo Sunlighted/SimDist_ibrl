@@ -191,6 +191,19 @@ class ReferenceArm:
             gj = [n for n in names if n and "finger_joint" in n]
         self.gidx = [m.get_joint_qpos_addr(n) for n in gj]
         self.gvel = [m.get_joint_qvel_addr(n) for n in gj]
+        # (qpos addr, qvel addr, sign, driver index) of the Robotiq's passive joints; driver 0 = left
+        # (finger_joint), 1 = right (right_outer_knuckle_joint). See set_state.
+        self._robotiq_followers = []
+        if self.robotiq:
+            for n in names:
+                if not n or not n.startswith("gripper0_") or n in gj:
+                    continue
+                side = 0 if "_left_" in n else 1 if "_right_" in n else None
+                sign = -1.0 if "inner_finger" in n else 1.0 if "inner_knuckle" in n else None
+                if side is None or sign is None:
+                    raise RuntimeError(f"unexpected Robotiq joint {n}: set_state does not know how it follows")
+                self._robotiq_followers.append((m.get_joint_qpos_addr(n), m.get_joint_qvel_addr(n), sign, side))
+            assert len(self._robotiq_followers) == 4, self._robotiq_followers
         # objects must not push the reference arm around: it models free-space OSC
         for g in range(m.ngeom):
             b = m.body_id2name(int(m.geom_bodyid[g])) or ""
@@ -241,6 +254,16 @@ class ReferenceArm:
         for a, v, x in zip(self.gidx, self.gvel, g):
             d.qpos[a] = x
             d.qvel[v] = 0.0
+        if self.robotiq:
+            # 2026-10-18: the Robotiq's 4 passive joints must follow the 2 drivers. Left where the previous step
+            # put them, they interpenetrate the links whenever the real knuckle changes (16 mm on closing), and the
+            # contact forces kicked the reference arm: on the robot it diverged while lifting a grasped needle
+            # (runs/grasp_1018_1200 trial 1, re-synced 7x, targets clamped to the box corners). The sim's own
+            # closing settles at inner_knuckle = +driver, inner_finger = -driver (same side); exec_layer's
+            # shadow copies all six from the sim, so this also matches training.
+            for a, v, s, k in self._robotiq_followers:
+                d.qpos[a] = s * g[k]
+                d.qvel[v] = 0.0
         self._park()
         self.sim.forward()
 
