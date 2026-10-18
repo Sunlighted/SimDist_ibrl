@@ -1,0 +1,253 @@
+{
+ "args": {
+  "dry": false,
+  "real": "runs/grasp_1018_1220",
+  "nominal": [
+   0.55,
+   -0.12000000000000001,
+   -100.0
+  ],
+  "place_sd": [
+   0.005,
+   5.0
+  ],
+  "reps": 1,
+  "grip_solref": [
+   0.02,
+   1.0
+  ],
+  "grip_friction": null,
+  "needle_mass_scale": 1.0,
+  "out": "/tmp/claude-1005/-home-tisl-robotics-simdist/980a38a7-9ceb-4fa5-a6d7-99ea0489ad67/scratchpad/twin_damped_grasp_1018_1220"
+ },
+ "rows": [
+  {
+   "trial": 0,
+   "grid": [
+    0.005,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.55388,
+    -0.12155,
+    -100.77782
+   ],
+   "lifted_mm": 100.9,
+   "max_rise_mm": 101.0,
+   "driver_at_hold": 0.53,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 1,
+   "grid": [
+    0.005,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.54847,
+    -0.1168,
+    -96.38769
+   ],
+   "lifted_mm": 102.2,
+   "max_rise_mm": 102.2,
+   "driver_at_hold": 0.526,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 2,
+   "grid": [
+    0.01,
+    -0.006,
+    0.0
+   ],
+   "needle": [
+    0.54622,
+    -0.11476,
+    -104.01531
+   ],
+   "lifted_mm": 101.6,
+   "max_rise_mm": 102.4,
+   "driver_at_hold": 0.529,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 3,
+   "grid": [
+    0.01,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.5456,
+    -0.10957,
+    -97.11577
+   ],
+   "lifted_mm": 101.3,
+   "max_rise_mm": 101.6,
+   "driver_at_hold": 0.529,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 4,
+   "grid": [
+    0.01,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.54591,
+    -0.10974,
+    -101.51731
+   ],
+   "lifted_mm": 102.3,
+   "max_rise_mm": 102.5,
+   "driver_at_hold": 0.529,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 5,
+   "grid": [
+    0.015,
+    -0.006,
+    0.0
+   ],
+   "needle": [
+    0.5436,
+    -0.11483,
+    -102.06796
+   ],
+   "lifted_mm": 102.1,
+   "max_rise_mm": 102.5,
+   "driver_at_hold": 0.526,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 6,
+   "grid": [
+    0.015,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.54955,
+    -0.11864,
+    -97.7775
+   ],
+   "lifted_mm": 101.9,
+   "max_rise_mm": 102.1,
+   "driver_at_hold": 0.529,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 7,
+   "grid": [
+    0.015,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.55443,
+    -0.1195,
+    -99.1593
+   ],
+   "lifted_mm": 102.3,
+   "max_rise_mm": 102.6,
+   "driver_at_hold": 0.526,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 8,
+   "grid": [
+    0.01,
+    0.0,
+    -0.008
+   ],
+   "needle": [
+    0.55454,
+    -0.11954,
+    -99.53679
+   ],
+   "lifted_mm": 107.6,
+   "max_rise_mm": 107.6,
+   "driver_at_hold": 0.533,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 9,
+   "grid": [
+    0.01,
+    0.0,
+    0.008
+   ],
+   "needle": [
+    0.54984,
+    -0.1178,
+    -98.30111
+   ],
+   "lifted_mm": 101.0,
+   "max_rise_mm": 101.3,
+   "driver_at_hold": 0.526,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 10,
+   "grid": [
+    0.01,
+    0.0,
+    -0.008
+   ],
+   "needle": [
+    0.55141,
+    -0.11723,
+    -99.19345
+   ],
+   "lifted_mm": 107.3,
+   "max_rise_mm": 107.3,
+   "driver_at_hold": 0.533,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 11,
+   "grid": [
+    0.01,
+    0.0,
+    0.008
+   ],
+   "needle": [
+    0.54744,
+    -0.1163,
+    -99.26927
+   ],
+   "lifted_mm": 102.4,
+   "max_rise_mm": 102.4,
+   "driver_at_hold": 0.529,
+   "table_contact_steps": 0,
+   "success": true,
+   "operator": null
+  }
+ ]
+}

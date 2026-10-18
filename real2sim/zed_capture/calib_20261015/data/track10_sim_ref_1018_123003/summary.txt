@@ -1,0 +1,15 @@
+
+=== runs/track10_sim_ref_1018_123003  (10 Hz, 406 steps)
+axis  amp | cmd cm/s real cm/s done/step | overshoot mm settle s | ref cm/s real/ref lag mm past tgt mm
+z     0.2 |     12.8       4.7      0.37 |          7.8     0.20 |      4.6     1.01   12.8         0.0
+z     0.5 |     27.4      11.9      0.49 |         22.1     0.50 |     11.5     1.04   27.4         2.5
+z     1.0 |     55.7      25.6      0.44 |         37.3     0.50 |     22.5     1.14   55.7         8.1
+x     0.2 |     12.0       4.5      0.38 |         12.7     0.50 |      4.5     1.00   12.0         0.0
+x     0.5 |     28.1      10.3      0.37 |         37.0     0.60 |     10.7     0.96   28.1         2.0
+x     1.0 |     52.0      17.2      0.33 |         72.1     1.20 |     19.2     0.89   52.0         2.9
+  age joints   p50     0 ms  p90     0 ms
+  age gripper  p50     1 ms  p90     1 ms
+  age scene    p50     7 ms  p90     9 ms
+  age wrist    p50     9 ms  p90    11 ms
+  joint 2: measured lags the 100 Hz command by 107 ms (residual 3.68 mrad), joint states at 594 Hz
+wrote runs/track10_sim_ref_1018_123003/track.jpg

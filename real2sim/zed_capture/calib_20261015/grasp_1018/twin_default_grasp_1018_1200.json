@@ -1,0 +1,60 @@
+{
+ "args": {
+  "dry": false,
+  "real": "runs/grasp_1018_1200",
+  "nominal": [
+   0.55,
+   -0.12000000000000001,
+   -100.0
+  ],
+  "place_sd": [
+   0.005,
+   5.0
+  ],
+  "reps": 1,
+  "grip_solref": null,
+  "grip_friction": null,
+  "needle_mass_scale": 1.0,
+  "out": "/tmp/claude-1005/-home-tisl-robotics-simdist/980a38a7-9ceb-4fa5-a6d7-99ea0489ad67/scratchpad/twin_default_grasp_1018_1200"
+ },
+ "rows": [
+  {
+   "trial": 0,
+   "grid": [
+    0.005,
+    -0.006,
+    0.0
+   ],
+   "needle": [
+    0.54708,
+    -0.11724,
+    -101.22373
+   ],
+   "lifted_mm": -0.6,
+   "max_rise_mm": 4.8,
+   "driver_at_hold": 0.57,
+   "table_contact_steps": 0,
+   "success": false,
+   "operator": "y"
+  },
+  {
+   "trial": 1,
+   "grid": [
+    0.005,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.54536,
+    -0.10877,
+    -95.70589
+   ],
+   "lifted_mm": -0.6,
+   "max_rise_mm": 5.8,
+   "driver_at_hold": 0.501,
+   "table_contact_steps": 0,
+   "success": false,
+   "operator": null
+  }
+ ]
+}

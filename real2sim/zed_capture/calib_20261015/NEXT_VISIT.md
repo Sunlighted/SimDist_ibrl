@@ -1,5 +1,6 @@
 # 下次上机清单（2026-10-17 写；上一版的负载辨识已做完，见 README「Payload probe」）
 
+> **10-18 进度**：§0 同步 ✅（跟踪脚本改成默认 10 Hz + 1018 客户端）。§1 抓取网格 ✅：真机 12/12 抓起；sim 对比临界阻尼接触 12/12 一致、robosuite 原参数 1/12 ⇒ 用临界阻尼。§2 跟踪 ✅（不限速，z 到 25 cm/s、x 到 17 cm/s 都跟得上，越过目标 ≤ 8 mm）。一次机器人通信急停（communication_constraints_violation）。详见 README「10-18 robot visit」。
 > ⚠️ **10-18 抓取网格第 2 次试抓时参考臂发散**（提起时机械臂突然快速上移，目标被夹到工作区角上）。根因：部署端
 > `ReferenceArm.set_state` 只设 Robotiq 的 2 个主动关节，4 个从动关节留在上一步，夹爪一开合就互相穿透（16 mm），
 > 接触力把参考臂踢飞。已修（6 个关节一起设，`inner_knuckle = +driver`、`inner_finger = −driver`）；用记录的真机输入重放：

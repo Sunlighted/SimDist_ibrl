@@ -465,6 +465,62 @@ wrist-aligned poses):
 Changing only the contact flips WHICH demos lift; the real arm lifted all 5. Five demos cannot pin the contact model
 (each setting fits a different 2-3); a scripted grasp grid on the robot and in the sim (same moves) is the data that can.
 
+## 10-18 robot visit: grasp grid, a deploy bug fixed on the way, uncapped tracking
+
+### Grasp grid (NEXT_VISIT §1): the real Robotiq lifts the needle every time; the critically damped contact matches it
+
+Runs `grasp_1018/grasp_1018_1200` (trial 0 y; trial 1 lifted, but the run diverged, see the bug below) and
+`grasp_1018_1220` (`--grasp_trials 1..14` after the fix: 11 × y, then trial 12 was cut by a robot
+`communication_constraints_violation` reflex mid-lift; 13–14 are repeats of the centre point and were skipped).
+Raw hover images and the full run dirs are on the workstation in `~/simdist/deploy_simdist_1015/runs/`.
+
+**Real: 12 / 12 lifted** (heights 5 / 10 mm, along ±6 mm, across ±8 mm). `scripts/grasp_twin.py --real`, with the
+needle pose fitted per trial from the hover wrist frame, the sim arm starting at the real trial's q, and the same script:
+
+| contact model | sim = real | sim lifted |
+|---|---|---|
+| robosuite default (finger / tip solref 0.01 0.25: stiff, underdamped) | **1 / 12** | 1 / 14 |
+| all gripper geoms solref 0.02 1.0 (critically damped) | **12 / 12** | 14 / 14 |
+
+(`grasp_1018/twin_{default,damped}_grasp_1018_*.json`.) ⇒ **Use the critically damped gripper contact.** The grid
+is too easy to rank damped variants against each other: real never failed. A harder grid (along ±10–14 mm, across
+±12–16 mm, needing a custom-grid option in `env/grasp_script.py`) would find the real failure boundary.
+(`grasp_twin --real` took the grid point from `default_grid()[trial]`, which is wrong for a `--grasp_trials` run; fixed
+to read it from the hover state, 07d9ddf.)
+
+### Bug: the deploy reference arm diverged with a closed Robotiq (fixed, b481b54)
+
+`ReferenceArm.set_state` set only the Robotiq's 2 driver joints from the real knuckle; the 4 passive joints kept the
+previous step's values. Whenever the knuckle changed, the gripper links interpenetrated (16 mm on closing) and the
+contact forces kicked the reference arm. On the robot (`grasp_1018_1200`, trial 1) the reference diverged while lifting
+the grasped needle: 7 re-syncs, targets clamped to the box corners, and with no per-step joint clip the arm jerked up
+until the FR3 stopped itself (`power_limit_violation` reflex). Replaying the logged real inputs (q, dq, knuckle)
+through `Server.step` reproduces the log exactly up to step 332 and then the divergence (5 re-syncs). With the passive
+joints set from the drivers (inner_knuckle = +driver, inner_finger = −driver, which is where the sim's own closing
+settles) there are 0 re-syncs and the lift is straight. `test_sim2real` O (exec_layer shadow == ReferenceArm) still
+passes, at 2.3e-5 rad. ⚠️ **Re-run any offline computation that went through the deploy ReferenceArm with a closed
+gripper**, e.g. `convert_real_teleop.py` `ref_inverse` labels / prop of the 5 demos. For live runs, a client
+`--max-step-rad 0.1` is a cheap backstop: it never binds at ~0.05 rad/step and stops a jump.
+
+### Tracking without speed limits, payload fixed (NEXT_VISIT §2)
+
+`data/track10_sim_ref_1018_123003`, `figs/track_sim_ref_nocap_1018.jpg`. 10 Hz, the 10-15 cell (no caps), 1.20 kg payload:
+
+| | z amp 0.2 / 0.5 / 1.0 | x amp 0.2 / 0.5 / 1.0 | 10-15 (capped 8 cm/s, 0.9 kg), 10 Hz |
+|---|---|---|---|
+| real speed, cm/s | 4.7 / 11.9 / 25.6 | 4.5 / 10.3 / 17.2 | z 2.5 / 6.6 / 7.5, x 2.7 / 5.8 / 5.3 |
+| real / ref speed | 1.01 / 1.04 / 1.14 | 1.00 / 0.96 / 0.89 | 0.96–1.23 |
+| steady lag (mm), lag / speed | 13 / 27 / 56 mm, 0.27 / 0.23 / 0.22 s | 12 / 28 / 52 mm, 0.27 / 0.27 / 0.30 s | z ≈ 0.16 s, x 0.25–0.4 s |
+| past the final target | 0 / 2.5 / 8.1 mm | 0 / 2.0 / 2.9 mm | ≤ 6.2 mm |
+| joint lag vs the 100 Hz command | 107 ms (j2) | | 103 ms |
+
+- The arm keeps up with the reference up to ~25 cm/s in z and ~17 cm/s in x (x falls to 0.89 at amp 1).
+- The time lag is now ~0.22–0.30 s on both axes; it includes the client's one-period ramp (0.1 s).
+- The overshoot past the target is ≤ 8 mm, at 22 cm/s going down. No re-syncs, no caps.
+- The plateaus now sit on the target. The static sag is gone, consistent with the payload fix.
+- One robot `communication_constraints_violation` reflex happened during the grasp grid (not in this run). Watch
+  for it; if it repeats, check the NUC's network / RT load.
+
 ## Recommendation
 
 **Keep the ROS 2 / franka_ros2 stack and do not switch inference to polymetis.** None of the latency measured

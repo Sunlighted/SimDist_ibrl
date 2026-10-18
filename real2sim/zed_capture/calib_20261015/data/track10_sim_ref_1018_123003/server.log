@@ -1,0 +1,16 @@
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /home/tisl-robotics/simdist/deploy_simdist/deps/robosuite/robosuite/scripts/setup_macros.py (macros.py:55)
+WARNING: robosuite task zoo environments not imported, possibly because robosuite_task_zoo is not installed...
+Got error: No module named 'robosuite_task_zoo'
+[sim2real] table_offset [0.     0.     0.9405] -> [0.     0.     0.9405] (top +0.0285 m vs base origin, table_top_dz +0.0078)
+[server] reference-arm OSC warm-up 0.0s | prop frame base
+[server] reference arm control_freq 10 Hz (the client must run at it)
+[server] --scripted: z_min = table top + 0.15 = 1.091
+[server] SCRIPTED track loaded in 3.0s | cameras ['agentview', 'robot0_eye_in_hand'] @ 224 | colour map: ['scene', 'wrist']
+[server] action map sim_ref (resync 0.08 m, z slow band 0 m) | limits (cell exec_layer): TCP None m/s, rot None rad/s, lead None m, client joint step None rad
+[server] listening on 127.0.0.1:5555
+[server] client ('127.0.0.1', 45114)
+[server] scene -> agentview: fovy 50.000 deg, crop 498 px (full res), fy 534.9, K/D from camera_info (factory)
+[server] wrist -> robot0_eye_in_hand: fovy 49.014 deg, crop 710 px (full res), fy 778.7, K/D from /home/tisl-robotics/simdist/deploy_simdist_1015/real2sim/zed_capture/calib_20261015/../calib_20261010/data/wrist_intrinsics.json
+[server] client disconnected
