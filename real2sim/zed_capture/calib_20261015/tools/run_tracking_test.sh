@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NEXT_VISIT.md §1, one command: tracking-lag / overshoot test at 20 Hz then 10 Hz, no policy.
 #
-#   bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh          # 20 then 10 Hz
+#   bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh          # 10 Hz (the cell rate)
 #   bash ~/simdist/deploy_simdist_1015/run_tracking_test.sh 10       # only 10 Hz
 #   ACTION_MAP=reseed bash ...                                       # the 10-15 baseline map
 #
@@ -32,7 +32,7 @@ if [[ "${1:-}" == "--down" ]]; then
     docker exec "$C" pkill -f wrist_camera_info.py || true
     echo "stack stopping (logs in demos/.session_logs)"; exit 0
 fi
-RATES=("$@"); [[ ${#RATES[@]} -eq 0 ]] && RATES=(20 10)
+RATES=("$@"); [[ ${#RATES[@]} -eq 0 ]] && RATES=(10)   # the 10-15 cell is 10 Hz: the server refuses any other --hz
 
 need=(/franka/joint_states /gripper/joint_states /cameras/scene/left/image/compressed
       /cameras/wrist/left/image/compressed /cameras/scene/left/camera_info)
@@ -106,7 +106,7 @@ for HZ in "${RATES[@]}"; do
 
     echo "[$HZ Hz] live"
     set +e
-    dex "cd /workspace/simdist_runner; python3 robot_client_1015.py --gripper-state-topic /gripper/joint_states \
+    dex "cd /workspace/simdist_runner; python3 robot_client_1018.py --gripper-state-topic /gripper/joint_states \
         --hz $HZ --steps 3000 --joint-log /workspace/simdist_runner/track${HZ}.npz --live --activate --yes" \
         2>&1 | tee "$RUN/client.log" | grep -vE "^\[ *[0-9]+\]"
     rc=${PIPESTATUS[0]}
