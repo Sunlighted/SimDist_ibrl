@@ -1038,6 +1038,10 @@ def test_exec_layer():
     check("10-14 cell has no exec_layer; exec_layer=False keeps robosuite's controller",
           old_cell.exec_layer is None and plain.exec_layer is None)
     check("the default Robotiq cell (10-15) enables the layer", bool(base.exec_layer))
+    sr = {tuple(np.round(plain.sim.model.geom_solref[g], 4)) for g in range(plain.sim.model.ngeom)
+          if (plain.sim.model.geom_id2name(g) or "").startswith("gripper0")
+          and "collision" in (plain.sim.model.geom_id2name(g) or "")}
+    check("10-18 grasp grid: every Robotiq collision geom critically damped (0.02, 1.0)", sr == {(0.02, 1.0)}, str(sr))
 
 
 def main():

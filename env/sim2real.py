@@ -492,6 +492,11 @@ class Sim2RealConfig:
     # task class (Threading_RealCellRobotiq), so MimicGen / bare robosuite.make get it too. Changes what an
     # action does: experts / data / stage-1 made without it do not transfer.
     exec_layer: Optional[dict] = None
+    # GRIPPER CONTACT (2026-10-18): solref (timeconst, dampratio) of every gripper collision geom. None = robosuite's
+    # (Robotiq fingers / tips 0.01 0.25: stiff and underdamped -- it squeezes the needle handle out: the scripted grasp
+    # grid lifted 1/12 in the sim vs 12/12 on the robot). (0.02, 1.0) = critically damped: 12/12 trial-by-trial
+    # agreement with the real grid (calib_20261015 README "10-18 robot visit"). Applied by the task class.
+    gripper_contact_solref: Optional[tuple] = None
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so

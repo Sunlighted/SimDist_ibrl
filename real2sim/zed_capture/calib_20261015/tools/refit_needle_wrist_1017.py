@@ -107,9 +107,13 @@ for fn in sorted(glob.glob(os.path.join(args.raw, "episode_*.h5"))):
     intr = json.loads(h.attrs["camera_intrinsics"])
     mid = 0.5 * (g.max() + g.min())
     tc = int(np.argmax(g < mid))                       # first step the command is past mid-range (closing)
-    onset = int(np.argmax(kn > 0.02))                  # the real knuckle starts to move
+    # the real knuckle starts to move: relative to its own start (10-18 ep 7 starts slightly closed, > 0.02)
+    onset = int(np.argmax(kn > kn[:5].max() + 0.02))
     t_last = min(tc, onset) - 1
     frames = [(SCENE, 0)] + [(WRIST, t) for t in range(max(1, t_last - args.n_wrist + 1), t_last + 1)]
+    if len(frames) < 3:
+        print(f"{ep}: no wrist frames before the close (close cmd t={tc}, onset t={onset}); skipped", flush=True)
+        continue
     rect = {}
     real = []
     for cam, t in frames:

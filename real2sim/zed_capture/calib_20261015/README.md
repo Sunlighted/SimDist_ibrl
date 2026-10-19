@@ -663,3 +663,31 @@ the rate mostly sets how far ahead the reference runs, and 10 Hz is what the own
 3. Then continue `NEXT_VISIT.md`: §2 rate with the owner, §3 wrist re-calibration (teleop without cameras +
    `record_calib.py`; the stack from step 2 must be down first: `run_tracking_test.sh --down`),
    §4 touch-offs, §5 layout / exposure drift, §6 demos.
+
+## 10-18 data in the sim (10-19)
+
+- **Cell**: `gripper_contact_solref: [0.02, 1.0]` (critically damped Robotiq contact, the 10-18 grasp grid result) is a
+  cell field now, applied by `Threading_RealCellRobotiq` on every reset (test_sim2real §O).
+- **Arm parameters hold out of sample**: the 10-15 fit predicts the 10-18 uncapped tracking run (payload fixed, never
+  fitted) at 21.6 mrad summed joint rms; refitting on it gives 20.95 (`fit_arm_twin.py`). Cell values kept.
+- **Demos** converted with the fixed ReferenceArm (`/user_data/Chenyang/real_stage2/threading_robotiq_1018/`, 10 demos,
+  3039 transitions, ref_inverse). Per-demo layout: scene fit `demo_layout/layout_demos_1018.json`, needle refined from
+  the wrist frames before the close `layout_demos_1018_wristrefit.json`. ⚠️ The operator placed all 10 at the SAME spot
+  (needle (0.545-0.555, -0.108), scene yaw -108..-111; tripod yaw -32..-38): the new layout ranges are not covered.
+- **The scene/wrist disagreement is systematic**: all 15 demos (10-15 and 10-18) move the needle the same way under the
+  wrist refit, y -7..-9 mm, yaw +8..+10 deg (wrist IoU 0.5 -> 0.8, scene 0.8 -> 0.58). A fixed ~1 cm / 9 deg offset is
+  a camera / FK chain inconsistency, not fit noise; the tripod is measured by the scene camera only, so it likely
+  carries a similar error. Next visit: put the ChArUco board where the needle lies and solve it from both cameras at a
+  grasp pose (the calibration poses were higher).
+- **Replay** (10-15 cell, execution layer, damped contact, wrist-refined needle):
+
+  | | TCP vs real, p50 | needle lifted | threaded |
+  |---|---|---|---|
+  | open loop through the layer | 3-4 mm (2 demos 61-85 mm) | **7/10** | 0/10 |
+  | servo on the measured path | < 1 mm | 4/10 | 0/10 |
+
+  Execution: 3-4 mm open loop over 25-36 s (8-22 mm on 10-15 with the sag). Grasp: 7/10 human approaches lift (the
+  scripted grid 12/12). Threading cannot be judged by replay: **the real tripod still moved in 5 of 10 demos (7-19 mm,
+  up to 15 deg)** although the protocol said not to touch it -- the needle meets the ring -- and the lifted needles end
+  22-67 mm from the ring centre in the sim (tripod pose error and in-hand differences). The policy is closed loop; this
+  replay check is done.

@@ -247,7 +247,19 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         self.sim.data.qpos[rob._ref_gripper_joint_pos_indexes] = 0.0
         self.sim.data.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
         self.sim.forward()
+        self._apply_gripper_contact()
         self._install_exec_layer()
+
+    def _apply_gripper_contact(self):
+        """cell gripper_contact_solref -> every gripper collision geom (the model is rebuilt on each hard reset)."""
+        sr = self._cell().gripper_contact_solref
+        if sr is None:
+            return
+        m = self.sim.model
+        for g in range(m.ngeom):
+            n = m.geom_id2name(g) or ""
+            if n.startswith("gripper0") and "collision" in n:
+                m.geom_solref[g] = np.asarray(sr, np.float64)
 
     def _install_exec_layer(self):
         """cell exec_layer -> the real arm's parameters on the arm + SimRefController (env/exec_layer.py).

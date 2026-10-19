@@ -83,17 +83,23 @@ exec_layer:
   max_lead: null
   max_step_rad: null
   z_slow_band: 0.0
-# 4. LAYOUT widened (2026-10-17, owner: cover the real placements with margin). Real placements of the 5 demos
-#    (needle by the close-range wrist refit, demo_layout/layout_demos_1015_wristrefit.json; tripod by the scene fit):
-#    needle x 0.549-0.554, y -0.118, yaw -92.7..-112.4 (mean -100.2: the old range was already centred on it);
-#    tripod x 0.519-0.523, y 0.183-0.184, yaw -33.3..-38.3 -- 4 of 5 OUTSIDE the old [-45.6, -35.6].
-#    New: needle yaw +-45 deg (was +-30), xy kept (+-75 / +-50 mm vs a real spread of +-3 mm); tripod +-40 mm in x/y
-#    (was +-30) and yaw [-50, -25]. Every corner keeps >= 13 px @224 inside the fovy-50 scene crop (needs >= 8).
-#    ⚠️ the tripod yaw also sets panda_joint7 at the insertion (gotcha: a tripod turned the wrong way pushes j7 into its
-#    +-166 deg limit): measure the MimicGen / expert success over the new range before trusting it.
+# 4. LAYOUT (2026-10-19, owner: cover the real placements, not so wide that it stops being learnable).
+#    Real, 15 demos: needle x 0.546-0.556, y -0.120..-0.116, yaw -112..-93 by the wrist refit (the scene camera reads
+#    ~9 deg lower: -120..-102; which is right is open, README "10-18 data in the sim"); tripod (scene) x 0.517-0.524,
+#    y 0.179-0.188, yaw -38..-32 (4 of the 10-15 demos were outside the old [-45.6, -35.6]).
+#    Learnable references: MimicGen D0 (expert 0.98) needle +-75 / +-50 mm / +-30 deg with the tripod FIXED; the old Franka
+#    RealCell (0.957) the same needle box + tripod +-30 mm / +-5 deg.
+#    ⇒ needle: the D0-size box, yaw +-30 re-centred on -105 so both readings keep >= 12 deg of margin;
+#      tripod: re-centred on the real placement, +-25 mm / +-10 deg (covers the placements + the ~1 cm camera
+#      uncertainty; much smaller than the 10-17 trial of +-40 mm / 25 deg). All within the 10-17 visibility check
+#      (>= 13 px inside the scene crop). ⚠️ tripod yaw sets j7 at the insertion: check MimicGen success per yaw bin.
 layout_needle_x: [0.475, 0.625]
 layout_needle_y: [-0.17, -0.07]
-layout_needle_z_rot_deg: [-145, -55]
-layout_tripod_x: [0.487, 0.567]
-layout_tripod_y: [0.136, 0.216]
-layout_tripod_z_rot_deg: [-50, -25]
+layout_needle_z_rot_deg: [-135, -75]
+layout_tripod_x: [0.496, 0.546]
+layout_tripod_y: [0.158, 0.208]
+layout_tripod_z_rot_deg: [-45, -25]
+# 5. GRIPPER CONTACT (2026-10-18 grasp grid, README "10-18 robot visit"): critically damped Robotiq contact. The robot
+#    lifted the needle 12/12; the sim with robosuite's finger contact (solref 0.01 0.25) 1/12, with 0.02 1.0 12/12,
+#    trial by trial (needle pose per trial from the hover wrist frame, same script, same execution layer).
+gripper_contact_solref: [0.02, 1.0]
