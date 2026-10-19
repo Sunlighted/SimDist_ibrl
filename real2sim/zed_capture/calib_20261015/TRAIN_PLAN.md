@@ -17,16 +17,28 @@
 
 **这些不再改**；之后只在下面 §DR 里给不确定的量加随机化。改了任何一项，之后的数据和 checkpoint 全部作废（CLAUDE.md 铁律 #37 同类）。
 
-## 阶段 1：MimicGen 生成 state 数据（先做，约半天）
+## 阶段 1：state 数据 —— ✅ 完成（2026-10-19），**改用脚本化专家，不用 MimicGen**
 
-种子：MimicGen 自带的 sim 示范（`release/data/mimicgen/source/threading.hdf5`，10 条，Panda 手爪、20 Hz）。
-真机 demo 现在**不能**当种子：在 sim 里能抓起 7/10，但穿环 0/10（真机穿环时 tripod 被推动，开环回放复现不了）。
+**MimicGen 没过门槛**：在新 cell 上生成成功率只有 10%（门槛 30%）。2×2 拆分（50 次尝试一格）：
 
-1. 给 `scripts/gen_realcell_demos.py` 加 `threading_robotiq` 任务（env `Threading_RealCellRobotiq`），并覆盖种子数据 env_meta 里的
-   `control_freq 20`（类会拒绝 20 Hz）。执行层开着时 MimicGen 会自动按参考臂位姿算动作（`env/threading_mg.py`）。
-2. **冒烟 50 次**，量生成成功率，并按 tripod 朝向分段统计（tripod 朝向决定插入时的 j7，可能顶到 ±166° 限位）。
-   - 门槛：整体 ≥ 30%，且没有哪一段朝向 ≈ 0。过不了就先查：Panda 抓取点换成 Robotiq 后的抓取偏移、10 Hz 下的时间缩放、j7。
-3. 生成约 1000 条成功轨迹（分片并行）→ merge → 转成 state 数据集。单步耗时：执行层约 19 ms/步（不开执行层 10.5 ms）。
+| | 20 Hz | 10 Hz |
+|---|---|---|
+| Panda 手爪 | 53–60%（旧管线） | 28% |
+| Robotiq | 8% | 10% |
+
+主因是 **Robotiq**：needle 每次都能抓起（19 条失败里 17 条提起了约 19 cm），但它在手里的位姿和 Panda 种子示范不同；MimicGen 把穿环段当成
+「末端相对 tripod」的轨迹搬过来，默认手中位姿不变 ⇒ needle 停在离环 2–18 cm 的地方。10 Hz 是次要的（每步只走完指令的约 40%）。执行层不是原因
+（关掉执行层同样 10%）。
+
+**改成脚本化专家** `scripts/threading_robotiq_expert.py`：sim 特权状态、闭环。俯视抓柄 → 提起 → 粗对准（冻结手中位姿，参考臂伺服）→
+**精对准**（直接对 needle 尖端和轴线闭环，每步只走误差的 0.3，连续 3 步径向 < 1.5 mm、角度 < 1.5° 才插入）→ 沿环轴每步 1.5 mm 插入。
+两个踩过的坑：每步重算手中位姿会让「最小旋转」在接触时翻转（目标跳 200 mm）；对实测位姿做比例伺服会因 0.2–0.3 s 的滞后振荡。
+成功率 **92/100**（DR 全开，tripod 朝向各段都有）；加 0.05 动作噪声掉到 69/100，所以收集不加噪声。
+
+数据：`scripts/collect_threading_robotiq_demos.py`，8 片并行，**1000 条成功轨迹**（采集成功率 92.6–94.7%），
+`/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000/`，wrapper 格式 + `env_cfg.json`（记录了 cell，BC 评测据此建环境）。
+
+## 阶段 2–3：流水线 `scripts/pipeline_threading_robotiq.sh`（本地 GPU 2，2026-10-19 启动）
 
 ## 阶段 2：BC prior（约 1–2 小时）
 

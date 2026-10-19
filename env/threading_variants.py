@@ -282,6 +282,8 @@ class Threading_RealCellRobotiq(Threading_RealCell):
                                       mm.dof_damping[jv].copy())
         nominal = copy.deepcopy(mm)                         # the reference arm keeps the nominal sim parameters
         apply_arm_params(mm, jv, cfg)
+        # the fitted values: the base of the wrapper's per-episode arm DR (env/sim2real.py apply_physics_dr)
+        self.exec_arm_params = (mm.dof_armature[jv].copy(), mm.dof_frictionloss[jv].copy(), mm.dof_damping[jv].copy())
         rob.controller = SimRefController(rob, cfg, nominal_model=nominal)
         self.exec_layer = rob.controller
         from env.threading_mg import patch

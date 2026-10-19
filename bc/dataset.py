@@ -151,6 +151,10 @@ class DatasetConfig:
                     "controller_configs": {"control_delta": True},
                 },
                 "_sidecar": True,
+                # the sim2real cell the demos were collected in (collect_threading_robotiq_demos.py writes it); the
+                # eval env must use the same one -- e.g. prop_frame "base" is applied by the wrapper's cell, so an
+                # eval without it would feed world-frame prop to a policy trained on base-frame prop (silently)
+                "_sim2real_cell": meta.get("sim2real_cell"),
             }
         raise AssertionError(
             f"{self.path}: no `env_args` attr and no env_cfg.json sidecar"
@@ -159,6 +163,10 @@ class DatasetConfig:
     @cached_property
     def task_name(self):
         return self.env_config["env_name"]
+
+    @cached_property
+    def sim2real_cell(self):
+        return self.env_config.get("_sim2real_cell")
 
     @cached_property
     def robot(self):
@@ -381,6 +389,12 @@ class RobomimicDataset:
                          **(dict(hole_clearance=cfg.hole_clearance) if cfg.hole_clearance else {})}
                         or None),
         )
+        if getattr(self.cfg, "sim2real_cell", None):
+            from env.sim2real import load_sim2real
+            self.env_params["sim2real"] = load_sim2real(self.cfg.sim2real_cell)
+            if cfg.use_state:
+                self.env_params["state_only_no_render"] = True
+            print(f"[dataset] eval env uses the demos' sim2real cell {self.cfg.sim2real_cell}")
         if not build_env:
             # Co-training sub-dataset: env_params is still exposed, but the live
             # env (and its strict controller check) is left to the parent.

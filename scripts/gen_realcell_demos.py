@@ -51,6 +51,13 @@ TASKS = {
                    env="Square_RealCell_RotW1", out="square_realcell_rotw1"),
     "square_full": dict(template="square.json", src="square.hdf5",
                         env="Square_RealCell", out="square_realcell"),
+    # 2026-10-19 (calib_20261015/TRAIN_PLAN.md stage 1): the Robotiq cell -- 10 Hz, execution layer (actions are deltas
+    # on the reference arm; MG_Threading reads the reference pose, env/threading_mg.py), critically damped contact.
+    # The source demos are Panda-hand / 20 Hz: the gripper and the rate are overridden in the env meta (the class
+    # refuses both otherwise). Physics DR is NOT applied here (bare robosuite.make, no wrapper): nominal values.
+    "threading_robotiq": dict(template="threading.json", src="threading.hdf5", env="Threading_RealCellRobotiq",
+                              out="threading_robotiq_1019", gripper="Robotiq85Gripper",
+                              env_meta_update_kwargs={"env_kwargs": {"control_freq": 10}}),
 }
 TASK = TASKS["threading"]   # set from --task in __main__
 
@@ -70,6 +77,10 @@ def build_config(name: str, num: int, guarantee: bool, seed: int, video: bool = 
     exp["generation"]["num_trials"] = num
     exp["generation"]["keep_failed"] = bool(video)
     exp["task"]["name"] = TASK["env"]
+    if TASK.get("gripper"):
+        exp["task"]["gripper"] = TASK["gripper"]
+    if TASK.get("env_meta_update_kwargs"):
+        exp["task"]["env_meta_update_kwargs"] = TASK["env_meta_update_kwargs"]
     # With guarantee on, generation aborts after max_num_failures FAILURES. The
     # template's default is sized for tiny runs; at a ~50% success rate a
     # 125-success shard legitimately sees >100 failures, so cap it generously.
@@ -97,10 +108,23 @@ if __name__ == "__main__":
                    help=">0: run this many ATTEMPTS with guarantee off -> success rate")
     p.add_argument("--video", action="store_true",
                    help="keep failures and write playback mp4s (layout debugging)")
+    p.add_argument("--control_freq", type=float, default=0,
+                   help="DIAGNOSTIC: override the env's control_freq (0 = the task's)")
+    p.add_argument("--no_exec_layer", action="store_true",
+                   help="DIAGNOSTIC (threading_robotiq): generate without the execution layer (robosuite's OSC moves "
+                        "the arm itself) -- separates the arm's lag from everything else")
     p.add_argument("--shard", type=int, default=0,
                    help="shard index; sets the experiment name and the seed")
     args = p.parse_args()
-    TASK = TASKS[args.task]
+    TASK = dict(TASKS[args.task])
+    if args.control_freq:
+        upd = dict(TASK.get("env_meta_update_kwargs") or {})
+        upd["env_kwargs"] = dict(upd.get("env_kwargs", {}), control_freq=float(args.control_freq))
+        TASK["env_meta_update_kwargs"] = upd
+    if args.no_exec_layer:
+        upd = dict(TASK.get("env_meta_update_kwargs") or {})
+        upd["env_kwargs"] = dict(upd.get("env_kwargs", {}), exec_layer=False)
+        TASK["env_meta_update_kwargs"] = upd
 
     if args.measure > 0:
         # shard-tagged so several candidate cells can be measured in parallel

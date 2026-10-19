@@ -1,0 +1,63 @@
+# ============================================================================
+# TRAIN_PLAN.md stage 3 (calib_20261015): IBRL state expert on the Threading ROBOTIQ real cell.
+# = release/cfgs/sim2real/threading_realcell_state_ibrl.yaml (Franka-hand cell, 0.957 strict) with:
+#   - task Threading_RealCellRobotiq + the 10-15 cell (10 Hz, execution layer -- actions are deltas on the reference
+#     arm, as on the robot --, damped contact, base-frame prop, physics / base DR on train AND eval);
+#   - prior: BC-RNN+GMM (threading_robotiq_state_bc_rnn.yaml), preload: the same scripted-expert demos;
+#   - 1M steps in ONE job (CLAUDE.md #18: no warm-start chains), eval every 25k (exec layer ~19 ms/step).
+# Must be launched WITH --config_path (#19b). Check train.log for the prior line (#8).
+# Gate: independent re-eval 300 episodes >= 0.9 strict.
+# ============================================================================
+task_name: "Threading_RealCellRobotiq"
+sim2real_cell: "real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml"
+episode_length: 400
+end_on_success: 1
+use_state: 1
+state_only_no_render: 1
+state_stack: 1
+obs_stack: 1
+prop_stack: 1
+nstep: 3
+discount: 0.99
+mix_rl_rate: 0.5
+bc_policy: "exps/sim2real/threading_robotiq_rnn_bc_seed1/model0.pt"
+preload_num_data: 10
+preload_datapath: "/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000/dataset.hdf5"
+num_warm_up_episode: 60
+num_train_step: 1000000
+replay_buffer_size: 1000
+num_critic_update: 5
+update_freq: 2
+log_per_step: 25000
+num_eval_episode: 50
+mp_eval: 1
+use_wb: 0
+seed: 1
+stddev_max: 0.1
+stddev_min: 0.1
+q_agent:
+  act_method: "ibrl"
+  bootstrap_method: "ibrl"
+  ibrl_eps_greedy: 1
+  state_critic:
+    num_q: 5
+    num_k: 2
+    layer_norm: 1
+    hidden_dim: 1024
+    num_layer: 3
+  state_actor:
+    hidden_dim: 1024
+    num_layer: 3
+    dropout: 0
+    layer_norm: 0
+train_hand_init_perturb_joint_sigma: 0.1
+eval_hand_init_perturb_joint_sigma: 0.1
+train_domain_shift:
+  mode: "none"
+eval_domain_shift:
+  mode: "none"
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0

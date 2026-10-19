@@ -510,6 +510,17 @@ def load_model(weight_file, device, *, verbose=True):
         state_stack=cfg.dataset.state_stack,
         prop_stack=cfg.dataset.prop_stack,
     )
+    # demos collected in a sim2real cell (env_cfg.json sidecar names it): rebuild the eval env IN that cell, or the
+    # policy gets e.g. world-frame prop where it was trained on base-frame prop (bc/dataset.py, 2026-10-19)
+    sidecar = os.path.join(os.path.dirname(cfg.dataset.path), "env_cfg.json")
+    if os.path.exists(sidecar):
+        import json as _json
+        cell = _json.load(open(sidecar)).get("sim2real_cell")
+        if cell:
+            from env.sim2real import load_sim2real
+            env_params["sim2real"] = load_sim2real(cell)
+            if verbose:
+                print(f"[load_model] eval env in the demos' sim2real cell {cell}")
     env = PixelRobosuite(**env_params)  # type: ignore
 
     if cfg.dataset.use_state:

@@ -497,6 +497,14 @@ class Sim2RealConfig:
     # grid lifted 1/12 in the sim vs 12/12 on the robot). (0.02, 1.0) = critically damped: 12/12 trial-by-trial
     # agreement with the real grid (calib_20261015 README "10-18 robot visit"). Applied by the task class.
     gripper_contact_solref: Optional[tuple] = None
+    # PHYSICS DR of the real arm / gripper (2026-10-19, TRAIN_PLAN.md): per episode, applied by the WRAPPER (so every
+    # "dr_* off" copy -- deploy ReferenceArm, replays, twins -- stays deterministic; bare robosuite.make / MimicGen
+    # generation run the nominal values). Relative: each arm joint's armature / frictionloss x U(1-w, 1+w), from the
+    # fitted values the task class installed (exec_layer). dr_gripper_dampratio: (lo, hi) for the gripper collision
+    # solref dampratio (the grasp grid only showed that 1.0 works, not where it stops working).
+    dr_arm_armature: float = 0.0
+    dr_arm_frictionloss: float = 0.0
+    dr_gripper_dampratio: Optional[tuple] = None
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so
@@ -526,7 +534,7 @@ class Sim2RealConfig:
             self.dr_light_specular != (1.0, 1.0), self.dr_light_dir, self.dr_light_pos,
             self.dr_light_shadow_n,
             self.dr_base_height, self.dr_cam_pos, self.dr_cam_rot_deg,
-            self.dr_cam_fovy_deg, self.any_base_dr(), self.any_peg_dr(),
+            self.dr_cam_fovy_deg, self.any_base_dr(), self.any_peg_dr(), self.any_physics_dr(),
             bool(self.dr_background_image),
             any(any(np.any(w) for w in c.dr_widths(self)) for c in self.cameras)])
 
@@ -541,6 +549,10 @@ class Sim2RealConfig:
         return bool(self.enabled) and any([
             self.dr_base_height, self.dr_base_yaw_deg, self.dr_base_tilt_deg,
             self.dr_base_xy])
+
+    def any_physics_dr(self) -> bool:
+        return bool(self.enabled) and any([self.dr_arm_armature, self.dr_arm_frictionloss,
+                                           self.dr_gripper_dampratio is not None])
 
     def any_peg_dr(self) -> bool:
         """True when an arena peg is randomised. Deliberately NOT part of
@@ -1492,3 +1504,34 @@ def load_sim2real(path) -> Sim2RealConfig:
     assert cfg.control_freq is None or 1 <= float(cfg.control_freq) <= 500, (
         f"{path}: control_freq {cfg.control_freq!r}")
     return cfg
+
+
+def apply_physics_dr(env, cfg: Sim2RealConfig, rng=None):
+    """Per-episode arm / gripper physics DR (see the dr_arm_* fields). Call after the reset, like apply_sim2real.
+    -> dict of what was drawn (for logs), or None."""
+    if not cfg.any_physics_dr():
+        return None
+    rng = np.random if rng is None else rng
+    m = env.sim.model
+    rob = env.robots[0]
+    jv = np.asarray(rob._ref_joint_vel_indexes)
+    fitted = getattr(env, "exec_arm_params", None)       # set by Threading_RealCellRobotiq after the exec layer
+    arm0 = fitted[0] if fitted is not None else m.dof_armature[jv].copy()
+    fr0 = fitted[1] if fitted is not None else m.dof_frictionloss[jv].copy()
+    out = {}
+    if cfg.dr_arm_armature:
+        k = rng.uniform(1 - cfg.dr_arm_armature, 1 + cfg.dr_arm_armature, len(jv))
+        m.dof_armature[jv] = arm0 * k
+        out["armature_scale"] = np.round(k, 3).tolist()
+    if cfg.dr_arm_frictionloss:
+        k = rng.uniform(1 - cfg.dr_arm_frictionloss, 1 + cfg.dr_arm_frictionloss, len(jv))
+        m.dof_frictionloss[jv] = fr0 * k
+        out["frictionloss_scale"] = np.round(k, 3).tolist()
+    if cfg.dr_gripper_dampratio is not None:
+        dr = float(rng.uniform(*cfg.dr_gripper_dampratio))
+        for g in range(m.ngeom):
+            n = m.geom_id2name(g) or ""
+            if n.startswith("gripper0") and "collision" in n:
+                m.geom_solref[g][1] = dr
+        out["gripper_dampratio"] = round(dr, 3)
+    return out

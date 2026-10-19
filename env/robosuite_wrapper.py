@@ -27,6 +27,7 @@ import env.peg_insertion  # noqa: F401,E402
 from env.sim2real import (
     Sim2RealConfig,
     apply_cell_arena,
+    apply_physics_dr,
     apply_cell_layout,
     apply_init_qpos,
     apply_line_lights,
@@ -693,6 +694,7 @@ class PixelRobosuite:
             # trap restore_nominal exists to avoid on the physics side).
             self._s2r_nominal = snapshot_visual_nominal(self.env)
             apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
+            self.last_physics_dr = apply_physics_dr(self.env, self.sim2real)
             # Which background photo this episode drew. The collector stores it
             # per episode so a re-render can repaint the same one (the photo is
             # in tex_rgb, which model_state does not carry).
