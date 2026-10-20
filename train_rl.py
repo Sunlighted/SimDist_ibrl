@@ -327,6 +327,16 @@ class MainConfig(common_utils.RunConfig):
     # the YAML is edited in place as calibration improves, so the path alone does
     # not pin what a run actually trained on.
     sim2real_cell: str = ""
+    # comma list of Sim2RealConfig field overrides on top of the cell, e.g. "layout_scale=0.25". Applied to the train
+    # AND eval envs (and so to load_model / eval.py, which rebuild the Workspace from this cfg). "" = the cell as is.
+    sim2real_overrides: str = ""
+    # FAILURE REPLAY resets (Mulligan, arXiv 2610.05882, adapted to sim RL; calib_20261015/IBRL_EXPERIMENTS.md):
+    # with probability fail_replay_prob a training episode starts from a stored FAILED initial state (object poses +
+    # arm joints; the DR of the episode is drawn fresh). New failures enter a FIFO buffer of fail_replay_cap; a replayed
+    # state leaves it when it succeeds ("retired") or after fail_replay_max_tries failed replays. 0 = off (unchanged).
+    fail_replay_prob: float = 0.0
+    fail_replay_cap: int = 200
+    fail_replay_max_tries: int = 3
     # PegInsertion board reset jitter (env/peg_insertion.py board_pos_noise [m,
     # uniform +- per axis] / board_yaw_noise [deg, uniform +-]), applied to BOTH
     # train and eval env. 0/0 = env_kwargs None = byte-for-byte legacy.
@@ -624,6 +634,16 @@ class Workspace:
             import hashlib
             from env.sim2real import load_sim2real
             s2r = load_sim2real(self.cfg.sim2real_cell)
+            if self.cfg.sim2real_overrides:
+                import dataclasses as _dc
+                kv = {}
+                for item in self.cfg.sim2real_overrides.split(","):
+                    k, v = item.split("=")
+                    k = k.strip()
+                    assert k in {f.name for f in _dc.fields(s2r)}, f"sim2real_overrides: unknown field {k}"
+                    kv[k] = float(v)
+                s2r = _dc.replace(s2r, **kv)
+                print(f"[sim2real] overrides {kv}")
             with open(self.cfg.sim2real_cell, "rb") as f:
                 sha = hashlib.sha256(f.read()).hexdigest()
             print(f"[sim2real] cell={self.cfg.sim2real_cell} sha256={sha} "
@@ -834,7 +854,37 @@ class Workspace:
         self._maybe_fit_fourier_stats()
 
         stopwatch = common_utils.Stopwatch()
-        obs, _ = self.train_env.reset()
+        # failure replay (Mulligan-style; fail_replay_prob = 0 -> exactly the old reset path)
+        fail_buf: list[dict] = []
+        cur_replay = None                                    # the buffer entry this episode replays, if any
+        fr_stats = {"replayed": 0, "retired": 0, "dropped": 0}
+
+        def reset_train_env():
+            nonlocal cur_replay
+            cur_replay = None
+            if self.cfg.fail_replay_prob > 0 and fail_buf and np.random.rand() < self.cfg.fail_replay_prob:
+                cur_replay = fail_buf[np.random.randint(len(fail_buf))]
+                fr_stats["replayed"] += 1
+                return self.train_env.reset(init_state=cur_replay["state"])
+            return self.train_env.reset()
+
+        def note_episode_end(success, init_state):
+            if self.cfg.fail_replay_prob <= 0:
+                return
+            if cur_replay is not None:
+                if success:
+                    fail_buf.remove(cur_replay); fr_stats["retired"] += 1
+                else:
+                    cur_replay["tries"] += 1
+                    if cur_replay["tries"] >= self.cfg.fail_replay_max_tries:
+                        fail_buf.remove(cur_replay); fr_stats["dropped"] += 1
+            elif not success:
+                fail_buf.append({"state": init_state, "tries": 0})
+                if len(fail_buf) > self.cfg.fail_replay_cap:
+                    fail_buf.pop(0)
+
+        obs, _ = reset_train_env()
+        ep_init = self.train_env.get_init_state() if self.cfg.fail_replay_prob > 0 else None
         self.replay.new_episode(obs)
         pbar = tqdm(total=self.cfg.num_train_step, initial=self.global_step,
                     desc="RL train", dynamic_ncols=True, mininterval=1.0)
@@ -880,8 +930,17 @@ class Workspace:
                         replay=self.replay.size(),
                     )
 
+                    note_episode_end(bool(success), ep_init)
+                    if self.cfg.fail_replay_prob > 0:
+                        stat["fail_replay/buffer"].append(len(fail_buf))
+                        stat["fail_replay/replayed_total"].append(fr_stats["replayed"])
+                        stat["fail_replay/retired_total"].append(fr_stats["retired"])
+                        stat["fail_replay/dropped_total"].append(fr_stats["dropped"])
+                        stat["fail_replay/is_replay"].append(float(cur_replay is not None))
+
                     # reset env
-                    obs, _ = self.train_env.reset()
+                    obs, _ = reset_train_env()
+                    ep_init = self.train_env.get_init_state() if self.cfg.fail_replay_prob > 0 else None
                     self.replay.new_episode(obs)
 
             ### logging ###

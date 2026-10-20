@@ -667,7 +667,60 @@ class PixelRobosuite:
 
         return rl_obs, high_res_images
 
-    def reset(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    # ------------------------------------------------------------ initial-state capture / replay
+    def _object_free_joints(self):
+        m = self.env.sim.model
+        out = []
+        for j in range(m.njnt):
+            if m.jnt_type[j] == 0:                       # free joint
+                name = m.joint_id2name(j) or ""
+                if not name.startswith("robot"):
+                    out.append(name)
+        return out
+
+    def get_init_state(self) -> dict:
+        """This episode's initial configuration, ROBOT-BASE relative (base DR changes the base every episode):
+        each free object's position + rotation in the base frame, and the arm joints. For failure replay
+        (train_rl.py fail_replay_*)."""
+        m, d = self.env.sim.model, self.env.sim.data
+        bid = m.body_name2id(self.env.robots[0].robot_model.root_body)
+        b, Rb = np.array(d.body_xpos[bid]), np.array(d.body_xmat[bid]).reshape(3, 3)
+        objs = {}
+        for jn in self._object_free_joints():
+            a = m.get_joint_qpos_addr(jn)[0]
+            p = np.array(d.qpos[a:a + 3])
+            from robosuite.utils.transform_utils import quat2mat
+            w, x, y, z = d.qpos[a + 3:a + 7]
+            R = quat2mat(np.array([x, y, z, w]))
+            objs[jn] = (Rb.T @ (p - b)).tolist(), (Rb.T @ R).tolist()
+        q = np.array(d.qpos[self.env.robots[0]._ref_joint_pos_indexes]).tolist()
+        return {"objects": objs, "q": q}
+
+    def _apply_init_state(self, st: dict):
+        """Write a get_init_state() dict into the freshly reset (and DR'd) sim: objects at their base-relative
+        pose under THIS episode's base (z kept: they rest on this episode's table), arm at the stored joints."""
+        from robosuite.utils.transform_utils import mat2quat
+        m, d = self.env.sim.model, self.env.sim.data
+        bid = m.body_name2id(self.env.robots[0].robot_model.root_body)
+        b, Rb = np.array(d.body_xpos[bid]), np.array(d.body_xmat[bid]).reshape(3, 3)
+        for jn, (p_rel, R_rel) in st["objects"].items():
+            a = m.get_joint_qpos_addr(jn)[0]
+            v = m.get_joint_qvel_addr(jn)[0]
+            p = b + Rb @ np.asarray(p_rel)
+            R = Rb @ np.asarray(R_rel)
+            x, y, z, w = mat2quat(R)
+            d.qpos[a:a + 3] = [p[0], p[1], d.qpos[a + 2]]
+            d.qpos[a + 3:a + 7] = [w, x, y, z]
+            d.qvel[v:v + 6] = 0.0
+        rob = self.env.robots[0]
+        d.qpos[rob._ref_joint_pos_indexes] = st["q"]
+        d.qvel[rob._ref_joint_vel_indexes] = 0.0
+        self.env.sim.forward()
+        rob.controller.update(force=True)
+        rob.controller.reset_goal()
+
+    def reset(self, init_state: Optional[dict] = None) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        """init_state: a get_init_state() dict to start from (failure replay); None = the env's own sampling."""
         self.time_step = 0
         self._stage1_fired = False
         self.episode_reward = 0
@@ -710,6 +763,9 @@ class PixelRobosuite:
             mutated = True
         if self._ik_perturb_active:
             self._ik_to_perturbed_pos()  # forward()
+            mutated = True
+        if init_state is not None:
+            self._apply_init_state(init_state)
             mutated = True
         # The obs returned by env.reset() is stale after we mutate the sim; pull
         # a fresh observation so the policy sees the shifted/perturbed start.

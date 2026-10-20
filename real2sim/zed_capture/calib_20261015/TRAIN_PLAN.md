@@ -40,6 +40,12 @@
 
 ## 阶段 2–3：流水线 `scripts/pipeline_threading_robotiq.sh`（本地 GPU 2，2026-10-19 启动）
 
+> **2026-10-19 结果**：BC-RNN 独立 300 局 **0.34**（过 0.30 门槛；训练中最好 0.44 偏乐观）。
+> IBRL 第 1 次（`preload_num_data 10`，照抄旧 Threading 配置）1M 步后独立 300 局只有 **0.257**，低于它自己的 prior：
+> 前 375k 步全是 0，之后慢慢爬到 0.3 左右（actor 在 argmax 里压过 prior）。Peg 上同一配方 preload 10 → 0.01、
+> preload 1000 → 0.92 ⇒ 第 2 次只改 `--preload_num_data 1000`（`scripts/run_threading_robotiq_ibrl_preload1000.sh`），跑中。
+> **2026-10-20**：第 2 次在 475k–600k 步是 0.24–0.58，离门槛很远。下一轮实验（多 seed / 失败重放 / 初始化范围扫描）见 `IBRL_EXPERIMENTS.md`。
+
 ## 阶段 2：BC prior（约 1–2 小时）
 
 - RNN-GMM（**不用 flow**：铁律 17，flow 让 IBRL 慢一个数量级）。

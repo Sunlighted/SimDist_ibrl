@@ -280,6 +280,10 @@ class Sim2RealConfig:
     # the table edge (first ray hit = table_collision) and the 20 mm opening spans
     # 4.2 px; swapping the two objects makes the ring visible, 0.73 m away,
     # 5.2 px, at a 71 deg incidence instead of 52.
+    # Shrink (or grow) every layout_* range about its own midpoint (x, y and yaw of both objects). 1.0 = as stated.
+    # 2026-10-20: the IBRL learnability sweep (calib_20261015/IBRL_EXPERIMENTS.md) runs 0 / 0.25 / 0.5 / 1.0, e.g.
+    # via train_rl.py --sim2real_overrides layout_scale=0.25. 0 = every episode at the range centres.
+    layout_scale: float = 1.0
     layout_needle_x: Optional[tuple] = None      # (lo, hi) in base frame
     layout_needle_y: Optional[tuple] = None
     layout_needle_z_rot_deg: Optional[tuple] = None
@@ -713,12 +717,23 @@ def cell_layout_bounds(cfg: Sim2RealConfig, table_centre_xy) -> Optional[dict]:
     if cfg.layout_needle_x is None and cfg.layout_tripod_x is None:
         return None
     cx, cy = float(table_centre_xy[0]), float(table_centre_xy[1])
+    k = float(getattr(cfg, "layout_scale", 1.0))
+
+    def scaled(v):
+        m, h = 0.5 * (float(v[0]) + float(v[1])), 0.5 * (float(v[1]) - float(v[0]))
+        return (m - k * h, m + k * h)
 
     def rng(v, c):
-        return None if v is None else (float(v[0]) - c, float(v[1]) - c)
+        if v is None:
+            return None
+        lo, hi = scaled(v)
+        return (lo - c, hi - c)
 
     def rot(v):
-        return None if v is None else (np.radians(float(v[0])), np.radians(float(v[1])))
+        if v is None:
+            return None
+        lo, hi = scaled(v)
+        return (np.radians(lo), np.radians(hi))
 
     return {"needle": {"x": rng(cfg.layout_needle_x, cx), "y": rng(cfg.layout_needle_y, cy),
                        "z_rot": rot(cfg.layout_needle_z_rot_deg)},
