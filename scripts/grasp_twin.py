@@ -5,7 +5,9 @@
   --real RUN_DIR  a `policy_server --scripted grasp --save_dir RUN_DIR` run: per trial, the needle pose is fitted to the
                   hover wrist frame (hover_trialNN_wrist.jpg + _state.json, close range), the sim arm and reference start
                   at the real trial's first q, and the trial is re-run; prints sim lifted vs the operator's y / n / s.
-Contact model knobs for the sweep that this data is for: --grip_solref, --grip_friction, --needle_mass_scale.
+Contact model knobs for the sweep that this data is for: --grip_solref, --grip_friction, --needle_mass_scale,
+--grip_solimp, --grip_solmix, --grip_forcelimit (2026-10-21: the real knuckle stops at 0.440-0.444 on the 40 mm handle,
+the 0.02/1.0 sim at 0.53 = the fingers sink ~13 mm into it).
 
     python scripts/grasp_twin.py --dry --out /tmp/grasp_dry
     python scripts/grasp_twin.py --real runs/grasp_1020_1400 --grip_solref 0.02 1.0
@@ -46,6 +48,16 @@ def contact_knobs(m, args):
                 m.geom_solref[g] = args.grip_solref
             if args.grip_friction is not None:
                 m.geom_friction[g][0] = args.grip_friction
+            if args.grip_solimp is not None:
+                m.geom_solimp[g][:3] = args.grip_solimp
+            if args.grip_solmix is not None:
+                m.geom_solmix[g] = args.grip_solmix       # the pair takes the gripper's solref / solimp, not the mean
+    if args.grip_forcelimit is not None:                    # Robotiq driver actuators: cap the squeeze torque
+        mm = m._model
+        for a in range(mm.nu):
+            if (m.actuator_id2name(a) or "").startswith("gripper0"):
+                mm.actuator_forcelimited[a] = 1
+                mm.actuator_forcerange[a] = [-args.grip_forcelimit, args.grip_forcelimit]
     if args.needle_mass_scale != 1.0:
         for b in range(m.nbody):
             if (m.body_id2name(b) or "").startswith("needle"):
@@ -94,6 +106,8 @@ def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True, gr
     tid = m.geom_name2id("table_collision")
     gripper_geoms = [g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith("gripper0")]
     table_hits, zmax, kn, phases = 0, z0, {}, []
+    needle_geoms = [g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith("needle")]
+    pen_hold = 0.0
     while not sc.done:
         T = L.ref_site_pose()
         act, info = sc.act(T[:3, 3], T[:3, :3])
@@ -110,9 +124,14 @@ def run_trial(env, cell, args, trial, needle, q_start=None, park_tripod=True, gr
         kn[ph] = float(d.qpos[m.get_joint_qpos_addr("gripper0_finger_joint")])
         if ph == "hold_up":
             lifted_now = float(d.body_xpos[nb][2]) - z0
+            for c in d.contact[:d.ncon]:            # gripper <-> needle interpenetration while holding it up
+                if ((c.geom1 in gripper_geoms and c.geom2 in needle_geoms) or
+                        (c.geom2 in gripper_geoms and c.geom1 in needle_geoms)):
+                    pen_hold = max(pen_hold, -float(c.dist))
     return dict(trial=trial, grid=list(gp), needle=[round(float(v), 5) for v in needle],
                 lifted_mm=round(1e3 * lifted_now, 1), max_rise_mm=round(1e3 * (zmax - z0), 1),
                 driver_at_hold=round(kn.get("hold_up", np.nan), 3), table_contact_steps=table_hits,
+                penetration_hold_mm=round(1e3 * pen_hold, 2),
                 success=bool(lifted_now > 0.07))
 
 
@@ -126,6 +145,10 @@ def main():
     ap.add_argument("--grip_solref", type=float, nargs=2, default=None)
     ap.add_argument("--grip_friction", type=float, default=None)
     ap.add_argument("--needle_mass_scale", type=float, default=1.0)
+    ap.add_argument("--grip_solimp", type=float, nargs=3, default=None)
+    ap.add_argument("--grip_solmix", type=float, default=None)
+    ap.add_argument("--grip_forcelimit", type=float, default=None, help="Robotiq driver actuator |force| cap")
+    ap.add_argument("--needles_from", default="", help="--real: reuse the per-trial needle poses of a twin json")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
     assert args.dry or args.real, "--dry or --real"
@@ -145,7 +168,9 @@ def main():
         rows = real_mode(env, cell, args)
     n = len(rows)
     print(f"[grasp twin] sim lifted {sum(r['success'] for r in rows)}/{n}, any table contact in "
-          f"{sum(r['table_contact_steps'] > 0 for r in rows)}/{n}")
+          f"{sum(r['table_contact_steps'] > 0 for r in rows)}/{n}, driver at hold median "
+          f"{np.nanmedian([r['driver_at_hold'] for r in rows]):.3f} (real 0.440-0.444), penetration at hold max "
+          f"{max(r['penetration_hold_mm'] for r in rows):.2f} mm")
     if args.out:
         os.makedirs(args.out, exist_ok=True)
         json.dump(dict(args=vars(args), rows=rows), open(os.path.join(args.out, "grasp_twin.json"), "w"), indent=1)
@@ -165,16 +190,21 @@ def real_mode(env, cell, args):
         if "trial" in sc and sc["trial"] not in first_q:
             first_q[sc["trial"]] = r["q"]
     wcam = [c for c in cell.cameras if c.name == "robot0_eye_in_hand"][0]
+    fitted = ({r["trial"]: r["needle"] for r in json.load(open(args.needles_from))["rows"]}
+              if args.needles_from else None)
     rows = []
     for st in sorted(glob.glob(os.path.join(args.real, "hover_trial*_state.json"))):
         S = json.load(open(st))
         t = S["trial"]
-        raw = np.array(Image.open(st.replace("_state.json", "_wrist.jpg")).convert("RGB"))
-        j = json.load(open(wcam.real_intrinsics))
-        K, D = np.array(j["K"]), np.array(j["D"])
-        rect = Rectifier(K, D, raw.shape[1], raw.shape[0], 448, wcam.resolved_fovy())
-        real = rect(raw)
-        needle = fit_needle(env, cell, S["q"], S["fingers"][0], real, np.array(args.nominal))
+        if fitted is not None:                  # needle poses of an earlier twin run (the hover jpgs stay on the robot)
+            needle = np.array(fitted[t])
+        else:
+            raw = np.array(Image.open(st.replace("_state.json", "_wrist.jpg")).convert("RGB"))
+            j = json.load(open(wcam.real_intrinsics))
+            K, D = np.array(j["K"]), np.array(j["D"])
+            rect = Rectifier(K, D, raw.shape[1], raw.shape[0], 448, wcam.resolved_fovy())
+            real = rect(raw)
+            needle = fit_needle(env, cell, S["q"], S["fingers"][0], real, np.array(args.nominal))
         row = run_trial(env, cell, args, t, needle, q_start=first_q.get(t), grid_point=S.get("grid"))
         row["operator"] = ops.get(t)
         rows.append(row)

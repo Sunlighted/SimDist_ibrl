@@ -496,11 +496,25 @@ class Sim2RealConfig:
     # task class (Threading_RealCellRobotiq), so MimicGen / bare robosuite.make get it too. Changes what an
     # action does: experts / data / stage-1 made without it do not transfer.
     exec_layer: Optional[dict] = None
-    # GRIPPER CONTACT (2026-10-18): solref (timeconst, dampratio) of every gripper collision geom. None = robosuite's
+    # GRIPPER CONTACT (2026-10-18, stiffened 2026-10-21): solref (timeconst, dampratio) of every gripper collision geom.
+    # ⚠️ (0.02, 1.0) lifted 12/12 but the fingers sank ~13 mm into the 40 mm handle (knuckle 0.53 at hold vs the real
+    # 0.440-0.444; scripts/grasp_twin.py --grip_* sweep, calib_20261015 README "10-21 gripper contact"): the needle was
+    # held by penetration springs and turned / slipped in the hand. 20261015 cell: (0.005, 1.0) + solmix 1000. None = robosuite's
     # (Robotiq fingers / tips 0.01 0.25: stiff and underdamped -- it squeezes the needle handle out: the scripted grasp
     # grid lifted 1/12 in the sim vs 12/12 on the robot). (0.02, 1.0) = critically damped: 12/12 trial-by-trial
     # agreement with the real grid (calib_20261015 README "10-18 robot visit"). Applied by the task class.
     gripper_contact_solref: Optional[tuple] = None
+    # solmix of every gripper collision geom (2026-10-21). MuJoCo mixes a contact pair's solref / solimp by solmix
+    # weight, so with the default 1 a gripper <-> needle contact got the MEAN of the gripper's and the needle's
+    # (0.02) solref. 1000 = the gripper's values govern every pair it is in. None = model default (legacy).
+    gripper_contact_solmix: Optional[float] = None
+    # 2026-10-21: close the Robotiq's four-bar loops with joint equalities so the pads stay parallel
+    # (Threading_RealCellRobotiq._close_robotiq_linkage). False = robosuite's open loops (legacy).
+    gripper_parallel_linkage: bool = False
+    # |force| cap of the two Robotiq driver actuators (robosuite: position servo kp 20, uncapped -> it squeezes the
+    # fingers into the handle). Only usable with gripper_parallel_linkage (the legacy tendons' springs need more to
+    # close). None = uncapped (legacy).
+    gripper_force_limit: Optional[float] = None
     # PHYSICS DR of the real arm / gripper (2026-10-19, TRAIN_PLAN.md): per episode, applied by the WRAPPER (so every
     # "dr_* off" copy -- deploy ReferenceArm, replays, twins -- stays deterministic; bare robosuite.make / MimicGen
     # generation run the nominal values). Relative: each arm joint's armature / frictionloss x U(1-w, 1+w), from the

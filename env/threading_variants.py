@@ -236,6 +236,36 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         h = np.radians(float(cfg.gripper_mount_yaw_deg)) / 2
         root.set("pos", f"0 0 {float(cfg.gripper_mount_z)!r}")
         root.set("quat", f"{np.cos(h)!r} 0 0 {np.sin(h)!r}")
+        if getattr(cfg, "gripper_parallel_linkage", False):
+            self._close_robotiq_linkage()
+
+    def _close_robotiq_linkage(self):
+        """robosuite's Robotiq 85 leaves both four-bar loops OPEN: the passive inner knuckle / inner finger joints are
+        tied to the driver only by a 0.4-stiffness tendon with coefficients (1, -3, 1), which is not the parallelogram.
+        In the sim the pads close tilted 20-31 deg each (a V-shaped pinch), meet the 40 mm handle edge-first and tip it.
+        The real 2F-85 closes parallel (its knuckle reads 0.44 on the handle = the parallelogram's 40 mm pad gap).
+        Close the loops with joint equalities (inner_knuckle = driver, inner_finger = -driver) and drop the tendons.
+        Parallel only: the real gripper's adaptive (pinch) mode after a fingertip contact is not modelled."""
+        import xml.etree.ElementTree as ET
+        pairs = [("gripper0_left_inner_knuckle_joint", "gripper0_finger_joint", 1.0),
+                 ("gripper0_left_inner_finger_joint", "gripper0_finger_joint", -1.0),
+                 ("gripper0_right_inner_knuckle_joint", "gripper0_right_outer_knuckle_joint", 1.0),
+                 ("gripper0_right_inner_finger_joint", "gripper0_right_outer_knuckle_joint", -1.0)]
+        for j1, j2, k in pairs:
+            self.model.equality.append(ET.Element("joint", attrib=dict(
+                name=f"{j1}_linkage", joint1=j1, joint2=j2, polycoef=f"0 {k:g} 0 0 0", solref="0.004 1", solimp="0.99 0.999 0.001")))
+        for t in list(self.model.tendon):
+            if (t.get("name") or "").startswith("gripper0_finger"):
+                self.model.tendon.remove(t)
+        # the links of one four-bar loop (and the two inner knuckles) overlap by design in the meshes' convex hulls
+        # (3-13 mm): excluded, or their contacts fight the loop closure and fold the inner finger past its range
+        links = {side: [f"gripper0_{side}_outer_knuckle", f"gripper0_{side}_inner_finger", f"gripper0_{side}_inner_knuckle"]
+                 for side in ("left", "right")}
+        excl = [(a_, b_) for ls in links.values() for i, a_ in enumerate(ls) for b_ in ls[i + 1:]]
+        excl += [("gripper0_left_inner_knuckle", "gripper0_right_inner_knuckle")]
+        excl += [("gripper0_robotiq_85_adapter_link", b_) for ls in links.values() for b_ in ls]
+        for b1, b2 in excl:
+            self.model.contact.append(ET.Element("exclude", attrib=dict(body1=b1, body2=b2)))
 
     def _reset_internal(self):
         super()._reset_internal()
@@ -251,15 +281,26 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         self._install_exec_layer()
 
     def _apply_gripper_contact(self):
-        """cell gripper_contact_solref -> every gripper collision geom (the model is rebuilt on each hard reset)."""
-        sr = self._cell().gripper_contact_solref
-        if sr is None:
-            return
+        """cell gripper_contact_solref / _solmix -> every gripper collision geom (the model is rebuilt on each hard reset)."""
+        cell = self._cell()
+        sr, mix = cell.gripper_contact_solref, getattr(cell, "gripper_contact_solmix", None)
         m = self.sim.model
+        flim = getattr(cell, "gripper_force_limit", None)
+        if flim is not None:
+            mm = m._model
+            for a in range(mm.nu):
+                if (m.actuator_id2name(a) or "").startswith("gripper0"):
+                    mm.actuator_forcelimited[a] = 1
+                    mm.actuator_forcerange[a] = [-float(flim), float(flim)]
+        if sr is None and mix is None:
+            return
         for g in range(m.ngeom):
             n = m.geom_id2name(g) or ""
             if n.startswith("gripper0") and "collision" in n:
-                m.geom_solref[g] = np.asarray(sr, np.float64)
+                if sr is not None:
+                    m.geom_solref[g] = np.asarray(sr, np.float64)
+                if mix is not None:
+                    m.geom_solmix[g] = float(mix)
 
     def _install_exec_layer(self):
         """cell exec_layer -> the real arm's parameters on the arm + SimRefController (env/exec_layer.py).

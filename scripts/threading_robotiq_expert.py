@@ -103,7 +103,10 @@ class ThreadingExpert:
             ax = d.xpos[self.rf] - d.xpos[self.lf]
             cur = np.arctan2(ax[1], ax[0])
             want = np.arctan2(Rn[1, 0], Rn[0, 0])
-            dz = (want - cur + np.pi / 4) % (np.pi / 2) - np.pi / 4
+            # closing axis along the needle body x (square to the shaft), either sign. Mod pi/2 also allowed the two
+            # faces PARALLEL to the shaft and picked them for needle yaw < ~-118 deg (14/1000 demos of
+            # threading_robotiq_expert_n1000 grasped along the shaft, 2026-10-21).
+            dz = (want - cur + np.pi / 2) % np.pi - np.pi / 2
             down = np.array([0, 0, -1.0])
             tilt = _rot_between(R0[:, 2], down)       # straighten the approach axis
             self.grasp_R = _rz(dz) @ tilt @ R0

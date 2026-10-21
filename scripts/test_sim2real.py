@@ -1041,7 +1041,32 @@ def test_exec_layer():
     sr = {tuple(np.round(plain.sim.model.geom_solref[g], 4)) for g in range(plain.sim.model.ngeom)
           if (plain.sim.model.geom_id2name(g) or "").startswith("gripper0")
           and "collision" in (plain.sim.model.geom_id2name(g) or "")}
-    check("10-18 grasp grid: every Robotiq collision geom critically damped (0.02, 1.0)", sr == {(0.02, 1.0)}, str(sr))
+    check(f"gripper contact (10-21): every Robotiq collision geom at the cell's solref {base.gripper_contact_solref}",
+          sr == {tuple(np.round(base.gripper_contact_solref, 4))}, str(sr))
+    m = plain.sim.model
+    mix = {float(m.geom_solmix[g]) for g in range(m.ngeom)
+           if (m.geom_id2name(g) or "").startswith("gripper0") and "collision" in (m.geom_id2name(g) or "")}
+    check("gripper contact: solmix from the cell", mix == {float(base.gripper_contact_solmix)}, str(mix))
+    mm = m._model
+    fr = {tuple(mm.actuator_forcerange[a]) for a in range(mm.nu) if (m.actuator_id2name(a) or "").startswith("gripper0")}
+    check("gripper driver force cap from the cell",
+          fr == {(-base.gripper_force_limit, base.gripper_force_limit)}, str(fr))
+    # parallel linkage: closing in air keeps the pads parallel, and the passive joints follow the driver
+    check("Robotiq four-bar loops closed (4 joint equalities, no coupling tendons)", mm.neq == 4 and mm.ntendon == 0,
+          f"neq {mm.neq} ntendon {mm.ntendon}")
+    act = np.zeros(plain.action_dim)
+    act[6:] = 1.0                                       # every gripper dim closed (plain robosuite: 2 drivers)
+    for _ in range(40):
+        plain.step(act)
+    gl, gr = m.geom_name2id("gripper0_left_fingerpad_collision"), m.geom_name2id("gripper0_right_fingerpad_collision")
+    nl, nr = plain.sim.data.geom_xmat[gl].reshape(3, 3)[:, 1], plain.sim.data.geom_xmat[gr].reshape(3, 3)[:, 1]
+    tilt = float(np.degrees(np.arccos(min(1.0, abs(nl @ nr)))))
+    q = {n: float(plain.sim.data.qpos[m.get_joint_qpos_addr(f"gripper0_{n}")])
+         for n in ("finger_joint", "left_inner_knuckle_joint", "left_inner_finger_joint")}
+    check("parallel linkage: pads parallel after closing in air (< 1 deg)", tilt < 1.0, f"{tilt:.2f} deg")
+    check("parallel linkage: inner_knuckle = driver, inner_finger = -driver (< 0.01 rad)",
+          abs(q["left_inner_knuckle_joint"] - q["finger_joint"]) < 0.01
+          and abs(q["left_inner_finger_joint"] + q["finger_joint"]) < 0.01, str({k: round(v, 3) for k, v in q.items()}))
 
 
 def main():

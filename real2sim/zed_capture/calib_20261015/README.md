@@ -691,3 +691,31 @@ the rate mostly sets how far ahead the reference runs, and 10 Hz is what the own
   up to 15 deg)** although the protocol said not to touch it -- the needle meets the ring -- and the lifted needles end
   22-67 mm from the ring centre in the sim (tripod pose error and in-hand differences). The policy is closed loop; this
   replay check is done.
+
+## 10-21 gripper contact: the fingers sank 13 mm into the handle; the Robotiq's linkage was open
+
+Found while asking why IBRL drops the needle (`scripts/diagnose_threading_robotiq_failures.py`, `measure_threading_robotiq_penetration.py`).
+**Every demo and checkpoint made before this is void** (`threading_robotiq_expert_n1000{,_v2}`, the BC-RNN prior, all IBRL runs).
+
+- **Penetration.** With `gripper_contact_solref [0.02, 1.0]` the gripper sank into the 40 mm handle by 13 mm (median over
+  100 demos, every demo, 67 % of the steps; IBRL rollouts up to 40 mm). The knuckle at hold was 0.53, the robot's
+  0.440-0.444 on all 12 grid trials (`grasp_1018_1220/steps.jsonl` `fingers`). Kinematically the pads are 40 mm apart at
+  0.445, so the robot holds the handle rigidly and the sim held it on penetration springs: it turned and slipped in the hand.
+- **Open four-bar loops.** robosuite's `robotiq_gripper_85.xml` ties the passive inner knuckle / inner finger joints to the
+  driver with a 0.4-stiffness tendon (coefficients 1, -3, 1, not the parallelogram) and no equality: the pads closed tilted
+  20-31 deg each (a V-shaped pinch), met the handle edge-first and tipped it, and the loop links' convex hulls collided
+  with each other 3-13 mm deep. That is also why a stiffer contact alone failed: the expert then missed 6/300 grasps,
+  all at a gripper dampratio of 0.74-0.75 (DR), every one of them lifting at 1.0.
+- **Fix** (cell fields, `Threading_RealCellRobotiq._close_robotiq_linkage` / `_apply_gripper_contact`):
+  `gripper_parallel_linkage: true` (4 joint equalities inner_knuckle = driver, inner_finger = -driver, solref 0.004,
+  solimp 0.99; tendons dropped; contacts between the links of a loop excluded), `gripper_contact_solref [0.005, 1.0]` +
+  `gripper_contact_solmix 1000` (the default mix averaged the needle's 0.02 into every gripper pair), and
+  `gripper_force_limit 1.0` on both driver actuators (uncapped kp-20 servo; usable only once the tendon springs are gone).
+- **Checks.** Grid replay (`grasp_twin.py --real grasp_1018_1220 --needles_from twin_damped_grasp_1018_1220.json`; the hover
+  jpgs stay on the robot): lifted 12/12, agrees 11/11, knuckle at hold 0.474 (robot 0.44), penetration at hold <= 1.1 mm;
+  same at dampratio 0.7. Sweep in `grasp_twin --grip_solimp/--grip_solmix/--grip_forcelimit`: cap 2.0 -> 0.482 / 1.7 mm,
+  0.5 -> 0.471 / 0.8 mm; without the linkage fix solref 0.005 gave 0.453 / 2.8 mm, 0.004 hit the table 7/12, a stiffer
+  solimp lifted 0/12. In air the pads stay parallel (0.0 deg) and reach 0.44 in ~0.22 s (robot ~0.3 s).
+  Scripted expert (with the grasp-yaw fix, 2026-10-21): strict 300/300 (old physics: 0.929 non-strict at collection).
+  `scripts/test_sim2real.py` asserts the cell values, neq 4 / no tendons, and parallel pads after closing.
+- Not modelled: the 2F-85's adaptive (pinch) mode after a fingertip-only contact.

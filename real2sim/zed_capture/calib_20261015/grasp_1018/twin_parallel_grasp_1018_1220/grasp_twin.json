@@ -1,0 +1,266 @@
+{
+ "args": {
+  "dry": false,
+  "real": "real2sim/zed_capture/calib_20261015/grasp_1018/grasp_1018_1220",
+  "nominal": [
+   0.55,
+   -0.12000000000000001,
+   -105.0
+  ],
+  "place_sd": [
+   0.005,
+   5.0
+  ],
+  "reps": 1,
+  "grip_solref": null,
+  "grip_friction": null,
+  "needle_mass_scale": 1.0,
+  "grip_solimp": null,
+  "grip_solmix": null,
+  "grip_forcelimit": null,
+  "needles_from": "real2sim/zed_capture/calib_20261015/grasp_1018/twin_damped_grasp_1018_1220.json",
+  "out": "real2sim/zed_capture/calib_20261015/grasp_1018/twin_parallel_grasp_1018_1220"
+ },
+ "rows": [
+  {
+   "trial": 0,
+   "grid": [
+    0.005,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.55388,
+    -0.12155,
+    -100.77782
+   ],
+   "lifted_mm": 94.8,
+   "max_rise_mm": 94.8,
+   "driver_at_hold": 0.481,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.66,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 1,
+   "grid": [
+    0.005,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.54847,
+    -0.1168,
+    -96.38769
+   ],
+   "lifted_mm": 103.3,
+   "max_rise_mm": 103.3,
+   "driver_at_hold": 0.476,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.61,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 2,
+   "grid": [
+    0.01,
+    -0.006,
+    0.0
+   ],
+   "needle": [
+    0.54622,
+    -0.11476,
+    -104.01531
+   ],
+   "lifted_mm": 101.0,
+   "max_rise_mm": 101.0,
+   "driver_at_hold": 0.48,
+   "table_contact_steps": 1,
+   "penetration_hold_mm": 0.65,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 3,
+   "grid": [
+    0.01,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.5456,
+    -0.10957,
+    -97.11577
+   ],
+   "lifted_mm": 101.1,
+   "max_rise_mm": 101.1,
+   "driver_at_hold": 0.477,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.66,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 4,
+   "grid": [
+    0.01,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.54591,
+    -0.10974,
+    -101.51731
+   ],
+   "lifted_mm": 99.0,
+   "max_rise_mm": 99.0,
+   "driver_at_hold": 0.472,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 1.13,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 5,
+   "grid": [
+    0.015,
+    -0.006,
+    0.0
+   ],
+   "needle": [
+    0.5436,
+    -0.11483,
+    -102.06796
+   ],
+   "lifted_mm": 100.7,
+   "max_rise_mm": 100.7,
+   "driver_at_hold": 0.473,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 1.0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 6,
+   "grid": [
+    0.015,
+    0.0,
+    0.0
+   ],
+   "needle": [
+    0.54955,
+    -0.11864,
+    -97.7775
+   ],
+   "lifted_mm": 100.3,
+   "max_rise_mm": 100.3,
+   "driver_at_hold": 0.474,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 1.0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 7,
+   "grid": [
+    0.015,
+    0.006,
+    0.0
+   ],
+   "needle": [
+    0.55443,
+    -0.1195,
+    -99.1593
+   ],
+   "lifted_mm": 97.0,
+   "max_rise_mm": 97.0,
+   "driver_at_hold": 0.473,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 1.0,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 8,
+   "grid": [
+    0.01,
+    0.0,
+    -0.008
+   ],
+   "needle": [
+    0.55454,
+    -0.11954,
+    -99.53679
+   ],
+   "lifted_mm": 98.0,
+   "max_rise_mm": 98.0,
+   "driver_at_hold": 0.469,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.9,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 9,
+   "grid": [
+    0.01,
+    0.0,
+    0.008
+   ],
+   "needle": [
+    0.54984,
+    -0.1178,
+    -98.30111
+   ],
+   "lifted_mm": 101.5,
+   "max_rise_mm": 101.5,
+   "driver_at_hold": 0.478,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.66,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 10,
+   "grid": [
+    0.01,
+    0.0,
+    -0.008
+   ],
+   "needle": [
+    0.55141,
+    -0.11723,
+    -99.19345
+   ],
+   "lifted_mm": 97.0,
+   "max_rise_mm": 97.0,
+   "driver_at_hold": 0.469,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.9,
+   "success": true,
+   "operator": "y"
+  },
+  {
+   "trial": 11,
+   "grid": [
+    0.01,
+    0.0,
+    0.008
+   ],
+   "needle": [
+    0.54744,
+    -0.1163,
+    -99.26927
+   ],
+   "lifted_mm": 101.5,
+   "max_rise_mm": 101.5,
+   "driver_at_hold": 0.475,
+   "table_contact_steps": 0,
+   "penetration_hold_mm": 0.8,
+   "success": true,
+   "operator": null
+  }
+ ]
+}
