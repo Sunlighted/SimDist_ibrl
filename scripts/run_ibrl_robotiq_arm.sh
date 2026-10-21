@@ -11,10 +11,11 @@ source set_env.sh
 : "${ARM:?set ARM}"; SEED="${SEED:-1}"; EXTRA="${EXTRA:-}"
 export MUJOCO_GL=egl CUDA_VISIBLE_DEVICES="${GPU:-0}" WANDB_MODE=offline
 PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"
-DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000/dataset.hdf5}"
-BC=real2sim/zed_capture/calib_20261015/assets/bc_rnn_seed1/model0.pt
+# 2026-10-21: defaults = the FIXED cell's data and prior (README "10-21 gripper contact"; v1 data / old prior are void)
+DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000_v3/dataset.hdf5}"
+BC="${BC:-exps/sim2real/threading_robotiq_rnn_bc_v3_seed1/model0.pt}"
 CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
-DIR=exps/sim2real/ibrl_robotiq_${ARM}_seed${SEED}
+DIR=exps/sim2real/ibrl_robotiq_${TAG:-v3}_${ARM}_seed${SEED}
 [ -s "$DATA" ] || { echo "FATAL: no demos at $DATA (IBRL_EXPERIMENTS.md §1: copy or regenerate)"; exit 1; }
 [ -s "$BC" ] || { echo "FATAL: no BC prior $BC (git pull)"; exit 1; }
 mkdir -p logs exps/sim2real
