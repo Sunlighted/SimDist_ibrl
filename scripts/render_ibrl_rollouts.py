@@ -103,6 +103,8 @@ def main():
         c_ring = np.mean(sim.data.geom_xpos[ids["rg"]], axis=0)
         normal = sim.data.get_body_xmat("tripod_obj_root")[:, 0]
         rend = mujoco.Renderer(sim.model._model, H, W)
+        vis = mujoco.MjvOption()
+        vis.geomgroup[0] = 0      # hide collision geoms (robosuite's own renderer does; else the arm shows green)
         close = mujoco.MjvCamera()
         close.type = mujoco.mjtCamera.mjCAMERA_FREE
         close.lookat[:] = c_ring
@@ -114,7 +116,7 @@ def main():
             sim.forward()
             views = []
             for cam in ("agentview", close, "robot0_eye_in_hand"):
-                rend.update_scene(sim.data._data, camera=cam)
+                rend.update_scene(sim.data._data, camera=cam, scene_option=vis)
                 views.append(rend.render().copy())
             fr = np.concatenate(views, 1)
             info = np.full((44, fr.shape[1], 3), 24, np.uint8)

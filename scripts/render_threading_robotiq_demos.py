@@ -49,6 +49,8 @@ def main():
         ring = np.mean(sim.data.geom_xpos[b["ring_geom_ids"]], axis=0)
         normal = sim.data.get_body_xmat("tripod_obj_root")[:, 0]   # only used to pick the azimuth
         rend = mujoco.Renderer(sim.model._model, H, W)
+        vis = mujoco.MjvOption()
+        vis.geomgroup[0] = 0      # hide collision geoms (robosuite's own renderer does; else the arm shows green)
         close = mujoco.MjvCamera()
         close.type = mujoco.mjtCamera.mjCAMERA_FREE
         close.lookat[:] = ring
@@ -60,7 +62,7 @@ def main():
             sim.forward()
             views = []
             for cam in ("agentview", close, "robot0_eye_in_hand"):
-                rend.update_scene(sim.data._data, camera=cam)
+                rend.update_scene(sim.data._data, camera=cam, scene_option=vis)
                 views.append(rend.render().copy())
             fr = np.concatenate(views, 1)
             cv2.putText(fr, f"{key} seed {seed}  t={t}/{len(states)}", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
