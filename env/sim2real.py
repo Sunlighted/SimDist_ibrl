@@ -515,6 +515,10 @@ class Sim2RealConfig:
     # fingers into the handle). Only usable with gripper_parallel_linkage (the legacy tendons' springs need more to
     # close). None = uncapped (legacy).
     gripper_force_limit: Optional[float] = None
+    # rgba of every VISIBLE gripper geom (group 1), applied by the task class on each reset (2026-10-22). robosuite's
+    # Robotiq has light knuckles / fingertips; the real one is black throughout, and the wrist camera sees the tips.
+    # None = robosuite's colours (legacy). Rendering only: no effect on physics or the state observation.
+    gripper_visual_rgba: Optional[tuple] = None
     # PHYSICS DR of the real arm / gripper (2026-10-19, TRAIN_PLAN.md): per episode, applied by the WRAPPER (so every
     # "dr_* off" copy -- deploy ReferenceArm, replays, twins -- stays deterministic; bare robosuite.make / MimicGen
     # generation run the nominal values). Relative: each arm joint's armature / frictionloss x U(1-w, 1+w), from the

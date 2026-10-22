@@ -278,7 +278,18 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         self.sim.data.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
         self.sim.forward()
         self._apply_gripper_contact()
+        self._apply_gripper_visual()
         self._install_exec_layer()
+
+    def _apply_gripper_visual(self):
+        """cell gripper_visual_rgba -> every visible (group 1) gripper geom."""
+        rgba = getattr(self._cell(), "gripper_visual_rgba", None)
+        if rgba is None:
+            return
+        m = self.sim.model
+        for g in range(m.ngeom):
+            if (m.geom_id2name(g) or "").startswith("gripper0") and m.geom_group[g] == 1:
+                m.geom_rgba[g] = np.asarray(rgba, np.float64)
 
     def _apply_gripper_contact(self):
         """cell gripper_contact_solref / _solmix -> every gripper collision geom (the model is rebuilt on each hard reset)."""

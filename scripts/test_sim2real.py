@@ -1052,6 +1052,10 @@ def test_exec_layer():
     check("gripper driver force cap from the cell",
           fr == {(-base.gripper_force_limit, base.gripper_force_limit)}, str(fr))
     # parallel linkage: closing in air keeps the pads parallel, and the passive joints follow the driver
+    vis = {tuple(np.round(m.geom_rgba[g].astype(np.float64), 3)) for g in range(m.ngeom)
+           if (m.geom_id2name(g) or "").startswith("gripper0") and m.geom_group[g] == 1}
+    check("gripper visible geoms all at the cell's gripper_visual_rgba (black like the real one)",
+          vis == {tuple(np.round(base.gripper_visual_rgba, 3))}, str(vis))
     check("Robotiq four-bar loops closed (4 joint equalities, no coupling tendons)", mm.neq == 4 and mm.ntendon == 0,
           f"neq {mm.neq} ntendon {mm.ntendon}")
     act = np.zeros(plain.action_dim)
