@@ -245,6 +245,9 @@ def main():
                 a = acts[t] if t < T else np.r_[np.zeros(6), acts[-1, 6]]
             e.timestep = 0
             e.step(np.clip(a, -1, 1))
+            # contact health (the wrapper's probe; e.step bypasses the wrapper's own bookkeeping)
+            for k_, v_ in env._contact_probe().items():
+                env.contact_health[k_] = max(env.contact_health.get(k_, 0.0), v_)
             sim.forward()
             p, R = site()
             err.append(np.linalg.norm(p - targets[k][0]))
@@ -300,7 +303,14 @@ def main():
                    inhand_sd_mm=(np.round(1e3 * np.std(inhand, 0), 1).tolist() if inhand else None),
                    wrist_iou=(float(np.median([w[0] for w in wcmp])) if wcmp else None),
                    wrist_dpx=(np.round(np.median([w[1:] for w in wcmp], 0), 1).tolist() if wcmp else None))
+        h = dict(env.contact_health)                              # per-episode maxima, filled in the step loop
+        row.update(table_force_max_N=h.get("table_force"), table_impact=bool(getattr(env, "table_impact", False)),
+                   pen_needle_tripod_mm=1e3 * h.get("pen_needle_tripod", 0.0))
         rows.append(row)
+        if h:
+            print(f"  {name}: contact health: gripper-table force max {h.get('table_force', 0):.1f} N "
+                  f"(impact {row['table_impact']}) | needle-ring pen {1e3 * h.get('pen_needle_tripod', 0):.2f} mm | "
+                  f"needle-table {1e3 * h.get('pen_needle_table', 0):.2f} mm", flush=True)
         print(f"  {name}: T {T:3d} | success end {ok!s:5s} first {first:4d} | needle lifted "
               f"{row['lifted_mm']:5.1f} mm | TCP err p50 {row['err_p50_mm']:4.1f} max "
               f"{row['err_max_mm']:5.1f} mm | tripod moved {row['tripod_moved_mm']:.1f} mm | needle-ring min {row['dmin_mm']:5.1f} mm (radius "
