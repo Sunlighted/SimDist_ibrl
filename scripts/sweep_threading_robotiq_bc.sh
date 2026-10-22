@@ -18,6 +18,6 @@ best=model0; awk "BEGIN{exit !(${s1:-0} > ${s0:-0})}" && best=model1
 echo "best $best (model0 $s0 / model1 $s1)"
 for ta in 1 4; do
     BC_TA=$ta CUDA_VISIBLE_DEVICES="${GPU:-2}" /home/Chenyang/.conda/envs/ibrl/bin/python scripts/diagnose_threading_robotiq_failures.py \
-        --weight $DIR/$best.pt --mode bc --num 300 --workers 10 --out $DIR/diag_ta$ta.npz 2>&1 | grep -A8 "^episodes" | sed "s/^/Ta=$ta /"
+        --weight $DIR/$best.pt --mode bc --num 300 --workers 10 --out $DIR/diag_ta$ta.npz 2>&1 | grep -A10 "^episodes" | sed "s/^/Ta=$ta /"
 done
 echo SWEEP_DONE

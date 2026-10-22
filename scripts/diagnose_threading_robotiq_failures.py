@@ -109,7 +109,9 @@ def run(job):
                 ax = (fr - fl) / max(np.linalg.norm(fr - fl), 1e-9)
                 rec["gcos"].append(float(abs(ax @ d.xmat[ids["nb"]].reshape(3, 3)[:, 1])))
                 rec["hold_d"].append(float(np.linalg.norm((fl + fr) / 2 - d.xpos[ids["nb"]])))
-            out.append(dict(seed=s, success=succ_any, T=env.time_step, **{k: np.array(v) for k, v in rec.items()}))
+            out.append(dict(seed=s, success=succ_any, T=env.time_step, impact=bool(getattr(env, "table_impact", False)),
+                            health=dict(getattr(env, "contact_health", {}) or {}),
+                            **{k: np.array(v) for k, v in rec.items()}))
     return out
 
 
@@ -120,6 +122,8 @@ def classify(r):
     lift, tip_d = r["lift"], r["tip_d"]
     if r["success"]:
         return "success"
+    if r.get("impact"):
+        return "7 撞桌面(终止)"
     if lift.max() < LIFT:
         return "1 没抓起"
     t_up = int(np.argmax(lift >= LIFT))
@@ -154,6 +158,14 @@ def main():
     print(f"episodes {len(res)}  success {np.mean([r['success'] for r in res]):.3f}")
     for k in sorted(set(cls)):
         print(f"  {k:24s} {cls.count(k):4d}  ({cls.count(k) / len(res):.3f})")
+    hs = [r["health"] for r in res if r.get("health")]
+    if hs:
+        print("  contact health (per-episode max): table force >5 N {:.3f} | needle-ring pen p90 {:.2f} max {:.2f} mm | "
+              "tripod-table max {:.2f} mm | needle-table max {:.2f} mm".format(
+                  np.mean([h.get("table_force", 0) > 5 for h in hs]),
+                  1e3 * np.percentile([h.get("pen_needle_tripod", 0) for h in hs], 90),
+                  1e3 * max(h.get("pen_needle_tripod", 0) for h in hs), 1e3 * max(h.get("pen_tripod_table", 0) for h in hs),
+                  1e3 * max(h.get("pen_needle_table", 0) for h in hs)))
     np.savez_compressed(args.out, res=np.array(res, dtype=object), cls=np.array(cls))
     print(f"saved {args.out}")
 
