@@ -921,6 +921,13 @@ class Workspace:
                     self.global_episode += 1
                     stat["score/train_score"].append(float(success))
                     stat["data/episode_len"].append(self.train_env.time_step)
+                    # contact health (sim2real cell with table_impact_force): impact rate + per-episode max depths [mm]
+                    health = getattr(self.train_env, "contact_health", None)
+                    if health:
+                        stat["safety/table_impact"].append(float(self.train_env.table_impact))
+                        stat["safety/table_force_max_N"].append(health.get("table_force", 0.0))
+                        for k in ("pen_needle_tripod", "pen_tripod_table", "pen_needle_table", "pen_grip_needle"):
+                            stat[f"safety/{k}_mm"].append(1e3 * health.get(k, 0.0))
 
                     # Rolling train-score window for pbar postfix (last 20 eps).
                     recent_train_scores.append(float(success))

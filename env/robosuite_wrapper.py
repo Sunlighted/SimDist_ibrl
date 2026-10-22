@@ -723,6 +723,7 @@ class PixelRobosuite:
         """init_state: a get_init_state() dict to start from (failure replay); None = the env's own sampling."""
         self.time_step = 0
         self.table_impact = False
+        self.contact_health: dict = {}
         self._stage1_fired = False
         self.episode_reward = 0
         self.episode_extra_reward = 0
@@ -786,24 +787,45 @@ class PixelRobosuite:
 
         return rl_obs, high_res_images
 
-    def _table_impact_n(self) -> float:
-        """summed normal force [N] of the current gripper <-> table contacts."""
+    def _contact_probe(self) -> dict:
+        """Threading cell contact health, current state: summed gripper <-> table normal force [N] and the deepest
+        interpenetration [m] of the needle / tripod / table / gripper pairs that the 10-21 / 10-22 fixes target."""
         import mujoco
         sim = self.env.sim
         m, d = sim.model, sim.data
         key = id(m._model)
-        if getattr(self, "_impact_ids", (None,))[0] != key:     # the model is rebuilt on a hard reset
-            grip = {g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith("gripper0")
-                    and (m.geom_contype[g] or m.geom_conaffinity[g])}
-            self._impact_ids = (key, m.geom_name2id("table_collision"), grip)
-        _, tid, grip = self._impact_ids
-        f, fr = 0.0, np.zeros(6)
+        if getattr(self, "_probe_ids", (None,))[0] != key:      # the model is rebuilt on a hard reset
+            def cls(g):
+                n = m.geom_id2name(g) or ""
+                if not (m.geom_contype[g] or m.geom_conaffinity[g]):
+                    return None
+                if n.startswith("gripper0"):
+                    return "grip"
+                if n.startswith("needle_obj"):
+                    return "needle"
+                if n.startswith("tripod_obj"):
+                    return "tripod"
+                return "table" if n == "table_collision" else None
+            self._probe_ids = (key, [cls(g) for g in range(m.ngeom)])
+        kinds = self._probe_ids[1]
+        out = dict(table_force=0.0, pen_needle_tripod=0.0, pen_tripod_table=0.0, pen_needle_table=0.0,
+                   pen_grip_needle=0.0)
+        fr = np.zeros(6)
         for i in range(d.ncon):
             c = d.contact[i]
-            if (c.geom1 == tid and c.geom2 in grip) or (c.geom2 == tid and c.geom1 in grip):
+            pair = {kinds[c.geom1], kinds[c.geom2]}
+            if pair == {"grip", "table"}:
                 mujoco.mj_contactForce(m._model, d._data, i, fr)
-                f += abs(fr[0])
-        return f
+                out["table_force"] += abs(fr[0])
+            elif len(pair) == 2 and None not in pair and c.dist < 0:
+                k = "pen_" + "_".join(sorted(pair, key=["grip", "needle", "tripod", "table"].index))
+                if k in out:
+                    out[k] = max(out[k], -float(c.dist))
+        return out
+
+    def _table_impact_n(self) -> float:
+        """summed normal force [N] of the current gripper <-> table contacts."""
+        return self._contact_probe()["table_force"]
 
     def step(self, actions: torch.Tensor) -> tuple[dict, float, bool, bool, dict]:
         """
@@ -851,11 +873,15 @@ class PixelRobosuite:
             else:
                 frame_success = step_reward == 1
 
-            # table impact (sim2real cell): a hard gripper <-> table hit ends the episode as a failure
-            if (self._s2r_active and getattr(self.sim2real, "table_impact_force", None) is not None
-                    and self._table_impact_n() > self.sim2real.table_impact_force):
-                step_reward, frame_success, terminal = 0.0, False, True
-                self.table_impact = True
+            # table impact (sim2real cell): a hard gripper <-> table hit ends the episode as a failure; the same
+            # probe keeps the per-episode contact-health maxima (self.contact_health)
+            if self._s2r_active and getattr(self.sim2real, "table_impact_force", None) is not None:
+                probe = self._contact_probe()
+                for k, v in probe.items():
+                    self.contact_health[k] = max(self.contact_health.get(k, 0.0), v)
+                if probe["table_force"] > self.sim2real.table_impact_force:
+                    step_reward, frame_success, terminal = 0.0, False, True
+                    self.table_impact = True
 
             if self.stage_reward > 0.0 and not self._stage1_fired:
                 metrics_fn = getattr(self.env, "_get_partial_task_metrics", None)

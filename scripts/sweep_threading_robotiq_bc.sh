@@ -8,8 +8,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source set_env.sh >/dev/null 2>&1
 : "${NAME:?set NAME}"
-DIR=exps/sim2real/threading_robotiq_rnn_bc_n10000_${NAME}_seed${SEED:-1}
-DATA=/user_data/Chenyang/simdist_data/threading_robotiq_expert_n10000_v3/dataset.hdf5
+DIR=exps/sim2real/threading_robotiq_rnn_bc_${TAG:-n10000}_${NAME}_seed${SEED:-1}
+DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n10000_v3/dataset.hdf5}"
 if [ -e "$DIR/train.log" ]; then echo "FATAL: $DIR already has a run (refusing to overwrite it)"; exit 1; fi
 env GPU="${GPU:-2}" SEED="${SEED:-1}" DATA=$DATA DIR=$DIR EXTRA="${EXTRA:-}" bash scripts/run_threading_robotiq_bc_v3.sh
 s0=$(grep -E '^score: ' $DIR/eval300_model0.log | tail -1 | awk '{print $2}' | tr -d ,)
