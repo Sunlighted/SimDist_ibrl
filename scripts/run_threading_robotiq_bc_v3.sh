@@ -14,7 +14,7 @@ CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
 CFG="${CFG:-release/cfgs/sim2real/threading_robotiq_state_bc_rnn.yaml}"
 DIR="${DIR:-exps/sim2real/threading_robotiq_rnn_bc_v3_seed1}"
 echo "=== [$(date '+%F %T')] BC -> $DIR ==="
-$PY train_bc.py --config_path "$CFG" --save_dir "$DIR" --seed 1 \
+$PY train_bc.py --config_path "$CFG" --save_dir "$DIR" --seed "${SEED:-1}" \
     --use_wb 0 --dataset.path "$DATA" ${EXTRA:-}
 echo "train_bc rc=$? (1 is normal: train_bc.py ends in assert False)"
 grep -q "best_ckpt_score" "$DIR/train.log" || { echo "FATAL: BC did not finish"; exit 1; }
