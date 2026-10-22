@@ -46,6 +46,10 @@ def run(job):
     torch.cuda.set_device(0)
     loader = train_rl.load_model if mode == "rl" else train_bc.load_model
     agent, _, env_params = loader(weight, "cuda")
+    if mode == "bc" and os.environ.get("BC_TA"):       # re-plan every BC_TA steps (1 = closed loop, as IBRL queries it)
+        for mod in [agent] + [m for m in agent.modules()]:
+            if hasattr(mod, "Ta"):
+                mod.Ta = int(os.environ["BC_TA"])
     env_params = dict(env_params, state_only_no_render=True, hand_init_perturb_joint_sigma=0.1)
     env = PixelRobosuite(**env_params)
     picked = {}

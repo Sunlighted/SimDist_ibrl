@@ -479,6 +479,12 @@ def _load_model(weight_file, env: PixelRobosuite, device, cfg: Optional[MainConf
             env.observation_shape, env.prop_shape, env.action_dim, env.rl_cameras, cfg.policy
         )
     policy.load_state_dict(torch.load(weight_file, map_location=device))
+    # BC-RNN with use_ema: the in-training eval (and so the checkpoint selection) ran on the EMA weights, but
+    # load_state_dict leaves the RAW ones active -> eval.py / the IBRL prior would score a different policy.
+    # Make the EMA weights the loaded policy (RNN only; flow checkpoints keep their old load behaviour).
+    if cfg.use_rnn and policy.apply_ema():
+        policy._ema_backup.clear()
+        print(f"[load_model] BC-RNN: EMA weights active ({weight_file})")
     return policy.to(device)
 
 

@@ -1,0 +1,55 @@
+# ============================================================================
+# TRAIN_PLAN.md stage 2 (calib_20261015): BC-RNN+GMM prior on the Threading ROBOTIQ real cell -- SINGLE-STEP variant
+# (2026-10-21): pred_horizon = action_horizon = 1, i.e. trained, selected and evaluated the way IBRL queries its prior
+# (one action per step). The chunked recipe (Tp 10) scored 0.353 at Ta=1, 0.477 at Ta=4, 0.363 at Ta=8 (300 strict each).
+# = release/cfgs/mimicgen/threading_d0_state_bc_rnn.yaml (MimicGen's low-dim BC-RNN-GMM recipe) with:
+#   - dataset: 1000 scripted-expert demos (scripts/collect_threading_robotiq_demos.py) on
+#     real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml: 10 Hz, execution layer, damped contact,
+#     physics + base DR. The env_cfg.json sidecar names the cell, and the EVAL env is built with it (bc/dataset.py):
+#     base-frame prop, exec layer, DR -- the same env the demos and IBRL use.
+#   - eval: sigma 0.1 joint init, strict success (= IBRL), fewer evals (the exec layer costs ~19 ms/step).
+# Gate (TRAIN_PLAN): independent 300-episode eval >= 0.3 before IBRL.
+# NOT a flow prior (CLAUDE.md #17: flow makes IBRL an order of magnitude slower).
+# ============================================================================
+seed: 1
+dataset:
+  path: /user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000_v3/dataset.hdf5
+  use_state: 1
+  action_horizon: 1
+  build_state_chunk: 0
+  num_data: -1
+  eval_episode_len: 400
+  val_ratio: 0.0
+  hand_init_perturb: null
+use_flow: 0
+use_rnn: 1
+rnn_policy:
+  rnn_hidden_dim: 400
+  rnn_num_layers: 2
+  num_modes: 5
+  min_std: 0.01
+  std_activation: "softplus"
+  low_noise_eval: 1
+  use_tanh: 1
+  pred_horizon: 1
+  action_horizon: 1
+  use_ema: 0
+num_epoch: 2000
+epoch_len: 100
+batch_size: 256
+lr: 1e-3
+weight_decay: 0
+use_wb: 0
+num_eval_episode: 50
+eval_period: 250
+val_period: 50
+val_batches: 5
+eval_target_during_training: 0
+eval_hand_init_perturb_joint_sigma: 0.1
+eval_domain_shift:
+  mode: none
+strict_success:
+  enabled: true
+  dwell_steps: 3
+  max_tripod_disp: 0.04
+  max_needle_speed: 0.0
