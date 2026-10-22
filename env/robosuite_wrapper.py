@@ -722,6 +722,7 @@ class PixelRobosuite:
     def reset(self, init_state: Optional[dict] = None) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """init_state: a get_init_state() dict to start from (failure replay); None = the env's own sampling."""
         self.time_step = 0
+        self.table_impact = False
         self._stage1_fired = False
         self.episode_reward = 0
         self.episode_extra_reward = 0
@@ -785,6 +786,25 @@ class PixelRobosuite:
 
         return rl_obs, high_res_images
 
+    def _table_impact_n(self) -> float:
+        """summed normal force [N] of the current gripper <-> table contacts."""
+        import mujoco
+        sim = self.env.sim
+        m, d = sim.model, sim.data
+        key = id(m._model)
+        if getattr(self, "_impact_ids", (None,))[0] != key:     # the model is rebuilt on a hard reset
+            grip = {g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith("gripper0")
+                    and (m.geom_contype[g] or m.geom_conaffinity[g])}
+            self._impact_ids = (key, m.geom_name2id("table_collision"), grip)
+        _, tid, grip = self._impact_ids
+        f, fr = 0.0, np.zeros(6)
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if (c.geom1 == tid and c.geom2 in grip) or (c.geom2 == tid and c.geom1 in grip):
+                mujoco.mj_contactForce(m._model, d._data, i, fr)
+                f += abs(fr[0])
+        return f
+
     def step(self, actions: torch.Tensor) -> tuple[dict, float, bool, bool, dict]:
         """
         all inputs and outputs are tensors
@@ -830,6 +850,12 @@ class PixelRobosuite:
                 step_reward = 1.0 if frame_success else 0.0
             else:
                 frame_success = step_reward == 1
+
+            # table impact (sim2real cell): a hard gripper <-> table hit ends the episode as a failure
+            if (self._s2r_active and getattr(self.sim2real, "table_impact_force", None) is not None
+                    and self._table_impact_n() > self.sim2real.table_impact_force):
+                step_reward, frame_success, terminal = 0.0, False, True
+                self.table_impact = True
 
             if self.stage_reward > 0.0 and not self._stage1_fired:
                 metrics_fn = getattr(self.env, "_get_partial_task_metrics", None)

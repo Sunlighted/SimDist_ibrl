@@ -78,6 +78,13 @@ exec_layer:
   frictionloss: [1.0, 1.0, 1.0, 1.0, 1.0, 0.6, 0.1]
   damping: [1.0, 1.0, 4.0, 0.0, 4.0, 0.5, 4.0]
   z_min_base: 0.038
+  # 2026-10-22, SIM ONLY: the same floor (0.038 - nominal table top 0.0285) but above the episode's ACTUAL table top:
+  # with base DR the base-frame floor sat 2.7-17 mm above the table; IBRL's gripper hit it in 82 % of episodes
+  # (grip site median 6.8 mm above the table at contact, the scripted expert never goes below 11.5 mm).
+  z_min_above_table: 0.0095
+  # and the gripper's lowest point >= 0.5 mm above the table (a closed gripper reaches 17-21 mm below the site, so the
+  # site floor alone still let it press into the table; the expert's open-gripper grasp at 11.5 mm stays allowed)
+  gripper_clear_table: 0.0005
   max_tcp_speed: null
   max_rot_speed: null
   max_lead: null
@@ -123,6 +130,20 @@ gripper_force_limit: 1.0
 # 2026-10-22: the real Robotiq is black throughout; robosuite's has light outer knuckles (0.79 0.82 0.93) and
 # fingertips (0.9), which the wrist camera sees. Every visible gripper geom = robosuite's own dark grey. Rendering only.
 gripper_visual_rgba: [0.1, 0.1, 0.1, 1.0]
+# 2026-10-22 OBJECT CONTACT: needle / tripod / table collision geoms. MimicGen's solref 0.02 let the E2 IBRL policy
+#   press the needle into the ring's 4 mm bars (median 2.5 mm, max 11 mm, >2 mm in 57 % of episodes; the 3 mm
+#   clearance per side then lets a misaligned needle squeeze through) and the tripod legs 4-11 mm into the table.
+#   0.005 + solmix 1000 (60 E2 episodes): needle-ring 0.6 / 2.6 mm (median / max, >2 mm 2 %), tripod-table 0.5 / 4.8,
+#   needle-table 0.1 / 4.7; scripted expert strict 300/300. E2's own success fell ~0.8 -> 0.58: part of it was the
+#   squeeze. ALL data / ckpts made before this change are void.
+object_contact_solref: [0.005, 1.0]
+object_contact_solmix: 1000
+# 2026-10-22 TABLE IMPACT: a control step with > 5 N summed gripper <-> table normal force ends the episode as a failure
+#   (train and eval; the robot's collision reflex). Expert: max 0.9 N (1 contact step in 40 episodes); E2 IBRL: contact
+#   in 82 % of episodes, up to 759 N. The exec-layer floor (z_min_above_table / gripper_clear_table) bounds the COMMAND
+#   only: uncapped (owner, 10-17) the arm overshoots it on a fast descent (E2: site 6-12 mm at contact with the command
+#   16+ mm higher), so this termination is what teaches the policy to slow down near the table.
+table_impact_force: 5.0
 # 6. PHYSICS DR (2026-10-19, TRAIN_PLAN.md; applied by the wrapper per episode, off in every deterministic copy):
 #    arm armature / stiction x U(0.7, 1.3) per joint (fit residual j5 / j6 still 5-6 mrad, stiction is direction
 #    dependent); gripper contact dampratio U(0.7, 1.0) (the grasp grid showed 1.0 works, not where it stops).

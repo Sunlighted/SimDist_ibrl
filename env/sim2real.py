@@ -519,6 +519,16 @@ class Sim2RealConfig:
     # Robotiq has light knuckles / fingertips; the real one is black throughout, and the wrist camera sees the tips.
     # None = robosuite's colours (legacy). Rendering only: no effect on physics or the state observation.
     gripper_visual_rgba: Optional[tuple] = None
+    # OBJECT CONTACT (2026-10-22): solref / solmix of the needle's, the tripod's and the table's collision geoms.
+    # MimicGen's defaults (solref 0.02) let an IBRL policy press the needle 2.5 mm (median; max 11 mm) into the
+    # ring's 4 mm bars -- the 3 mm clearance per side then lets a misaligned needle squeeze through -- and the
+    # tripod legs 4-11 mm into the table. None = MimicGen's values (legacy).
+    object_contact_solref: Optional[tuple] = None
+    object_contact_solmix: Optional[float] = None
+    # TABLE IMPACT (2026-10-22): a control step whose summed gripper <-> table normal contact force exceeds this
+    # [N] ends the episode as a FAILURE (reward 0), in training and in eval -- the robot's collision reflex.
+    # Applied by the wrapper. None = off (legacy).
+    table_impact_force: Optional[float] = None
     # PHYSICS DR of the real arm / gripper (2026-10-19, TRAIN_PLAN.md): per episode, applied by the WRAPPER (so every
     # "dr_* off" copy -- deploy ReferenceArm, replays, twins -- stays deterministic; bare robosuite.make / MimicGen
     # generation run the nominal values). Relative: each arm joint's armature / frictionloss x U(1-w, 1+w), from the

@@ -278,8 +278,26 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         self.sim.data.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
         self.sim.forward()
         self._apply_gripper_contact()
+        self._apply_object_contact()
         self._apply_gripper_visual()
         self._install_exec_layer()
+
+    def _apply_object_contact(self):
+        """cell object_contact_solref / _solmix -> the needle's, the tripod's and the table's collision geoms."""
+        cell = self._cell()
+        sr, mix = getattr(cell, "object_contact_solref", None), getattr(cell, "object_contact_solmix", None)
+        if sr is None and mix is None:
+            return
+        m = self.sim.model
+        for g in range(m.ngeom):
+            if m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0:
+                continue                                    # visual-only
+            n = m.geom_id2name(g) or ""
+            if n.startswith(("needle_obj", "tripod_obj")) or n == "table_collision":
+                if sr is not None:
+                    m.geom_solref[g] = np.asarray(sr, np.float64)
+                if mix is not None:
+                    m.geom_solmix[g] = float(mix)
 
     def _apply_gripper_visual(self):
         """cell gripper_visual_rgba -> every visible (group 1) gripper geom."""

@@ -22,7 +22,8 @@ from scripts.diagnose_threading_robotiq_failures import _probe, classify  # noqa
 H, W = 300, 400
 # cv2.putText has no CJK glyphs
 EN = {"success": "success", "1": "1 never lifted", "2": "2 dropped after lift", "3": "3 held, never near ring",
-      "4": "4 near ring, not through", "5": "5 tripod moved >4cm", "6": "6 raw ok, strict failed"}
+      "4": "4 near ring, not through", "5": "5 tripod moved >4cm", "6": "6 raw ok, strict failed",
+      "7": "7 TABLE IMPACT (episode ended)"}
 
 
 def main():
@@ -95,6 +96,8 @@ def main():
                 rec["raw"].append(bool(e._check_success()))
         r = dict(success=succ_any, **{k: np.array(v) for k, v in rec.items()})
         bucket = classify(r)
+        if getattr(env, "table_impact", False):      # sim2real cell table_impact_force ended the episode
+            bucket = "7 table impact"
         tag = "success" if succ_any else "fail" + bucket.split()[0]
         # ---- render (re-reset from the seed: identical DR; then write the recorded states back)
         np.random.seed(s)

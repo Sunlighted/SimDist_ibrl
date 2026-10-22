@@ -46,6 +46,15 @@ DEFAULTS = dict(
     # nominal cell with the base fixed, so its --z_min / --x_box / --y_box are base-frame bounds in disguise.
     # z_min_base = lowest grip-site target above the base origin (None = no clamp; deploy: --z_min - 0.912)
     z_min_base=None, x_box_base=(-np.inf, np.inf), y_box_base=(-np.inf, np.inf),
+    # SIM ONLY (2026-10-22): the floor as a height above the episode's actual table top under the grip site, which
+    # replaces z_min_base in the sim. The base DR (height +-7.5 mm, tilt 1 deg) moves the table against the base, so a
+    # base-frame floor let the grip site down to 2.7 mm above the table in some episodes. The robot has no base DR
+    # and keeps reading z_min_base: set this to z_min_base - (nominal table top above the base) so both agree there.
+    z_min_above_table=None,
+    # SIM ONLY: also keep the gripper's lowest collision point >= this far above the table top. The site floor alone
+    # let a CLOSED gripper (tips 17-21 mm below the site; 10.8 mm when open) press into the table: the floor is
+    # raised to (site - lowest gripper point, measured now) + this. None = off.
+    gripper_clear_table=None,
     z_slow_band=0.0,           # --z_slow_band: a descent speed limit near z_min (0 = off; was 0.06 for policy runs)
     z_slow_step=0.003,         # --z_slow_step
     armature=None, frictionloss=None, damping=None,   # per joint, the real-arm fit; None = sim nominal
@@ -150,8 +159,32 @@ def apply_arm_params(mj_model, jvel, cfg):
             getattr(mj_model, field)[jvel] = cfg[k]
 
 
+def _geom_lowest_z(mm, d, g):
+    """lowest world z of one box / mesh / capsule geom."""
+    import mujoco
+    R, c = d.geom_xmat[g].reshape(3, 3), d.geom_xpos[g]
+    t = mm.geom_type[g]
+    if t == mujoco.mjtGeom.mjGEOM_MESH:
+        mid = mm.geom_dataid[g]
+        V = mm.mesh_vert[mm.mesh_vertadr[mid]:mm.mesh_vertadr[mid] + mm.mesh_vertnum[mid]]
+        return float(((R @ V.T).T + c)[:, 2].min())
+    if t == mujoco.mjtGeom.mjGEOM_BOX:
+        C = np.array([[a, b_, c_] for a in (-1, 1) for b_ in (-1, 1) for c_ in (-1, 1)]) * mm.geom_size[g]
+        return float(((R @ C.T).T + c)[:, 2].min())
+    return float(c[2] - mm.geom_rbound[g])
+
+
 class SimRefController:
     """Drop-in for robot.controller (robosuite): the deploy execution chain on a simulated FR3. See module doc."""
+
+    def _gripper_lowest_z(self) -> float:
+        """lowest world z of the (measured) gripper's collision geoms."""
+        m = self.sim.model
+        if getattr(self, "_grip_geoms", None) is None:
+            self._grip_geoms = [g for g in range(m.ngeom) if (m.geom_id2name(g) or "").startswith("gripper0")
+                                and (m.geom_contype[g] or m.geom_conaffinity[g])]
+        mm, d = m._model, self.sim.data
+        return min(_geom_lowest_z(mm, d, g) for g in self._grip_geoms)
 
     def __init__(self, robot, cfg: dict, nominal_model=None):
         from robosuite.controllers import controller_factory
@@ -291,13 +324,23 @@ class SimRefController:
         self.q_ref = np.array(sd.qpos[self.jidx])
         self.v_ref = np.array(sd.qvel[self.jvel])
         # workspace clamp (shared with the robot), base frame
-        if cfg["z_min_base"] is not None:
+        if cfg["z_min_base"] is not None or cfg["z_min_above_table"] is not None:
             p_r, R_r = site_pose(sm, sd, self.sid, self.jidx, self.q_ref)
             bid = self.robot_base_id
             b, Rb = np.array(self.sim.data.body_xpos[bid]), np.array(self.sim.data.body_xmat[bid]).reshape(3, 3)
             pb = Rb.T @ (p_r - b)
             z_last = self.last_cmd_z_base if self.last_cmd_z_base is not None else (Rb.T @ (p_meas - b))[2]
-            pb_cl, names = clamp_box(pb, (cfg["x_box_base"][0], cfg["y_box_base"][0], cfg["z_min_base"]),
+            z_floor = cfg["z_min_base"]
+            if cfg["z_min_above_table"] is not None:      # sim: follow the actual table top (base DR)
+                m_, d_ = self.sim.model, self.sim.data
+                tid = m_.geom_name2id("table_collision")
+                top = float(d_.geom_xpos[tid][2] + m_.geom_size[tid][2])
+                z_floor = float((Rb.T @ (np.array([p_r[0], p_r[1], top]) - b))[2]) + cfg["z_min_above_table"]
+                if cfg["gripper_clear_table"] is not None:   # the closed gripper reaches below the site
+                    drop = float(d_.site_xpos[self.sid][2]) - self._gripper_lowest_z()
+                    z_floor = max(z_floor, float((Rb.T @ (np.array([p_r[0], p_r[1], top + drop
+                                                                    + cfg["gripper_clear_table"]]) - b))[2]))
+            pb_cl, names = clamp_box(pb, (cfg["x_box_base"][0], cfg["y_box_base"][0], z_floor),
                                      (cfg["x_box_base"][1], cfg["y_box_base"][1], np.inf), z_last,
                                      cfg["z_slow_band"], cfg["z_slow_step"])
             if names:
@@ -317,7 +360,7 @@ class SimRefController:
             self.q_ref, self.v_ref = np.array(q_cmd), np.zeros(7)        # no wind-up
         self.last_cmd_pose = (p_c, R_c)
         self.last_caps = why
-        if cfg["z_min_base"] is not None:
+        if cfg["z_min_base"] is not None or cfg["z_min_above_table"] is not None:
             bid = self.robot_base_id
             b, Rb = np.array(self.sim.data.body_xpos[bid]), np.array(self.sim.data.body_xmat[bid]).reshape(3, 3)
             self.last_cmd_z_base = float((Rb.T @ (p_c - b))[2])
