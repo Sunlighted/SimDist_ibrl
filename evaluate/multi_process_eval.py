@@ -144,6 +144,8 @@ def run_eval(
                 if is_first:
                     # New episode: drop any stale actions from the previous one
                     action_queues[proc_id].clear()
+                    if hasattr(agent, "reset_prior"):
+                        agent.reset_prior([proc_id])      # the IBRL prior's chunk queue (prior_chunk > 1)
                 idxs.append(proc_id)
                 for k, v in obs_dict.items():
                     obses[k].append(v)
@@ -162,7 +164,13 @@ def run_eval(
                     k: torch.stack([v[pos] for pos in need_pred_pos]).cuda()
                     for k, v in obses.items()
                 }
-                chunks = _policy_act_chunk(agent, pred_obs)  # (B_need, T, D)
+                if hasattr(agent, "prior_keys"):         # which worker each row is (IBRL prior_chunk queues)
+                    agent.prior_keys = [idxs[pos] for pos in need_pred_pos]
+                try:
+                    chunks = _policy_act_chunk(agent, pred_obs)  # (B_need, T, D)
+                finally:
+                    if hasattr(agent, "prior_keys"):
+                        agent.prior_keys = None
                 # chunks is on CPU (per act_chunk contract); push into queues
                 for j, pos in enumerate(need_pred_pos):
                     idx = idxs[pos]

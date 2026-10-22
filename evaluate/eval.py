@@ -53,6 +53,8 @@ def run_eval(
             np.random.seed(seed + episode_idx)
             with stopwatch.time("reset"):
                 obs, image_obs = env.reset()
+            if hasattr(agent, "reset_prior"):
+                agent.reset_prior()                    # IBRL prior_chunk > 1
 
             record_this = recorder is not None and (episode_idx % record_every == 0)
             terminal = False
@@ -127,6 +129,8 @@ if __name__ == "__main__":
     parser.add_argument("--folder", type=str, default=None)
     parser.add_argument("--include", type=str, default=None)
     parser.add_argument("--mode", type=str, default="bc", help="bc/rl/simdist/residual_rl/residual_simdist/ibrl_simdist/tdmpc2")
+    parser.add_argument("--prior_chunk", type=int, default=None,
+                        help="Override QAgent prior_chunk at eval (IBRL: run the BC prior in chunks of N steps).")
     parser.add_argument("--act_method", type=str, default=None,
                         help="Override QAgent act_method at eval (rl/ibrl/ibrl_soft). "
                              "rl = pure trained actor; ibrl = max-Q hybrid over "
@@ -439,6 +443,9 @@ if __name__ == "__main__":
 
         # Optional: override the QAgent act_method to decompose a hybrid eval
         # (e.g. --act_method rl = pure trained actor, no BC/source prior).
+        if args.prior_chunk is not None and hasattr(getattr(agent, "cfg", None), "prior_chunk"):
+            print(f"[eval override] prior_chunk {agent.cfg.prior_chunk} -> {args.prior_chunk}")
+            agent.cfg.prior_chunk = args.prior_chunk
         if args.act_method is not None and hasattr(getattr(agent, "cfg", None), "act_method"):
             print(f"[eval override] act_method {agent.cfg.act_method} -> {args.act_method}")
             agent.cfg.act_method = args.act_method

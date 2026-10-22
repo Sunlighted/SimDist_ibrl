@@ -68,6 +68,8 @@ def run(job):
         for s in seeds:
             np.random.seed(s)
             obs, _ = env.reset()
+            if hasattr(agent, "reset_prior"):
+                agent.reset_prior()
             e = env.env
             m = e.sim.model
             ids = dict(nb=m.body_name2id("needle_obj_root"),

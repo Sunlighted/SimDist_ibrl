@@ -1,4 +1,5 @@
 from typing import Optional
+from collections import deque
 from dataclasses import dataclass, field
 import copy
 from contextlib import contextmanager
@@ -38,6 +39,11 @@ class QAgentConfig:
     bootstrap_method: str = ""  # "rl/ibrl/ibrl_soft"
     # ibrl
     ibrl_eps_greedy: float = 1
+    # IBRL acting only: run the BC prior in chunks of this many steps (per env; re-planned at an episode start and
+    # whenever the max-Q picks the RL action). 1 = query it every step (legacy). The critic's bootstrap always
+    # queries it per step (a stored next_obs has no chunk). Needs a prior with act_chunk (BC-RNN) whose own
+    # action_horizon >= prior_chunk. Callers that batch several envs set agent.prior_keys (multi_process_eval).
+    prior_chunk: int = 1
     soft_ibrl_beta: float = 10
     # bc loss regularization
     bc_loss_coef: float = 0.1
@@ -137,6 +143,8 @@ class QAgent(nn.Module):
         self.aug = common_utils.RandomShiftsAug(pad=4)
 
         self.bc_policies: list[nn.Module] = []
+        self._prior_q: dict = {}          # env key -> deque of the prior's remaining chunk actions (prior_chunk > 1)
+        self.prior_keys: Optional[list] = None
         # SGFT value source (frozen source-domain QAgent). Held in a list so it
         # is NOT registered as a submodule (would otherwise bloat/duplicate this
         # agent's state_dict). Empty unless set_sgft_value_source() is called.
@@ -357,6 +365,29 @@ class QAgent(nn.Module):
 
         return action
 
+    def reset_prior(self, keys=None) -> None:
+        """Drop the prior's pending chunk actions (all envs, or the given env keys): call at an episode start."""
+        if keys is None:
+            self._prior_q.clear()
+        else:
+            for k in keys:
+                self._prior_q.pop(k, None)
+
+    def _chunked_prior_action(self, bc_policy, obs: dict[str, torch.Tensor]) -> torch.Tensor:
+        bsize = next(iter(obs.values())).size(0)
+        keys = self.prior_keys if self.prior_keys is not None else list(range(bsize))
+        assert len(keys) == bsize, f"prior_keys {len(keys)} vs batch {bsize}"
+        need = [i for i, k in enumerate(keys) if not self._prior_q.get(k)]
+        if need:
+            idx = torch.as_tensor(need, device=next(iter(obs.values())).device)
+            chunk = bc_policy.act_chunk({k: v.index_select(0, idx) for k, v in obs.items()}, eval_mode=True)
+            assert chunk.size(1) >= self.cfg.prior_chunk, (
+                f"prior act_chunk gives {chunk.size(1)} actions < prior_chunk {self.cfg.prior_chunk}")
+            for j, i in enumerate(need):
+                self._prior_q[keys[i]] = deque(chunk[j, : self.cfg.prior_chunk])
+        device = next(iter(obs.values())).device
+        return torch.stack([self._prior_q[k].popleft() for k in keys]).to(device)
+
     def _act_ibrl(
         self,
         *,
@@ -373,7 +404,11 @@ class QAgent(nn.Module):
 
         assert len(self.bc_policies) == 1
         bc_policy = self.bc_policies[0]
-        bc_action = bc_policy.act(obs, cpu=False)
+        chunked = self.cfg.prior_chunk > 1 and not use_target
+        if chunked:
+            bc_action = self._chunked_prior_action(bc_policy, obs)
+        else:
+            bc_action = bc_policy.act(obs, cpu=False)
 
         rl_dist: utils.TruncatedNormal = actor(obs, stddev)
         if eval_mode:
@@ -424,6 +459,11 @@ class QAgent(nn.Module):
 
             if self.stats is not None:
                 self.stats["actor/greedy"].append(use_greedy.sum(), bsize)
+
+        if chunked:   # the RL action won: the prior's chunk is stale, re-plan it next step
+            keys = self.prior_keys if self.prior_keys is not None else list(range(bsize))
+            for i in torch.nonzero(selected_action_idx.reshape(-1) < 1).reshape(-1).tolist():
+                self._prior_q.pop(keys[i], None)
 
         if self.stats is not None:
             use_bc = (selected_action_idx >= 1).float()

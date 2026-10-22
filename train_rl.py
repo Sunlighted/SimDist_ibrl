@@ -862,6 +862,8 @@ class Workspace:
         def reset_train_env():
             nonlocal cur_replay
             cur_replay = None
+            if hasattr(self.agent, "reset_prior"):
+                self.agent.reset_prior()          # prior_chunk > 1: no chunk carries over an episode boundary
             if self.cfg.fail_replay_prob > 0 and fail_buf and np.random.rand() < self.cfg.fail_replay_prob:
                 cur_replay = fail_buf[np.random.randint(len(fail_buf))]
                 fr_stats["replayed"] += 1
