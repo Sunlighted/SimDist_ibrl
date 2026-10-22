@@ -46,7 +46,10 @@ def _rot_between(a, b):
 
 
 class ThreadingExpert:
-    def __init__(self, e, grasp_h=0.010, above=0.08, lift_clear=0.06, pre=0.06, gain=1.0, amp=0.5, rot_amp=0.4,
+    # grasp_h 0.020 (2026-10-22, was 0.010): at 0.010 the open fingertips came within ~1 mm of the table, so a BC-RNN
+    # imitating it hit the table (> 5 N, cell table_impact_force) in 36-48 % of episodes. 0.020: fingertips ~11 mm
+    # clear, 0 table contacts in 40 episodes, strict 300/300 (same as 0.010 and 0.016).
+    def __init__(self, e, grasp_h=0.020, above=0.08, lift_clear=0.06, pre=0.06, gain=1.0, amp=0.5, rot_amp=0.4,
                  noise=0.0, rng=None):
         self.e = e
         self.p = dict(grasp_h=grasp_h, above=above, lift_clear=lift_clear, pre=pre)
