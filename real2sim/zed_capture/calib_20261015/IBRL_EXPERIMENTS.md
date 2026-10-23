@@ -1,5 +1,15 @@
 # IBRL 实验：Threading Robotiq cell（2026-10-20，到另一台机器上跑）
 
+> **2026-10-23: everything below this note is history.** The cell changed under it (10-21: grasp-yaw expert fix, closed
+> Robotiq linkage, gripper contact + force cap; 10-22: stiff object contact, table-relative floor, table impact = failure
+> at 35 N, expert grasp_h 0.020; README "10-21 gripper contact" and the cell yaml). All data / priors / runs named here
+> were made on the old cell and are **deleted** (`threading_robotiq_expert_n1000*`, `assets/bc_rnn_seed1`, every run in
+> `exps/sim2real` before v5). Current: data `threading_robotiq_expert_n3000_v5`, prior
+> `exps/sim2real/threading_robotiq_rnn_bc_n3000v5_h1000_ema_ep6000_seed1/model0.pt`, IBRL
+> `exps/sim2real/ibrl_robotiq_v5_2M_fr_chunk{4,1}_seed1` (fail replay 0.5, prior_chunk 4 / 1, 2M steps);
+> `scripts/run_ibrl_robotiq_arm.sh` defaults to these. E2 (fail replay) beat E1 on the old cell, 0.823 vs 0.757 (1 seed).
+
+
 背景见 `TRAIN_PLAN.md` 阶段 3。现状（curie，GPU 2）：
 - BC-RNN prior：独立 300 局 **0.34**。
 - IBRL 第 1 次（`preload_num_data 10`）：独立 300 局 **0.257**，前 375k 步全是 0。

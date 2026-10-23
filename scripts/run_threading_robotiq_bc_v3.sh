@@ -9,10 +9,10 @@ cd "$(dirname "$0")/.."
 source set_env.sh
 export MUJOCO_GL=egl CUDA_VISIBLE_DEVICES="${GPU:-2}" WANDB_MODE=offline
 PY=/home/Chenyang/.conda/envs/ibrl/bin/python
-DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000_v3/dataset.hdf5}"
+DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5}"
 CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
 CFG="${CFG:-release/cfgs/sim2real/threading_robotiq_state_bc_rnn.yaml}"
-DIR="${DIR:-exps/sim2real/threading_robotiq_rnn_bc_v3_seed1}"
+DIR="${DIR:-exps/sim2real/threading_robotiq_rnn_bc_v5_seed1}"
 echo "=== [$(date '+%F %T')] BC -> $DIR ==="
 $PY train_bc.py --config_path "$CFG" --save_dir "$DIR" --seed "${SEED:-1}" \
     --use_wb 0 --dataset.path "$DATA" ${EXTRA:-}

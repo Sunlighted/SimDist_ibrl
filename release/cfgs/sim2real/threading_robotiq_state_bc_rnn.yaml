@@ -7,11 +7,13 @@
 #     base-frame prop, exec layer, DR -- the same env the demos and IBRL use.
 #   - eval: sigma 0.1 joint init, strict success (= IBRL), fewer evals (the exec layer costs ~19 ms/step).
 # Gate (TRAIN_PLAN): independent 300-episode eval >= 0.3 before IBRL.
+# 2026-10-23: = the chosen prior threading_robotiq_rnn_bc_n3000v5_h1000_ema_ep6000_seed1 (3000 v5 demos, RNN 1000 + EMA,
+#   6000 epochs): independent 300 strict Ta=4 0.613 (table impact 1.3 %), Ta=1 0.450, Ta=8 0.380 (cell at 35 N).
 # NOT a flow prior (CLAUDE.md #17: flow makes IBRL an order of magnitude slower).
 # ============================================================================
 seed: 1
 dataset:
-  path: /user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000/dataset.hdf5
+  path: /user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5
   use_state: 1
   action_horizon: 10
   build_state_chunk: 0
@@ -22,7 +24,7 @@ dataset:
 use_flow: 0
 use_rnn: 1
 rnn_policy:
-  rnn_hidden_dim: 400
+  rnn_hidden_dim: 1000
   rnn_num_layers: 2
   num_modes: 5
   min_std: 0.01
@@ -31,15 +33,15 @@ rnn_policy:
   use_tanh: 1
   pred_horizon: 10
   action_horizon: 8
-  use_ema: 0
-num_epoch: 2000
+  use_ema: 1
+num_epoch: 6000
 epoch_len: 100
 batch_size: 256
 lr: 1e-3
 weight_decay: 0
 use_wb: 0
 num_eval_episode: 50
-eval_period: 250
+eval_period: 500
 val_period: 50
 val_batches: 5
 eval_target_during_training: 0

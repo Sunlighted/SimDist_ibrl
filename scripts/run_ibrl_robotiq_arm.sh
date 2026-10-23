@@ -11,9 +11,9 @@ source set_env.sh
 : "${ARM:?set ARM}"; SEED="${SEED:-1}"; EXTRA="${EXTRA:-}"
 export MUJOCO_GL=egl CUDA_VISIBLE_DEVICES="${GPU:-0}" WANDB_MODE=offline
 PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"
-# 2026-10-21: defaults = the FIXED cell's data and prior (README "10-21 gripper contact"; v1 data / old prior are void)
-DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000_v3/dataset.hdf5}"
-BC="${BC:-exps/sim2real/threading_robotiq_rnn_bc_v3_seed1/model0.pt}"
+# 2026-10-23: defaults = the v5 data and prior (cell with the 10-21 / 10-22 physics fixes; all older data deleted)
+DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5}"
+BC="${BC:-exps/sim2real/threading_robotiq_rnn_bc_n3000v5_h1000_ema_ep6000_seed1/model0.pt}"
 CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
 DIR=exps/sim2real/ibrl_robotiq_${TAG:-v3}_${ARM}_seed${SEED}
 [ -s "$DATA" ] || { echo "FATAL: no demos at $DATA (IBRL_EXPERIMENTS.md §1: copy or regenerate)"; exit 1; }

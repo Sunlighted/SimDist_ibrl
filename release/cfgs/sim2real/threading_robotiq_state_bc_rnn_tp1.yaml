@@ -13,7 +13,7 @@
 # ============================================================================
 seed: 1
 dataset:
-  path: /user_data/Chenyang/simdist_data/threading_robotiq_expert_n1000_v3/dataset.hdf5
+  path: /user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5
   use_state: 1
   action_horizon: 1
   build_state_chunk: 0
