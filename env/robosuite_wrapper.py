@@ -704,6 +704,34 @@ class PixelRobosuite:
             return None
         return np.mean(self.env.sim.data.geom_xpos[ids], axis=0)
 
+    def teleport(self, spec: dict):
+        """Write a Threading OmniReset state (env/omni_reset.py) into the freshly reset sim: needle pose (world), arm
+        joints, the 6 Robotiq joints; all of their velocities zero; then re-latch the controller (= the exec layer's
+        reference arm) on the new joints, exactly as _apply_init_state does. Returns the fresh obs."""
+        m, d = self.env.sim.model, self.env.sim.data
+        rob = self.env.robots[0]
+        nb = m.body_name2id("needle_obj_root")
+        j = m.body_jntadr[nb]
+        a, v = m.jnt_qposadr[j], m.jnt_dofadr[j]
+        from robosuite.utils.transform_utils import mat2quat
+        x, y, z, w = mat2quat(np.asarray(spec["needle_R"]))
+        d.qpos[a:a + 3] = spec["needle_p"]
+        d.qpos[a + 3:a + 7] = [w, x, y, z]
+        d.qvel[v:v + 6] = 0.0
+        d.qpos[rob._ref_joint_pos_indexes] = spec["arm_q"]
+        d.qvel[rob._ref_joint_vel_indexes] = 0.0
+        d.qpos[rob._ref_gripper_joint_pos_indexes] = spec["grip_q"]
+        d.qvel[rob._ref_gripper_joint_vel_indexes] = 0.0
+        # robosuite's Robotiq command is incremental (current_action moves 0.01 per control call): without this the
+        # fingers first open from the reset's command and drop the needle
+        rob.gripper.current_action = np.array(spec["grip_action"], copy=True)
+        self.env.sim.forward()
+        rob.controller.update(force=True)
+        rob.controller.reset_goal()
+        obs = self.env._get_observations(force_update=True)
+        rl_obs, high_res_images = self._extract_images(obs)
+        return rl_obs, high_res_images
+
     def _apply_init_state(self, st: dict):
         """Write a get_init_state() dict into the freshly reset (and DR'd) sim: objects at their base-relative
         pose under THIS episode's base (z kept: they rest on this episode's table), arm at the stored joints."""

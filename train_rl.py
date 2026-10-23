@@ -368,6 +368,10 @@ class MainConfig(common_utils.RunConfig):
     omni_reset_probs: str = ""
     omni_pool_size: int = 200
     omni_perturb_steps: int = 8
+    # faithful UWLab variant (env/omni_reset.py): types resting_grasped / anywhere_grasped / partial_grasped, states
+    # written into the sim (needle + IK arm + dataset grasp) instead of reached by the expert; the grasp dataset =
+    # omni_num_grasps in-hand transforms of the scripted expert's grasps
+    omni_num_grasps: int = 40
     # PegInsertion board reset jitter (env/peg_insertion.py board_pos_noise [m,
     # uniform +- per axis] / board_yaw_noise [deg, uniform +-]), applied to BOTH
     # train and eval env. 0/0 = env_kwargs None = byte-for-byte legacy.
@@ -742,12 +746,40 @@ class Workspace:
             return pool
         from scripts.threading_robotiq_expert import ThreadingExpert
         env, rng = self.train_env, np.random.RandomState(self.cfg.seed + 7919)
+        pool, t_start = {}, time.time()
+        tele = [t for t in types if t.endswith("_grasped")]
+        if tele:                                             # faithful UWLab OmniReset: env/omni_reset.py
+            from env.omni_reset import OmniResetGenerator
+            gen = OmniResetGenerator(env, seeded_reset, rng)
+            print(f"[omni] grasp dataset: {gen.collect_grasps(self.cfg.omni_num_grasps)} grasps "
+                  f"({time.time() - t_start:.0f} s)", flush=True)
+            for typ in tele:
+                pool[typ], tries, why = [], 0, {}
+                while len(pool[typ]) < self.cfg.omni_pool_size and tries < 20 * self.cfg.omni_pool_size:
+                    tries += 1
+                    seed = int(rng.randint(2**31 - 1))
+                    seeded_reset(seed, None)
+                    spec = gen.draw(typ)
+                    if spec is None:
+                        k = gen.why.split(" ")[0]
+                        why[k] = why.get(k, 0) + 1
+                        continue
+                    seeded_reset(seed, None)                 # the clean pass = what training replays
+                    env.teleport(spec)
+                    acts = gen.settle(typ)
+                    if acts is None:
+                        why["settle"] = why.get("settle", 0) + 1
+                        continue
+                    pool[typ].append(dict(seed=seed, init_state=None, spec=spec, actions=acts, t0=len(acts),
+                                          state=env.env.sim.get_state().flatten().copy()))
+                print(f"[omni] {typ}: {len(pool[typ])} states from {tries} resets, rejected {why} "
+                      f"({time.time() - t_start:.0f} s)", flush=True)
+            types = [t for t in types if t not in tele]
         # phase(s) to stop in, per-step stop hazard, perturbation amplitude, max perturbation steps
         spec = {"grasped": (("lift", "coarse"), 1 / 30, 0.5, self.cfg.omni_perturb_steps),
                 "preinsert": (("fine",), 1 / 12, 0.3, self.cfg.omni_perturb_steps),
                 "partial": (("insert",), 1 / 10, 0.1, min(3, self.cfg.omni_perturb_steps))}
         nb = env.env.sim.model.body_name2id("needle_obj_root")
-        pool, t_start = {}, time.time()
         for typ in types:
             phases, hazard, amp, kmax = spec[typ]
             pool[typ], tries = [], 0
@@ -997,6 +1029,8 @@ class Workspace:
         def _replay_entry(e):
             """re-seed the reset and replay e's actions; None if the end state is not bit-exact e['state']"""
             obs, img = _seeded_reset(e["seed"], e["init_state"])
+            if e.get("spec") is not None:                    # faithful OmniReset: written state + hold steps
+                obs, img = self.train_env.teleport(e["spec"])
             term = False
             for a in e["actions"]:
                 obs, _, term, _, img = self.train_env.step(a)
@@ -1025,7 +1059,8 @@ class Workspace:
         if self.cfg.omni_reset_probs:
             for item in self.cfg.omni_reset_probs.split(","):
                 k, v = item.split("=")
-                assert k in ("fresh", "grasped", "preinsert", "partial"), f"omni_reset_probs: unknown type {k}"
+                assert k in ("fresh", "grasped", "preinsert", "partial", "resting_grasped", "anywhere_grasped",
+                             "partial_grasped"), f"omni_reset_probs: unknown type {k}"
                 omni_types.append(k)
                 omni_p = np.r_[omni_p if omni_p is not None else [], float(v)]
             omni_p = omni_p / omni_p.sum()
