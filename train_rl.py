@@ -1,4 +1,5 @@
 import os
+import time
 import sys
 from dataclasses import dataclass, field
 import yaml
@@ -337,6 +338,36 @@ class MainConfig(common_utils.RunConfig):
     fail_replay_prob: float = 0.0
     fail_replay_cap: int = 200
     fail_replay_max_tries: int = 3
+    # MID-EPISODE RESET to just before the needle first pushes the ring (Threading; 2026-10-23, failure anatomy in
+    # calib_20261015/IBRL_EXPERIMENTS.md): at first contact successes and failures look identical (angle 4.8 vs 4.7
+    # deg, 0.6 mm/step); the outcome is decided in the next ~20 steps. With probability mid_reset_prob a training
+    # episode starts from a stored state mid_reset_back_{min,max} steps before an earlier episode's first ring push
+    # (ring centre moved > mid_reset_push_mm vs step 5). The state is rebuilt EXACTLY by re-seeding the reset and
+    # replaying the recorded actions (DR draws and exec-layer internals are not in sim_state; replay is verified
+    # bit-exact against the stored sim_state, mismatches are counted and fall back to a normal reset). Failed fresh
+    # episodes always enter the FIFO buffer, successful ones with prob mid_reset_success_frac (so the critic also sees
+    # the recoveries). Entries retire / drop like fail replay. The remaining time budget is the original one
+    # (horizon - t0). 0 = off (unchanged; the reset path is then byte-for-byte the old one).
+    mid_reset_prob: float = 0.0
+    mid_reset_back_min: int = 5
+    mid_reset_back_max: int = 15
+    mid_reset_push_mm: float = 10.0
+    mid_reset_success_frac: float = 0.25
+    mid_reset_cap: int = 200
+    mid_reset_max_tries: int = 3
+    # OMNIRESET-style reset pool (UWLab omnireset MultiResetManager, adapted to Threading; 2026-10-23): a
+    # policy-independent pool of start states, one per reset type, sampled with these probabilities, e.g.
+    # "fresh=0.25,grasped=0.25,preinsert=0.25,partial=0.25". fresh = the env's own reset (fail replay still applies);
+    # grasped = needle in hand anywhere between lift and the pre-insertion pose; preinsert = needle ~6 cm before the
+    # ring, being aligned; partial = needle partially through the ring (insert phase, before raw success). States
+    # come from the scripted expert (scripts/threading_robotiq_expert.py; used ONLY to generate start states, never
+    # as the prior) stopped at a random step of the phase, then omni_perturb_steps random actions (UWLab perturbs
+    # the grasp pose); kept only if stable/valid (needle lifted, ring not moved, no deep penetration, not succeeded).
+    # Rebuilt by seed + action replay exactly like mid_reset. omni_pool_size entries per type, generated at startup
+    # and saved to <save_dir>/omni_pool.pt. "" = off.
+    omni_reset_probs: str = ""
+    omni_pool_size: int = 200
+    omni_perturb_steps: int = 8
     # PegInsertion board reset jitter (env/peg_insertion.py board_pos_noise [m,
     # uniform +- per axis] / board_yaw_noise [deg, uniform +-]), applied to BOTH
     # train and eval env. 0/0 = env_kwargs None = byte-for-byte legacy.
@@ -700,6 +731,87 @@ class Workspace:
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 
+    def _build_omni_pool(self, types: list, seeded_reset) -> dict:
+        """omni_reset_probs: omni_pool_size start states per type from the scripted expert stopped at a random step
+        of the type's phase + a random perturbation, validated like UWLab's check_reset_state_success. Each entry =
+        (reset seed, actions, end sim state) and is replayed bit-exact by the training loop."""
+        path = os.path.join(self.work_dir, "omni_pool.pt")
+        if os.path.exists(path):
+            pool = torch.load(path, weights_only=False)
+            print(f"[omni] loaded {path}: " + ", ".join(f"{k} {len(v)}" for k, v in pool.items()))
+            return pool
+        from scripts.threading_robotiq_expert import ThreadingExpert
+        env, rng = self.train_env, np.random.RandomState(self.cfg.seed + 7919)
+        # phase(s) to stop in, per-step stop hazard, perturbation amplitude, max perturbation steps
+        spec = {"grasped": (("lift", "coarse"), 1 / 30, 0.5, self.cfg.omni_perturb_steps),
+                "preinsert": (("fine",), 1 / 12, 0.3, self.cfg.omni_perturb_steps),
+                "partial": (("insert",), 1 / 10, 0.1, min(3, self.cfg.omni_perturb_steps))}
+        nb = env.env.sim.model.body_name2id("needle_obj_root")
+        pool, t_start = {}, time.time()
+        for typ in types:
+            phases, hazard, amp, kmax = spec[typ]
+            pool[typ], tries = [], 0
+            while len(pool[typ]) < self.cfg.omni_pool_size and tries < 6 * self.cfg.omni_pool_size:
+                tries += 1
+                seed = int(rng.randint(2**31 - 1))
+                seeded_reset(seed, None)
+                e = env.env
+                ex = ThreadingExpert(e)
+                z0 = e.sim.data.xpos[nb][2]
+                acts, ring5, stopped, term = [], None, False, False
+                for t in range(self.cfg.episode_length - 40):
+                    a, info = ex.act()
+                    in_phase = info["phase"] in phases and not (info["phase"] == "lift" and info["k"] < 5)
+                    if typ == "partial" and in_phase:
+                        in_phase = ex._needle_errors(0.0)[1] < 0           # tip already past the ring centre
+                    if in_phase and rng.rand() < hazard:
+                        stopped = True
+                        break
+                    if info["phase"] in ("hold", "done"):
+                        break
+                    a = torch.tensor(a, dtype=torch.float32)
+                    _, _, term, _, _ = env.step(a)
+                    acts.append(a)
+                    if t == 5:
+                        ring5 = env.ring_centre().copy()
+                    if term:
+                        break
+                if not stopped or term or ring5 is None:
+                    continue
+                for _ in range(rng.randint(0, kmax + 1)):            # UWLab perturbs the sampled grasp pose
+                    a = torch.tensor(np.r_[rng.uniform(-amp, amp, 6), 1.0], dtype=torch.float32)
+                    _, _, term, _, _ = env.step(a)
+                    acts.append(a)
+                    if term:
+                        break
+                if term:
+                    continue
+                # the expert's ref() reads the exec layer's shadow arm and leaves a 1e-13 trace in the dynamics, so a
+                # plain replay is not bit-exact with this pass: the stored state (and its validation) comes from a
+                # clean replay of the actions, which is what the training loop reproduces
+                seeded_reset(seed, None)
+                e = env.env
+                for t, a in enumerate(acts):
+                    _, _, term, _, _ = env.step(a)
+                    if t == 5:
+                        ring5 = env.ring_centre().copy()
+                    if term:
+                        break
+                if term:
+                    continue
+                probe = env._contact_probe()
+                ok = (e.sim.data.xpos[nb][2] - z0 > 0.02 and not e._check_success()
+                      and np.linalg.norm(env.ring_centre() - ring5) < 0.015
+                      and probe["pen_needle_tripod"] < 0.002 and probe["pen_grip_needle"] < 0.003)
+                if ok:
+                    pool[typ].append(dict(seed=seed, init_state=None, actions=acts, t0=len(acts),
+                                          state=e.sim.get_state().flatten().copy()))
+            t0s = [x["t0"] for x in pool[typ]]
+            print(f"[omni] {typ}: {len(pool[typ])} states from {tries} expert runs, t0 median "
+                  f"{np.median(t0s) if t0s else float('nan'):.0f} ({time.time() - t_start:.0f} s)", flush=True)
+        torch.save(pool, path)
+        return pool
+
     def _setup_replay(self):
         use_bc = False
         if self.cfg.mix_rl_rate < 1:
@@ -859,16 +971,142 @@ class Workspace:
         cur_replay = None                                    # the buffer entry this episode replays, if any
         fr_stats = {"replayed": 0, "retired": 0, "dropped": 0}
 
+        # mid-episode reset (mid_reset_prob = 0 -> none of this runs)
+        mid_on = self.cfg.mid_reset_prob > 0
+        if mid_on:
+            assert self.train_env.ring_centre() is not None, "mid_reset_* needs the Threading ring (strict success on)"
+        mid_buf: list[dict] = []
+        cur_mid = None                                       # the mid_buf entry this episode starts from, if any
+        mid_stats = {"replayed": 0, "retired": 0, "dropped": 0, "mismatch": 0}
+        # this episode's record: reset seed + init_state, actions, flattened sim states, ring centres
+        ep_rec: dict = {}
+
+        def _seeded_reset(seed, init_state):
+            rng = np.random.get_state()                      # keep the training RNG stream independent of the seed
+            np.random.seed(seed)
+            out = self.train_env.reset(init_state=init_state)
+            np.random.set_state(rng)
+            return out
+
+        def _start_record(seed, init_state):
+            ep_rec.clear()
+            ep_rec.update(seed=seed, init_state=init_state, t0=0, actions=[],
+                          states=[self.train_env.env.sim.get_state().flatten().copy()],
+                          ring=[self.train_env.ring_centre().copy()])
+
+        def _replay_entry(e):
+            """re-seed the reset and replay e's actions; None if the end state is not bit-exact e['state']"""
+            obs, img = _seeded_reset(e["seed"], e["init_state"])
+            term = False
+            for a in e["actions"]:
+                obs, _, term, _, img = self.train_env.step(a)
+                if term:
+                    break
+            if term or not np.array_equal(self.train_env.env.sim.get_state().flatten(), e["state"]):
+                return None                                  # never expected (replay verified bit-exact 10-23)
+            return obs, img
+
+        def _mid_reset():
+            nonlocal cur_mid
+            e = mid_buf[np.random.randint(len(mid_buf))]
+            out = _replay_entry(e)
+            if out is None:
+                mid_stats["mismatch"] += 1
+                mid_buf.remove(e)
+                return None
+            cur_mid = e
+            mid_stats["replayed"] += 1
+            return out
+
+        # OmniReset-style pool (omni_reset_probs = "" -> none of this runs)
+        omni_types, omni_p, omni_pool = [], None, {}
+        cur_omni = None                                      # reset type of this episode when omni is on
+        omni_stats = {"mismatch": 0}
+        if self.cfg.omni_reset_probs:
+            for item in self.cfg.omni_reset_probs.split(","):
+                k, v = item.split("=")
+                assert k in ("fresh", "grasped", "preinsert", "partial"), f"omni_reset_probs: unknown type {k}"
+                omni_types.append(k)
+                omni_p = np.r_[omni_p if omni_p is not None else [], float(v)]
+            omni_p = omni_p / omni_p.sum()
+            omni_pool = self._build_omni_pool([t for t in omni_types if t != "fresh"], _seeded_reset)
+
+        def _omni_reset():
+            """None -> fresh reset; else (obs, img) from a pool state of the drawn type"""
+            nonlocal cur_omni
+            cur_omni = omni_types[np.random.choice(len(omni_types), p=omni_p)]
+            if cur_omni == "fresh" or not omni_pool.get(cur_omni):
+                cur_omni = "fresh"
+                return None
+            pool = omni_pool[cur_omni]
+            e = pool[np.random.randint(len(pool))]
+            out = _replay_entry(e)
+            if out is None:
+                omni_stats["mismatch"] += 1
+                pool.remove(e)
+                cur_omni = "fresh"
+            return out
+
         def reset_train_env():
-            nonlocal cur_replay
-            cur_replay = None
+            nonlocal cur_replay, cur_mid, cur_omni
+            cur_replay, cur_mid, cur_omni = None, None, None
             if hasattr(self.agent, "reset_prior"):
                 self.agent.reset_prior()          # prior_chunk > 1: no chunk carries over an episode boundary
+            if omni_types:
+                out = _omni_reset()
+                if out is not None:
+                    ep_rec.clear()
+                    return out
+            if not mid_on and not omni_types:
+                if self.cfg.fail_replay_prob > 0 and fail_buf and np.random.rand() < self.cfg.fail_replay_prob:
+                    cur_replay = fail_buf[np.random.randint(len(fail_buf))]
+                    fr_stats["replayed"] += 1
+                    return self.train_env.reset(init_state=cur_replay["state"])
+                return self.train_env.reset()
+            if mid_buf and np.random.rand() < self.cfg.mid_reset_prob:
+                out = _mid_reset()
+                if out is not None:
+                    ep_rec.clear()                           # mid-started episodes do not feed the buffer
+                    return out
+            init_state = None
             if self.cfg.fail_replay_prob > 0 and fail_buf and np.random.rand() < self.cfg.fail_replay_prob:
                 cur_replay = fail_buf[np.random.randint(len(fail_buf))]
                 fr_stats["replayed"] += 1
-                return self.train_env.reset(init_state=cur_replay["state"])
-            return self.train_env.reset()
+                init_state = cur_replay["state"]
+            seed = int(np.random.randint(2**31 - 1))
+            out = _seeded_reset(seed, init_state)
+            if mid_on:
+                _start_record(seed, init_state)
+            return out
+
+        def note_mid_end(success):
+            if not mid_on:
+                return
+            if cur_mid is not None:
+                if success:
+                    mid_buf.remove(cur_mid); mid_stats["retired"] += 1
+                else:
+                    cur_mid["tries"] += 1
+                    if cur_mid["tries"] >= self.cfg.mid_reset_max_tries:
+                        mid_buf.remove(cur_mid); mid_stats["dropped"] += 1
+                return
+            if not ep_rec or (success and np.random.rand() >= self.cfg.mid_reset_success_frac):
+                return
+            ring = np.array(ep_rec["ring"])
+            if len(ring) <= 6:
+                return
+            disp = np.linalg.norm(ring - ring[5], axis=1)    # vs step 5: the tripod settles ~5 mm after reset
+            pushed = np.nonzero(disp > self.cfg.mid_reset_push_mm * 1e-3)[0]
+            if not len(pushed):
+                return
+            t0 = int(pushed[0]) - np.random.randint(self.cfg.mid_reset_back_min, self.cfg.mid_reset_back_max + 1)
+            if t0 < 6:
+                return
+            mid_buf.append(dict(seed=ep_rec["seed"], init_state=ep_rec["init_state"],
+                                actions=ep_rec["actions"][:t0], state=ep_rec["states"][t0], t0=t0,
+                                from_success=bool(success), tries=0))
+            if len(mid_buf) > self.cfg.mid_reset_cap:
+                mid_buf.pop(0)
 
         def note_episode_end(success, init_state):
             if self.cfg.fail_replay_prob <= 0:
@@ -908,6 +1146,10 @@ class Workspace:
             ### env.step ###
             with stopwatch.time("env step"):
                 obs, reward, terminal, success, image_obs = self.train_env.step(action)
+                if ep_rec:                                   # mid_reset: record this fresh episode for replay
+                    ep_rec["actions"].append(action.detach().cpu().reshape(-1).clone())
+                    ep_rec["states"].append(self.train_env.env.sim.get_state().flatten().copy())
+                    ep_rec["ring"].append(self.train_env.ring_centre().copy())
 
             with stopwatch.time("add"):
                 assert isinstance(terminal, bool)
@@ -939,7 +1181,21 @@ class Workspace:
                         replay=self.replay.size(),
                     )
 
-                    note_episode_end(bool(success), ep_init)
+                    started_mid = cur_mid is not None or (cur_omni not in (None, "fresh"))
+                    if not started_mid:                      # a mid-started episode has no initial state to replay
+                        note_episode_end(bool(success), ep_init)
+                    if omni_types:
+                        stat[f"omni/success_{cur_omni}"].append(float(success))
+                        stat["omni/mismatch_total"].append(omni_stats["mismatch"])
+                    note_mid_end(bool(success))
+                    if mid_on:
+                        stat["mid_reset/buffer"].append(len(mid_buf))
+                        stat["mid_reset/is_mid"].append(float(cur_mid is not None))
+                        if cur_mid is not None:
+                            stat["mid_reset/t0"].append(cur_mid["t0"])
+                            stat["mid_reset/mid_success"].append(float(success))
+                        for k, v in mid_stats.items():
+                            stat[f"mid_reset/{k}_total"].append(v)
                     if self.cfg.fail_replay_prob > 0:
                         stat["fail_replay/buffer"].append(len(fail_buf))
                         stat["fail_replay/replayed_total"].append(fr_stats["replayed"])

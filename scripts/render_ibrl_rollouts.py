@@ -33,6 +33,7 @@ def main():
     ap.add_argument("--seeds", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--keyframes", type=int, default=8)
+    ap.add_argument("--bc_ta", type=int, default=0, help="mode bc: re-plan every N steps (0 = the policy's own Ta)")
     args = ap.parse_args()
     import cv2
     import imageio
@@ -43,6 +44,8 @@ def main():
     from common_utils import ibrl_utils as utils
     from env.robosuite_wrapper import PixelRobosuite
     agent, _, env_params = (train_rl.load_model if args.mode == "rl" else train_bc.load_model)(args.weight, "cuda")
+    if args.mode == "bc" and args.bc_ta > 0:
+        agent.Ta = args.bc_ta
     env = PixelRobosuite(**dict(env_params, state_only_no_render=True, hand_init_perturb_joint_sigma=0.1,
                                 record_sim_state=True))
     picked = {}
@@ -69,7 +72,8 @@ def main():
                        lf=m.body_name2id("gripper0_left_inner_finger"), rf=m.body_name2id("gripper0_right_inner_finger"))
             pn0, _, c0, _, _ = _probe(e, ids)
             states = [obs["sim_state"].numpy().copy()]
-            rec = {k: [] for k in ("lift", "tip_d", "rad", "ang", "tdisp", "raw", "bc", "grip", "gcos")}
+            rec = {k: [] for k in ("lift", "tip_d", "rad", "ang", "tdisp", "raw", "bc", "grip", "gcos", "knuckle")}
+            kadr = m.get_joint_qpos_addr("gripper0_finger_joint")
             term, succ_any, queue = False, False, []
             while not term:
                 if not queue:
@@ -94,6 +98,7 @@ def main():
                 rec["ang"].append(ang)
                 rec["tdisp"].append(float(np.linalg.norm(c - c0)))
                 rec["raw"].append(bool(e._check_success()))
+                rec["knuckle"].append(float(d.qpos[kadr]))
         r = dict(success=succ_any, **{k: np.array(v) for k, v in rec.items()})
         bucket = classify(r)
         if getattr(env, "table_impact", False):      # sim2real cell table_impact_force ended the episode
@@ -124,9 +129,9 @@ def main():
             fr = np.concatenate(views, 1)
             info = np.full((44, fr.shape[1], 3), 24, np.uint8)
             k = min(t, len(rec["bc"]) - 1)
-            who = "BC " if rec["bc"][k] else "RL "
+            who = "BC " if (rec["bc"][k] or args.mode == "bc") else "RL "
             line1 = f"seed {s}  t={t}/{len(states) - 1}  {EN[bucket.split()[0]]}  | next action from {who} grip {rec['grip'][k]:+.2f}"
-            line2 = (f"lift {100 * rec['lift'][k]:5.1f} cm  tip->ring {100 * rec['tip_d'][k]:5.1f} cm  "
+            line2 = (f"lift {100 * rec['lift'][k]:5.1f} cm  knuckle {rec['knuckle'][k]:.3f}  tip->ring {100 * rec['tip_d'][k]:5.1f} cm  "
                      f"axis {rec['ang'][k]:4.1f} deg  tripod moved {1e3 * rec['tdisp'][k]:4.0f} mm  "
                      f"grasp |cos(fingers,shaft)| {rec['gcos'][k]:.2f}")
             for i, txt in enumerate((line1, line2)):

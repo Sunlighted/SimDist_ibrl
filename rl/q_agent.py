@@ -379,8 +379,9 @@ class QAgent(nn.Module):
         assert len(keys) == bsize, f"prior_keys {len(keys)} vs batch {bsize}"
         need = [i for i, k in enumerate(keys) if not self._prior_q.get(k)]
         if need:
-            idx = torch.as_tensor(need, device=next(iter(obs.values())).device)
-            chunk = bc_policy.act_chunk({k: v.index_select(0, idx) for k, v in obs.items()}, eval_mode=True)
+            idx = torch.as_tensor(need)
+            chunk = bc_policy.act_chunk({k: v.index_select(0, idx.to(v.device)) for k, v in obs.items()},
+                                        eval_mode=True)
             assert chunk.size(1) >= self.cfg.prior_chunk, (
                 f"prior act_chunk gives {chunk.size(1)} actions < prior_chunk {self.cfg.prior_chunk}")
             for j, i in enumerate(need):

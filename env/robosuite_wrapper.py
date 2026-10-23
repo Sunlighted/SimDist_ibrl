@@ -696,6 +696,14 @@ class PixelRobosuite:
         q = np.array(d.qpos[self.env.robots[0]._ref_joint_pos_indexes]).tolist()
         return {"objects": objs, "q": q}
 
+    def ring_centre(self) -> Optional[np.ndarray]:
+        """Threading: world position of the ring centre (mean of the ring geoms); None for other tasks. Used by the
+        mid-episode reset (train_rl.py mid_reset_*) to find when the needle first pushes the ring."""
+        ids = (self._bindings or {}).get("ring_geom_ids") if self._needs_bindings else None
+        if not ids:
+            return None
+        return np.mean(self.env.sim.data.geom_xpos[ids], axis=0)
+
     def _apply_init_state(self, st: dict):
         """Write a get_init_state() dict into the freshly reset (and DR'd) sim: objects at their base-relative
         pose under THIS episode's base (z kept: they rest on this episode's table), arm at the stored joints."""

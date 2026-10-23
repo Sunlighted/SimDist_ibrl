@@ -9,6 +9,30 @@
 > `exps/sim2real/ibrl_robotiq_v5_2M_fr_chunk{4,1}_seed1` (fail replay 0.5, prior_chunk 4 / 1, 2M steps);
 > `scripts/run_ibrl_robotiq_arm.sh` defaults to these. E2 (fail replay) beat E1 on the old cell, 0.823 vs 0.757 (1 seed).
 
+## v5 cell (2026-10-23)
+
+**fr_chunk4 / fr_chunk1** (fail replay 0.5, prior_chunk 4 / 1): in-training eval plateaus at ~0.72 / ~0.69 from
+~600k (mean of the 50-episode points 600k–1M). Independent 200 episodes at 500k: 0.575 / 0.53 (prior alone 0.61).
+Contact health clean on successes (needle-ring <2 mm in all; table force <35 N).
+
+**Failure anatomy at 500k** (200 episodes each, `scripts/diagnose_threading_robotiq_failures.py`): push the ring
+>4 cm 26-29 %, table impact 6-9 % (mostly after the tripod was knocked over), near-but-not-through 2-8 %, grasp/drop
+4-5 %. At the FIRST ring push (ring centre moved >10 mm vs step 5; ~25 steps after the tip comes within 5 cm)
+successes and failures are indistinguishable: angle 4.8 vs 4.7 deg, shaft-line offset 7.7 vs 8.8 mm, tip speed
+0.6 vs 0.7 mm/step, and 82 % of successes also push the ring >=10 mm. The outcome is decided after contact: failures
+escalate (96 % >4 cm, 35 % end with the needle back on the table) and wrestle until the 400-step timeout. Renders:
+`viz/ibrl_v5_500k_failures/`.
+
+Two new arms on top of fr_chunk4 (one change each), started 10-23 14:20 / 15:40 UTC on GPU 3, 2M steps:
+- **fr_chunk4_mid** (`--mid_reset_prob 0.5`): start 5-15 steps before the first ring push of an earlier (mostly
+  failed) episode of the policy itself. On-policy, narrow.
+- **fr_chunk4_omni** (`--omni_reset_probs fresh=.25,grasped=.25,preinsert=.25,partial=.25 --omni_pool_size 150`):
+  UWLab OmniReset-style policy-independent pool (`~/UWLab/.../omnireset`, `MultiResetManager`, 4 reset types at 25 %);
+  states from the scripted expert stopped at a random step of the phase + random perturbation, validated.
+Both rebuild a state by re-seeding the reset and replaying the actions (DR draws and exec-layer internals are not in
+sim_state); bit-exact (0 mismatches). The expert's `ref()` leaves a 1e-13 trace in the exec layer's shadow arm, so
+pool states are stored from a clean replay, not from the expert pass.
+
 
 背景见 `TRAIN_PLAN.md` 阶段 3。现状（curie，GPU 2）：
 - BC-RNN prior：独立 300 局 **0.34**。
