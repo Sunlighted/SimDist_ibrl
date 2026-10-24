@@ -68,6 +68,11 @@ class ThreadingExpert:
         self.grasp_R = None
         self.insert_dir = None
         self.frozen = None          # (in-hand transform, needle target rotation), fixed at the start of align
+        self.dir_override = None    # insertion direction set by takeover() (else chosen by the tip's side of the ring)
+        body = m.geom_bodyid
+        self.needle_geoms = {g for g in range(m.ngeom) if body[g] == self.nb}
+        self.lf_geoms = {g for g in range(m.ngeom) if body[g] == self.lf}
+        self.rf_geoms = {g for g in range(m.ngeom) if body[g] == self.rf}
 
     # ---------------------------------------------------------------- state
     def meas(self):
@@ -95,6 +100,57 @@ class ThreadingExpert:
     def table_top(self):
         d, m = self.e.sim.data, self.e.sim.model
         return float(d.geom_xpos[self.tid][2] + m.geom_size[self.tid][2])
+
+    def touching(self):
+        """(left finger, right finger) in contact with the needle."""
+        d = self.e.sim.data
+        L = R = False
+        for i in range(d.ncon):
+            c = d.contact[i]
+            for a, b in ((c.geom1, c.geom2), (c.geom2, c.geom1)):
+                if a in self.needle_geoms:
+                    L |= b in self.lf_geoms
+                    R |= b in self.rf_geoms
+        return L, R
+
+    def takeover(self):
+        """Start the phase machine from the CURRENT state instead of the reset (DAgger labels / recovery demos,
+        2026-10-24). Needle held (both fingers on it, gripper commanded closed):
+          shaft already in the ring (tip at/past the ring plane, ring centre < 10 mm off the shaft line) -> insert,
+          continuing from the current depth; tip within 10 cm of the ring -> coarse; else -> lift.
+        Insertion direction = the ring normal the tip points along (the reset's tip-side rule flips once the tip is
+        past the ring plane). Not held: at the grasp pose -> close; low and away from the handle -> rise (straight up,
+        open) so the open fingers do not sweep the needle or tripod; else -> above."""
+        self.k, self.done, self.frozen, self.grasp_R, self.ok_streak = 0, False, None, None, 0
+        self.dir_override = self.insert_dir = None
+        L, R = self.touching()
+        ga = float(np.mean(np.atleast_1d(getattr(self.rob.gripper, "current_action", [-1.0]))))
+        if L and R and ga > 0.3:
+            pn, Rn = self.needle()
+            c, n = self.ring()
+            tip, axis = pn + Rn @ TIP_LOCAL, Rn[:, 1]
+            d_pt = n if float(n @ -axis) > 0 else -n
+            v = c - tip
+            rad = float(np.linalg.norm(v - (v @ axis) * axis))
+            ax_tip = float((tip - c) @ d_pt)
+            if ax_tip > -0.003 and rad < 0.010:
+                self.phase, self.insert_dir = "insert", d_pt
+                self.k = max(0, int(np.ceil((ax_tip + self.p["pre"]) / 0.0015)))
+            elif np.linalg.norm(tip - c) < 0.10:
+                self.phase, self.dir_override = "coarse", d_pt
+            else:
+                self.phase = "lift"
+        else:
+            handle, z_grasp, top = self._grasp_targets()
+            pe, _ = self.meas()
+            xy = float(np.linalg.norm(pe[:2] - handle[:2]))
+            if xy < 0.006 and abs(pe[2] - z_grasp) < 0.006:
+                self.phase = "close"
+            elif pe[2] < top + 0.06 and xy > 0.01:
+                self.phase = "rise"
+            else:
+                self.phase = "above"
+        return self.phase
 
     # ---------------------------------------------------------------- targets
     def _grasp_targets(self):
@@ -127,7 +183,8 @@ class ThreadingExpert:
         c, n = self.ring()
         if self.frozen is None:
             tip = pn + Rn @ TIP_LOCAL
-            self.insert_dir = n if np.dot(n, c - tip) > 0 else -n
+            self.insert_dir = self.dir_override if self.dir_override is not None else (
+                n if np.dot(n, c - tip) > 0 else -n)
             R_des = _rot_between(Rn[:, 1], -self.insert_dir) @ Rn      # body +y: tip -> handle
             self.frozen = (Rn.T @ (pe - pn), Rn.T @ Re, R_des)
         e_in_n_p, e_in_n_R, R_des = self.frozen
@@ -157,10 +214,12 @@ class ThreadingExpert:
         a[6] = -1.0
         info = {"phase": self.phase, "k": self.k}
         nxt = None
-        if self.phase in ("above", "descend", "close", "lift"):
+        if self.phase in ("rise", "above", "descend", "close", "lift"):
             handle, z_grasp, top = self._grasp_targets()
             R_t = self.grasp_R
-            if self.phase == "above":
+            if self.phase == "rise":           # takeover only: straight up, open, current orientation
+                p_t, R_t = np.r_[pe[:2], top + 0.04 + self.p["above"] + TIP_DROP_OPEN], Re
+            elif self.phase == "above":
                 p_t = np.r_[handle[:2], top + 0.04 + self.p["above"] + TIP_DROP_OPEN]
             elif self.phase == "descend":
                 p_t = np.r_[handle[:2], z_grasp]
@@ -172,8 +231,9 @@ class ThreadingExpert:
             err = np.linalg.norm(p_t - pe)
             a[:3] = np.clip(self.gain * (p_t - pr) / POS_SCALE, -self.amp, self.amp)
             a[3:6] = np.clip(_axisangle(R_t @ Rr.T) / ROT_SCALE, -self.rot_amp, self.rot_amp)
-            done_ph = (self.phase == "close" and self.k >= 8) or (self.phase != "close" and (err < 0.004 or self.k >= 60))
-            nxt = {"above": "descend", "descend": "close", "close": "lift", "lift": "coarse"}[self.phase] if done_ph else None
+            done_ph = (self.phase == "close" and self.k >= 8) or (self.phase == "rise" and (err < 0.01 or self.k >= 40)) \
+                or (self.phase not in ("close", "rise") and (err < 0.004 or self.k >= 60))
+            nxt = {"rise": "above", "above": "descend", "descend": "close", "close": "lift", "lift": "coarse"}[self.phase] if done_ph else None
             info["err_mm"] = round(1e3 * err, 1)
         elif self.phase == "coarse":
             # frozen in-hand transform, reference servo: a smooth large move to 6 cm before the ring
