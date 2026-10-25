@@ -366,6 +366,18 @@ class MainConfig(common_utils.RunConfig):
     # Rebuilt by seed + action replay exactly like mid_reset. omni_pool_size entries per type, generated at startup
     # and saved to <save_dir>/omni_pool.pt. "" = off.
     omni_reset_probs: str = ""
+    # ONLINE DAGGER (2026-10-25): after a fresh / fail-replay training episode ends, dagger_k takeover steps t0 ~ U[0, T)
+    # are drawn; the episode's state at t0 is rebuilt bit-exactly (seed + action replay, as mid_reset) and the scripted
+    # expert takes over from there (ThreadingExpert.takeover, scripts/dagger_threading_robotiq.py offline). Successful
+    # takeovers without a table impact go into the demo buffer (bc_replay: the mix_rl_rate demo half of every batch and,
+    # with add_bc_loss, the actor's BC term) and, with dagger_to_rl, the RL replay. Successful episodes are labelled
+    # with prob dagger_success_frac, failed ones always. The expert is a labeller only, never acts in the training
+    # episodes or eval. Takeover steps are NOT counted in global_step (logged as dagger/steps_total). 0 = off.
+    dagger_k: int = 0
+    dagger_success_frac: float = 0.3
+    dagger_to_rl: int = 1
+    dagger_expert_steps: int = 350
+    dagger_bc_capacity: int = 0          # bc_replay capacity in episodes; 0 = replay_buffer_size
     omni_pool_size: int = 200
     omni_perturb_steps: int = 8
     # faithful UWLab variant (env/omni_reset.py): types resting_grasped / anywhere_grasped / partial_grasped, states
@@ -863,6 +875,7 @@ class Workspace:
             use_bc=use_bc,
             save_per_success=self.cfg.save_per_success,
             save_dir=self.cfg.save_dir,
+            bc_replay_size=self.cfg.dagger_bc_capacity,
         )
 
         if self.cfg.preload_num_data:
@@ -1007,6 +1020,12 @@ class Workspace:
         mid_on = self.cfg.mid_reset_prob > 0
         if mid_on:
             assert self.train_env.ring_centre() is not None, "mid_reset_* needs the Threading ring (strict success on)"
+        dagger_on = self.cfg.dagger_k > 0
+        rec_on = mid_on or dagger_on                         # record seed + actions of fresh episodes
+        if dagger_on:
+            assert self.replay.bc_replay is not None, "dagger_k needs a demo buffer (mix_rl_rate < 1 or add_bc_loss)"
+            from scripts.threading_robotiq_expert import ThreadingExpert
+        dagger_stats = {"tried": 0, "ok": 0, "added": 0, "mismatch": 0, "impact": 0, "steps": 0}
         mid_buf: list[dict] = []
         cur_mid = None                                       # the mid_buf entry this episode starts from, if any
         mid_stats = {"replayed": 0, "retired": 0, "dropped": 0, "mismatch": 0}
@@ -1092,7 +1111,7 @@ class Workspace:
                 if out is not None:
                     ep_rec.clear()
                     return out
-            if not mid_on and not omni_types:
+            if not rec_on and not omni_types:
                 if self.cfg.fail_replay_prob > 0 and fail_buf and np.random.rand() < self.cfg.fail_replay_prob:
                     cur_replay = fail_buf[np.random.randint(len(fail_buf))]
                     fr_stats["replayed"] += 1
@@ -1110,7 +1129,7 @@ class Workspace:
                 init_state = cur_replay["state"]
             seed = int(np.random.randint(2**31 - 1))
             out = _seeded_reset(seed, init_state)
-            if mid_on:
+            if rec_on:
                 _start_record(seed, init_state)
             return out
 
@@ -1142,6 +1161,40 @@ class Workspace:
                                 from_success=bool(success), tries=0))
             if len(mid_buf) > self.cfg.mid_reset_cap:
                 mid_buf.pop(0)
+
+        def dagger_takeover(success):
+            """label states of the episode that just ended with the scripted expert's takeover (see dagger_k)"""
+            if not dagger_on or not ep_rec or (success and np.random.rand() >= self.cfg.dagger_success_frac):
+                return
+            T = len(ep_rec["actions"])
+            for t0 in sorted(set(int(t) for t in np.random.randint(0, T, size=self.cfg.dagger_k))):
+                e = dict(seed=ep_rec["seed"], init_state=ep_rec["init_state"], actions=ep_rec["actions"][:t0],
+                         state=ep_rec["states"][t0])
+                out = _replay_entry(e)
+                dagger_stats["tried"] += 1
+                if out is None:
+                    dagger_stats["mismatch"] += 1
+                    continue
+                obs_ = out[0]
+                ex = ThreadingExpert(self.train_env.env)
+                ex.takeover()
+                obses, acts, rews, terms, ok = [obs_], [], [], [], False
+                for _ in range(self.cfg.dagger_expert_steps):
+                    a = torch.from_numpy(ex.act()[0].astype(np.float32))
+                    obs_, r, term, ok, _ = self.train_env.step(a)
+                    obses.append(obs_); acts.append(a); rews.append(r); terms.append(term)
+                    if term:
+                        break
+                dagger_stats["steps"] += len(acts)
+                if not ok:
+                    continue
+                dagger_stats["ok"] += 1
+                if getattr(self.train_env, "table_impact", False):
+                    dagger_stats["impact"] += 1
+                    continue
+                self.replay.add_external_episode(obses, acts, rews, terms, to_rl=bool(self.cfg.dagger_to_rl),
+                                                 to_bc=True)
+                dagger_stats["added"] += 1
 
         def note_episode_end(success, init_state):
             if self.cfg.fail_replay_prob <= 0:
@@ -1223,6 +1276,10 @@ class Workspace:
                         stat[f"omni/success_{cur_omni}"].append(float(success))
                         stat["omni/mismatch_total"].append(omni_stats["mismatch"])
                     note_mid_end(bool(success))
+                    if dagger_on:
+                        dagger_takeover(bool(success))
+                        for k, v in dagger_stats.items():
+                            stat[f"dagger/{k}_total"].append(v)
                     if mid_on:
                         stat["mid_reset/buffer"].append(len(mid_buf))
                         stat["mid_reset/is_mid"].append(float(cur_mid is not None))

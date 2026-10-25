@@ -42,8 +42,10 @@ class ReplayBuffer:
         bc_max_len=-1,
         save_per_success=-1,
         save_dir=None,
+        bc_replay_size=-1,
     ):
         self.replay_size = replay_size
+        self.nstep, self.gamma, self.max_episode_length = nstep, gamma, max_episode_length
 
         self.episode = rela.Episode(nstep, max_episode_length, gamma)
         self.replay = rela.SingleStepTransitionReplay(
@@ -61,7 +63,7 @@ class ReplayBuffer:
             self.bc_replay = rela.SingleStepTransitionReplay(
                 frame_stack=frame_stack,
                 n_step=nstep,
-                capacity=replay_size,
+                capacity=bc_replay_size if bc_replay_size > 0 else replay_size,
                 seed=1,
                 prefetch=3,
                 extra=0.1,
@@ -164,6 +166,24 @@ class ReplayBuffer:
                 action: torch.Tensor = episodes.action["action"][:episode_len, i]
                 ep_data_grp.create_dataset(f"actions", data=action.numpy())
                 ep_data_grp.create_dataset(f"rewards", data=episodes.reward[:episode_len, i].numpy())
+
+    def add_external_episode(self, obses, actions, rewards, terminals, to_rl: bool, to_bc: bool):
+        """push an episode that did not come from the training rollout (online DAgger takeovers): obses has one more
+        entry than actions. Bypasses freeze_bc_replay and leaves num_episode / num_success untouched."""
+        ep = rela.Episode(self.nstep, self.max_episode_length, self.gamma)
+        ep.init({})
+        ep.push_obs(obses[0])
+        for i, a in enumerate(actions):
+            ep.push_action({"action": a})
+            ep.push_reward(float(rewards[i]))
+            ep.push_terminal(float(terminals[i]))
+            if not terminals[i]:
+                ep.push_obs(obses[i + 1])
+        transition = ep.pop_transition()
+        if to_rl:
+            self.replay.add(transition)
+        if to_bc and self.bc_replay is not None:
+            self.bc_replay.add(transition)
 
     def sample(self, batchsize, device):
         return self.replay.sample(batchsize, device)
