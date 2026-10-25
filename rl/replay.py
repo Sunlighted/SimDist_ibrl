@@ -220,6 +220,7 @@ def add_demos_to_replay(
     reward_scale: float,
     record_sim_state: bool,
     is_demo: bool = True,
+    extra_state_keys: tuple = (),
 ):
     f = h5py.File(data_path)
     num_episode: int = len(list(f["data"].keys()))  # type: ignore
@@ -252,7 +253,7 @@ def add_demos_to_replay(
             cfg_path = os.path.join(os.path.dirname(data_path), "env_cfg.json")
             env_cfg = json.load(open(cfg_path, "r"))
             task_name = env_cfg["env_name"]
-            for key in STATE_KEYS[task_name]:
+            for key in list(STATE_KEYS[task_name]) + list(extra_state_keys):
                 state_: np.ndarray = episode["obs"][key]  # type: ignore
                 all_states.append(state_)
             states = np.concatenate(all_states, axis=1)

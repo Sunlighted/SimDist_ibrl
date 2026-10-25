@@ -293,6 +293,19 @@ class SimRefController:
         T[:3, :3], T[:3, 3] = R, p
         return T
 
+    def hidden_state(self):
+        """the reference arm relative to the measured one, base frame (20): grip-site position (3) and rotation
+        vector (3) of ref vs measured, q_ref - q (7), v_ref (7). An action is a delta on the REFERENCE, so without
+        this the policy cannot tell what its next action will do (the ref leads the arm by ~14 mm median). The deploy
+        ReferenceArm (policy_server) has the same q_ref / v_ref."""
+        sm, sd = self.shadow.model._model, self.shadow.data._data
+        p_r, R_r = site_pose(sm, sd, self.sid, self.jidx, self.q_ref)
+        d = self.sim.data
+        p_m, R_m = np.array(d.site_xpos[self.sid]), np.array(d.site_xmat[self.sid]).reshape(3, 3)
+        Rb = np.array(d.body_xmat[self.robot_base_id]).reshape(3, 3)
+        return np.concatenate([Rb.T @ (p_r - p_m), Rb.T @ _quat2axisangle_of(R_r @ R_m.T),
+                               self.q_ref - np.array(d.qpos[self.jidx]), self.v_ref])
+
     # ---------------------------------------------------------------- robosuite API
     def set_goal(self, action, set_pos=None, set_ori=None):
         cfg = self.cfg

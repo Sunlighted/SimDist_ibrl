@@ -150,6 +150,11 @@ STATE_SHAPE["Threading_Enlarged"] = (37,)
 STATE_SHAPE["Threading_RealCell"] = (37,)
 # Robotiq cell: gripper_qpos is cut to the 2 driver joints in the class => still 37
 STATE_SHAPE["Threading_RealCellRobotiq"] = (37,)
+# exec_obs: the execution layer's hidden reference-arm state (SimRefController.hidden_state, 20) + the last action (7),
+# appended as the LAST state key so state[:37] is unchanged (a prior trained without it reads that prefix)
+EXEC_OBS_KEY = "exec_ref"
+EXEC_OBS_DIM = 27
+EXEC_OBS_SCALE = np.array([10.0] * 13 + [1.0] * 7)     # m / rad deltas of ~1e-2 -> ~1e-1; v_ref (rad/s) as is
 # Register the custom Threading variants with robosuite in EVERY process that
 # builds this wrapper. A dataset converted from Threading_RealCell demos stores
 # that env_name, and train_bc's in-training eval (including the mp eval worker
@@ -216,6 +221,8 @@ class PixelRobosuite:
         # reads the 37-dim state to produce V_src labels, and the sequence buffer
         # stores it alongside the frames. Costs 37 floats/step.
         extra_state: bool = False,
+        # the execution layer's hidden state in obs["state"] (EXEC_OBS_*); needs a cell with exec_layer
+        exec_obs: bool = False,
     ):
         assert isinstance(camera_names, list)
         self.camera_names = camera_names
@@ -306,6 +313,12 @@ class PixelRobosuite:
         self.end_on_success = end_on_success
         self.use_state = use_state
         self.state_keys = STATE_KEYS[env_name]
+        self.exec_obs = bool(exec_obs)
+        if self.exec_obs:
+            assert use_state and state_stack == 1, "exec_obs: state only, no state stacking"
+            assert getattr(self.env, "exec_layer", None) is not None, "exec_obs needs a cell with an execution layer"
+            self.state_keys = list(self.state_keys) + [EXEC_OBS_KEY]
+        self._last_action = np.zeros(len(self.env.action_spec[0]))
         self.prop_keys = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
         self.flip_image = flip_image
 
@@ -319,6 +332,8 @@ class PixelRobosuite:
             state_base = STATE_SHAPE[env_name][0]
         else:
             state_base = self._infer_state_dim()
+        if self.exec_obs and env_name in STATE_SHAPE:
+            state_base += EXEC_OBS_DIM
         self._state_shape: tuple[int] = (state_base * state_stack,)
         self.prop_shape: tuple[int] = (PROP_DIM * prop_stack,)
         self.device = device
@@ -606,6 +621,9 @@ class PixelRobosuite:
         # since every trainer slices prop = state[:PROP_DIM]. No-op for "world".
         if self._s2r_active:
             apply_prop_frame(self.env.sim, self.sim2real, obs)
+        if self.exec_obs:
+            obs[EXEC_OBS_KEY] = np.concatenate([self.env.exec_layer.hidden_state() * EXEC_OBS_SCALE,
+                                                self._last_action])
 
         high_res_images = {}
         rl_obs = {}
@@ -664,6 +682,8 @@ class PixelRobosuite:
             for key in DEFAULT_STATE_KEYS:
                 env_key = "object-state" if key == "object" else key
                 rl_obs[key] = torch.from_numpy(obs[env_key])
+            if self.exec_obs:
+                rl_obs[EXEC_OBS_KEY] = torch.from_numpy(obs[EXEC_OBS_KEY].astype(np.float32))
 
         return rl_obs, high_res_images
 
@@ -766,6 +786,7 @@ class PixelRobosuite:
         self.terminal = False
         self.past_obses.clear()
         self.past_actions.clear()
+        self._last_action = np.zeros_like(self._last_action)
         for _ in range(self.cond_action):
             self.past_actions.append(torch.zeros(self.action_dim))
 
@@ -888,6 +909,7 @@ class PixelRobosuite:
         for i in range(num_action):
             self.time_step += 1
             obs, step_reward, terminal, _ = self.env.step(actions[i])
+            self._last_action = np.clip(np.asarray(actions[i], np.float64), -1.0, 1.0)
             # NOTE: extract images every step for potential obs stacking
             # this is not efficient
             curr_rl_obs, curr_high_res_images = self._extract_images(obs)

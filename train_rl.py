@@ -13,7 +13,7 @@ from tqdm import tqdm
 import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
-from env.robosuite_wrapper import PixelRobosuite
+from env.robosuite_wrapper import PixelRobosuite, EXEC_OBS_DIM, EXEC_OBS_KEY
 from env.domain_shift import DomainShiftConfig, InitDistConfig
 from env.strict_success import StrictSuccessConfig
 from rl.q_agent import QAgent, QAgentConfig
@@ -49,6 +49,31 @@ class FrozenAgentBCPolicy(torch.nn.Module):
     def act(self, obs, *, eval_mode: bool = True, stddev: float = 0.0, cpu: bool = True):
         src_obs = {k: v for k, v in obs.items() if k != "feat"}
         return self.agent.act(src_obs, eval_mode=True, stddev=0.0, cpu=cpu)
+
+
+class StatePrefixPolicy(torch.nn.Module):
+    """A BC prior trained without exec_obs, in a run with it: the reference-arm state is appended LAST to
+    obs["state"] (env/robosuite_wrapper.py EXEC_OBS_*), so the prior reads the unchanged prefix state[..., :dim]."""
+
+    def __init__(self, policy: torch.nn.Module, dim: int):
+        super().__init__()
+        self.policy = policy
+        self.dim = dim
+
+    def _obs(self, obs):
+        return dict(obs, state=obs["state"][..., : self.dim])
+
+    def act(self, obs, **kwargs):
+        return self.policy.act(self._obs(obs), **kwargs)
+
+    def act_chunk(self, obs, **kwargs):
+        return self.policy.act_chunk(self._obs(obs), **kwargs)
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.policy, name)
 
 
 def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig",
@@ -337,6 +362,11 @@ class MainConfig(common_utils.RunConfig):
     # state leaves it when it succeeds ("retired") or after fail_replay_max_tries failed replays. 0 = off (unchanged).
     fail_replay_prob: float = 0.0
     fail_replay_cap: int = 200
+    # EXECUTION-LAYER STATE in the obs (2026-10-25): the cell's exec layer makes an action a delta on a hidden reference
+    # arm; with it off IBRL reaches 0.90 (325-500k) vs 0.57 with it on. 1 = append the reference-arm state + last action
+    # (27) to obs["state"] for actor and critic; the BC prior keeps reading state[:37]. Preload demos need obs/exec_ref
+    # (scripts/add_exec_obs_to_demos.py). 0 = off (unchanged).
+    exec_obs: int = 0
     fail_replay_max_tries: int = 3
     # MID-EPISODE RESET to just before the needle first pushes the ring (Threading; 2026-10-23, failure anatomy in
     # calib_20261015/IBRL_EXPERIMENTS.md): at first contact successes and failures look identical (angle 4.8 vs 4.7
@@ -609,6 +639,8 @@ class Workspace:
         if cfg.bc_policy:
             bc_policy, _, bc_env_params = train_bc.load_model(cfg.bc_policy, "cuda")
             assert bc_env_params["obs_stack"] == self.eval_env_params["obs_stack"]
+            if cfg.exec_obs:
+                bc_policy = StatePrefixPolicy(bc_policy, self.train_env.observation_shape[0] - EXEC_OBS_DIM)
 
             self.agent.add_bc_policy(copy.deepcopy(bc_policy))
             self.bc_policy = bc_policy
@@ -721,6 +753,7 @@ class Workspace:
             state_only_no_render=bool(self.cfg.state_only_no_render),
             stage_reward=self.cfg.stage_reward,
             sim2real=s2r,
+            exec_obs=bool(self.cfg.exec_obs),
             env_kwargs=self._board_env_kwargs(),
         )
         self.eval_env_params = dict(
@@ -744,6 +777,7 @@ class Workspace:
             state_only_no_render=bool(self.cfg.state_only_no_render),
             sim2real=s2r,
             env_kwargs=self._board_env_kwargs(),
+            exec_obs=bool(self.cfg.exec_obs),
         )
         self.eval_env = PixelRobosuite(**self.eval_env_params)  # type: ignore
 
@@ -890,6 +924,7 @@ class Workspace:
                 prop_stack=self.prop_stack,
                 reward_scale=self.cfg.env_reward_scale,
                 record_sim_state=bool(self.cfg.save_per_success > 0),
+                extra_state_keys=(EXEC_OBS_KEY,) if self.cfg.exec_obs else (),
             )
         if self.cfg.freeze_bc_replay:
             assert self.cfg.save_per_success <= 0, "cannot save a non-growing replay"
@@ -1463,7 +1498,11 @@ def load_model(weight_file, device):
     state_dict = torch.load(weight_file)
     agent.load_state_dict(state_dict)
 
-    if cfg.bc_policy:
+    if cfg.bc_policy and cfg.exec_obs:
+        # the prior's own env (no exec_obs) gives its input size; it reads the state prefix
+        bc_policy, _, _ = train_bc.load_model(cfg.bc_policy, device)
+        agent.add_bc_policy(StatePrefixPolicy(bc_policy, eval_env.observation_shape[0] - EXEC_OBS_DIM))
+    elif cfg.bc_policy:
         bc_policy = train_bc._load_model(cfg.bc_policy, eval_env, device)
         agent.add_bc_policy(bc_policy)
 
