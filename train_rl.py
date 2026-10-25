@@ -121,6 +121,9 @@ def load_frozen_agent(weight_file: str, env: PixelRobosuite, cfg: "MainConfig",
         for a in attrs
         if getattr(src_cfg, a) != getattr(cfg, a)
     ]
+    # exec_obs changes the state layout (37 -> 64): the env must be built with the source's value
+    if bool(getattr(src_cfg, "exec_obs", 0)) != bool(getattr(cfg, "exec_obs", 0)):
+        mismatches.append(("exec_obs", src_cfg.exec_obs, getattr(cfg, "exec_obs", 0)))
     if mismatches:
         detail = ", ".join(f"{a}: source={s} vs run={t}" for a, s, t in mismatches)
         raise ValueError(
@@ -211,8 +214,10 @@ def attach_ibrl_prior(agent: QAgent, weight_file: str, env: PixelRobosuite, devi
     )
     if src_cfg.bc_policy:
         bc_policy, _, _ = train_bc.load_model(src_cfg.bc_policy, device)
+        if src_cfg.exec_obs:        # a prior trained without exec_obs reads the state prefix
+            bc_policy = StatePrefixPolicy(bc_policy, env.state_shape[0] - EXEC_OBS_DIM)
         agent.add_bc_policy(copy.deepcopy(bc_policy))
-        return f"BC head <- {src_cfg.bc_policy}"
+        return f"BC head <- {src_cfg.bc_policy}" + (" (state prefix, exec_obs)" if src_cfg.exec_obs else "")
     if src_cfg.sgft_source_agent:
         prior_agent = load_frozen_agent(src_cfg.sgft_source_agent, env, src_cfg, device)
         agent.add_bc_policy(FrozenAgentBCPolicy(prior_agent))

@@ -461,6 +461,8 @@ class AdaptWorkspace:
         stage1_dir = os.path.dirname(cfg.stage1_ckpt)
         stage1_cfg_path = os.path.join(stage1_dir, "cfg.yaml")
         self.base_cfg: MainConfig = pyrallis.load(MainConfig, open(stage1_cfg_path, "r"))  # type: ignore
+        # the prop slices below (state[:, :PROP_DIM]) do not know the execution-layer block yet
+        assert not self.base_cfg.exec_obs, "stage-1 with exec_obs: adapt does not support it yet (prop_from_state)"
         # FORCE MPPI for adaptation rollout + eval (stage-1 may have used the policy head)
         self.base_cfg.simdist.use_planner = 1
         # ORIGINAL SimDist MPPI recipe (broad search), defined once in

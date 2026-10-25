@@ -173,6 +173,16 @@ PROP_KEYS = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 PROP_DIM = 9
 
 
+def prop_from_state(states, exec_obs: bool = False):
+    """What every trainer feeds the encoder as `prop`, sliced from the stored state: state[..., :PROP_DIM], plus
+    (exec_obs) the execution-layer block, which is the LAST EXEC_OBS_DIM dims of the state. Same order as the env's
+    rl_obs["prop"]. Works on numpy arrays and torch tensors."""
+    if not exec_obs:
+        return states[..., :PROP_DIM]
+    cat = np.concatenate if isinstance(states, np.ndarray) else torch.cat
+    return cat([states[..., :PROP_DIM], states[..., -EXEC_OBS_DIM:]], -1)
+
+
 class PixelRobosuite:
     def __init__(
         self,
@@ -314,12 +324,16 @@ class PixelRobosuite:
         self.use_state = use_state
         self.state_keys = STATE_KEYS[env_name]
         self.exec_obs = bool(exec_obs)
+        self.prop_keys = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
         if self.exec_obs:
-            assert use_state and state_stack == 1, "exec_obs: state only, no state stacking"
+            # pixel runs too (extra_state): it is proprioception on the robot as well (policy_server's ReferenceArm),
+            # so it goes into prop, after the 9 dims (= prop_from_state on the stored state)
+            assert (use_state or self.extra_state) and state_stack == 1 and prop_stack == 1, \
+                "exec_obs: a state vector, no state / prop stacking"
             assert getattr(self.env, "exec_layer", None) is not None, "exec_obs needs a cell with an execution layer"
             self.state_keys = list(self.state_keys) + [EXEC_OBS_KEY]
+            self.prop_keys = self.prop_keys + [EXEC_OBS_KEY]
         self._last_action = np.zeros(len(self.env.action_spec[0]))
-        self.prop_keys = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
         self.flip_image = flip_image
 
         self.resize_transform = None
@@ -335,7 +349,7 @@ class PixelRobosuite:
         if self.exec_obs and env_name in STATE_SHAPE:
             state_base += EXEC_OBS_DIM
         self._state_shape: tuple[int] = (state_base * state_stack,)
-        self.prop_shape: tuple[int] = (PROP_DIM * prop_stack,)
+        self.prop_shape: tuple[int] = ((PROP_DIM + (EXEC_OBS_DIM if self.exec_obs else 0)) * prop_stack,)
         self.device = device
 
         self.time_step = 0

@@ -60,7 +60,7 @@ import pyrallis  # noqa: E402
 
 import train_rl  # noqa: E402
 import train_bc  # noqa: E402
-from env.robosuite_wrapper import PixelRobosuite  # noqa: E402
+from env.robosuite_wrapper import PixelRobosuite, EXEC_OBS_DIM  # noqa: E402
 from env.domain_shift import DomainShiftConfig  # noqa: E402
 from env.sim2real import capture_model_state, model_state_layout  # noqa: E402
 from common_utils import ibrl_utils as utils  # noqa: E402
@@ -268,6 +268,8 @@ def build_source_env(cfg, hand_init_sigma, domain_shift=None, rl_cameras=(),
         # speedup -- but it is only legal with no cameras (it asserts use_state and
         # renders nothing). Must be OFF for the pixel arm.
         state_only_no_render=not rl_cameras,
+        # the execution layer's hidden state in obs["state"] (and in prop) when the expert was trained with it
+        exec_obs=bool(getattr(cfg, "exec_obs", 0)),
     )
     # SIM-TO-REAL cell (env/sim2real.py), exactly as train_rl.Workspace applies
     # it. Without this the rollouts silently happen on the ORIGINAL arena (0.8 m
@@ -398,6 +400,8 @@ def rollout_trajectories(env, expert_agent, subopt_agents, value_agent, rng,
         steps_left = sample_interval(noise_on)
 
         obs, _img = env.reset()
+        if hasattr(pol, "reset_prior"):
+            pol.reset_prior()            # IBRL prior_chunk > 1: no chunk carries over an episode boundary
         states, actions, rewards, eflags = [], [], [], []
         frames = {c: [] for c in cams}   # index-aligned with `states`
         sim_states = []                  # ditto; empty unless --store_sim_state
@@ -744,7 +748,12 @@ def _load_all(args, ckpts):
             assert bc_path, (
                 "--expert_hybrid 1 needs a prior, but the expert cfg has no "
                 "bc_policy / sgft_source_agent and --expert_bc_policy was not given.")
-            bc_policy = train_bc._load_model(bc_path, env, "cuda")
+            if cfg.exec_obs:
+                # a prior trained without exec_obs reads the state prefix, as in train_rl.Workspace
+                bc_policy, _, _ = train_bc.load_model(bc_path, "cuda")
+                bc_policy = train_rl.StatePrefixPolicy(bc_policy, env.state_shape[0] - EXEC_OBS_DIM)
+            else:
+                bc_policy = train_bc._load_model(bc_path, env, "cuda")
             for p in bc_policy.parameters():
                 p.requires_grad_(False)
             bc_policy.train(False)

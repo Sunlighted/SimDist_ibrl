@@ -38,7 +38,7 @@ from tqdm import tqdm
 import common_utils
 from common_utils import ibrl_utils as utils
 from evaluate import run_eval, run_eval_mp
-from env.robosuite_wrapper import PixelRobosuite, PROP_DIM
+from env.robosuite_wrapper import PixelRobosuite, PROP_DIM, prop_from_state
 from env.domain_shift import DomainShiftConfig, InitDistConfig
 from env.strict_success import StrictSuccessConfig
 from rl.simdist_agent import SimDistAgent, SimDistConfig
@@ -63,6 +63,11 @@ class MainConfig(common_utils.RunConfig):
     rl_camera: str = "robot0_eye_in_hand"
     obs_stack: int = 1
     prop_stack: int = 1
+    # The execution layer's hidden reference-arm state + last action (env/robosuite_wrapper.py EXEC_OBS_*), for a
+    # source expert trained with train_rl.py --exec_obs 1 (must match its cfg). It is appended to obs["state"] (the
+    # teacher's input) AND to prop (the world model's encoder): it is proprioception on the robot too
+    # (policy_server's ReferenceArm). Needs a cell with an execution layer. 0 = off (unchanged).
+    exec_obs: int = 0
     # SIM-TO-REAL cell (env/sim2real.py), e.g.
     # release/cfgs/sim2real/threading_real_cell.yaml. Applied to BOTH the train
     # and the eval env, exactly as train_rl.py does it. "" = off.
@@ -414,6 +419,7 @@ class Workspace:
             # robosuite's EGL device selection cannot parse. Default 0 keeps the
             # old rendering path byte-for-byte.
             state_only_no_render=bool(self.cfg.state_only_no_render),
+            exec_obs=bool(self.cfg.exec_obs),
         )
         if self.cfg.board_pos_noise or self.cfg.board_yaw_noise:
             common_env["env_kwargs"] = dict(board_pos_noise=self.cfg.board_pos_noise,
@@ -465,6 +471,8 @@ class Workspace:
         # and NO action history, trains happily, and is nothing like the intended
         # arm. (Caught exactly this on the first history config.)
         _ps, _ca = int(self.cfg.prop_stack), int(self.cfg.cond_action)
+        # rl/history.py builds the history from state[:, :PROP_DIM]; it does not know the exec_obs block
+        assert not (self._hist_k > 0 and self.cfg.exec_obs), "exec_obs with history_length > 0 is not supported"
         if self._hist_k > 0:
             assert _ps == self._hist_k and _ca == self._hist_k, (
                 f"history_length={self._hist_k} requires prop_stack and "
@@ -730,7 +738,7 @@ class Workspace:
         if HISTORY_KEY in obs:
             obs["prop"] = obs.pop(HISTORY_KEY)   # history replaces the bare prop
         else:
-            obs["prop"] = states[..., :PROP_DIM]
+            obs["prop"] = prop_from_state(states, bool(self.cfg.exec_obs))
         return obs
 
     # --------------------------------------- stage 1: offline distill (方案 B)
