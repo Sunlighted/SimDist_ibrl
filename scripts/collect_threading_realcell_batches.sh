@@ -104,7 +104,7 @@ for b in $BATCH_IDS; do
       RUN="$RUN" EXPERT="$EXPERT" OUT="$out" CELL="$CELL" \
       bash scripts/generate_simdist_data_threading.sh --flush_every 250 \
       --rl_cameras "$CAMS" --rl_image_size "$RL_IMAGE_SIZE" \
-      --jpeg_quality "$JPEG_Q" --store_sim_state "$STORE_STATE" \
+      --jpeg_quality "$JPEG_Q" --store_sim_state "$STORE_STATE" --sim2real_cell "$CELL" \
       > "logs/${LOG_TAG}_gen_b${b}.log" 2>&1 < /dev/null
   rc=$?
   [ $rc -eq 0 ] || echo "[batches] batch $b exited rc=$rc (likely a guard kill) -- salvaging"

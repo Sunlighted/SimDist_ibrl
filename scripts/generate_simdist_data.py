@@ -700,6 +700,9 @@ def resolve_domain_shift(args, cfg):
 def _load_all(args, ckpts):
     """Build the env + load expert and sub-optimal agents. Returns
     (env, env_params, expert_agent, subopt_agents)."""
+    if getattr(args, "sim2real_cell", ""):
+        # spawn workers re-import this module, so main()'s override does not reach them: install it here too
+        _CELL_OVERRIDE["path"] = args.sim2real_cell
     cfg = pyrallis.load(  # type: ignore
         train_rl.MainConfig, open(os.path.join(os.path.dirname(args.expert), "cfg.yaml"), "r"))
     # spawn-safe: `args` is pickled into each worker, so每个进程各自设置一次
