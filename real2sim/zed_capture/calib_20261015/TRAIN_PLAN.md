@@ -59,6 +59,14 @@
 
 ## 阶段 4：pixel 数据 + SimDist stage-1（约 3–4 天，集群）
 
+> **2026-10-25（exec_obs 线）**：IBRL 平台期的原因是执行层的隐藏状态（参考臂超前实测臂约 14 mm）。修法 `train_rl.py --exec_obs 1`
+> （27 维：参考臂与实测臂的末端位姿差、q_ref−q、v_ref、上一步动作），两个 seed 在 325–375k 达到 0.89 / 0.88。
+> stage-1 里这 27 维同样进 world model 的 prop（9 → 36）：它在真机上也是本体感知（ReferenceArm 是我们自己的软件）。
+> 全流程 `scripts/pipeline_threading_robotiq_stage1.sh`：门槛（300 局 ≥ 0.9）→ 冻结专家和更早的 snapshot →
+> 两路相机 8×4500 条 → stage-1（`threading_robotiq_pixel_simdist_r18_224.yaml`）→ MPPI 300 局。
+> 「两个相机差约 1 cm / 9°」实为场景相机拟合 needle yaw 的偏差（README 10-17），不是外参误差 ⇒ 按现有相机 DR 采，不阻塞。
+> ⚠️ 部署侧 `policy_server` 还要输出同样的 27 维；`train_simdist_adapt.py` 遇到 exec_obs 会直接 assert。
+
 - 用 state 专家采 pixel 数据：cell 的视觉 DR（相机位姿 / 光照 / 背景照片 / 颜色）；存 `sim_state` + `model_state`（重放契约，infra §14e）。
 - 配方按 CLAUDE.md 的 PIXEL 决定：`resnet18_pretrained`@224，**只用 random shift 增广**，`dynens_h5`，anchor 关。
 - 门槛：source 域（sim）MPPI ≥ 0.9。
