@@ -98,7 +98,7 @@ def recv_msg(sock):
 
 
 # --------------------------------------------------------------------- policy
-def load_agent(ckpt, device):
+def load_agent(ckpt, device, use_planner=0, original_mppi=0, planner_set=""):
     """Rebuild the SimDistAgent from <ckpt dir>/cfg.yaml WITHOUT importing
     train_simdist (whose import chain drags in train_rl/train_bc, diffusers and the
     compiled `rela` replay extension -- none of which inference needs)."""
@@ -121,6 +121,20 @@ def load_agent(ckpt, device):
                          device=device)
     agent.load_state_dict(torch.load(ckpt, map_location=device))
     agent = agent.to(device).eval()
+    # MPPI (default: the policy head, as the ckpt's cfg says): the same overrides as evaluate/eval.py
+    if original_mppi or planner_set or use_planner:
+        from rl.simdist_planner import MppiPlanner, apply_original_recipe
+        if original_mppi:
+            apply_original_recipe(agent.cfg.planner)
+        for kv in filter(None, planner_set.split(",")):
+            k, v = kv.split("=")
+            old = getattr(agent.cfg.planner, k.strip())
+            setattr(agent.cfg.planner, k.strip(), type(old)(v))
+        agent.cfg.use_planner = 1
+        agent.planner = MppiPlanner(agent.model, agent.cfg.planner, agent.action_dim, device=device)
+        print(f"[server] MPPI{' (ORIGINAL SimDist recipe)' if original_mppi else ''}: {agent.cfg.planner}", flush=True)
+    else:
+        print("[server] policy head (no planner)", flush=True)
 
     class _Cfg:                                      # the few fields the server reads
         task_name = raw["task_name"]
@@ -436,7 +450,7 @@ class Server:
             else:
                 self.script = "grasp"                 # built once the reference arm exists (below)
         else:
-            self.agent, self.cfg = load_agent(a.ckpt, a.device)
+            self.agent, self.cfg = load_agent(a.ckpt, a.device, a.use_planner, a.original_mppi, a.planner_set)
             rl_cameras = self.agent.rl_cameras
         self.S = int(self.cfg.rl_image_size)
         self.exec_obs = bool(getattr(self.cfg, "exec_obs", False))
@@ -821,6 +835,9 @@ def build_parser():
                     help="HARD cap on how far the commanded TCP may lead the measured one (m)")
     ap.add_argument("--jpeg_reduce", type=int, default=2, choices=(1, 2, 4),
                     help="decode JPEGs at 1/r resolution (2: 37 -> ~10 ms/step, same 224 image)")
+    ap.add_argument("--use_planner", type=int, default=0, help="1 = MPPI with the ckpt cfg's planner")
+    ap.add_argument("--original_mppi", type=int, default=0, help="1 = MPPI, ORIGINAL SimDist recipe (as eval.py)")
+    ap.add_argument("--planner_set", default="", help="MPPI with planner overrides k=v,k=v (as eval.py)")
     ap.add_argument("--save_dir", default="", help="log steps.jsonl + policy-input images")
     ap.add_argument("--save_every", type=int, default=5)
     return ap
