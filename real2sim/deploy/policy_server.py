@@ -13,6 +13,9 @@ Everything that must match training lives on THIS side:
             45 deg flange offset for free. Frame = the cell's prop_frame: "base" on
             the Threading Robotiq cell (FK(q), no calibration in it), sim world on
             PegInsertion_D0. Robotiq: the ONE real knuckle angle -> both sim drivers.
+            exec_obs ckpts (cfg exec_obs: 1): + 27 dims = the reference arm below vs the measured
+            arm (ReferenceArm.exec_obs, the same features as env/exec_layer.py hidden_state) and the
+            last action; needs --action_map sim_ref. Parity: scripts/test_policy_server_exec_obs.py.
   action  : the policy's 7-d output is an OSC_POSE delta (+-5 cm, +-0.5 rad per
             50 ms step, world frame, kp 150) + gripper. It is NOT turned into a pose
             target by IK. Instead a REFERENCE copy of the sim arm (object collisions
@@ -103,7 +106,7 @@ def load_agent(ckpt, device):
     import torch
     import yaml
     from rl.simdist_agent import SimDistAgent, SimDistConfig
-    from env.robosuite_wrapper import PROP_DIM
+    from env.robosuite_wrapper import EXEC_OBS_DIM, PROP_DIM
 
     raw = yaml.safe_load(open(os.path.join(os.path.dirname(ckpt), "cfg.yaml")))
     assert not raw["use_state"], "this server is for the PIXEL arm"
@@ -113,7 +116,9 @@ def load_agent(ckpt, device):
     if getattr(sd.world_model, "aux_state_coef", 0.0) > 0:
         sd.world_model.aux_state_dim = 37            # strict load needs the head
     S = int(raw["rl_image_size"])
-    agent = SimDistAgent(False, (3, S, S), (PROP_DIM,), 7, raw["rl_camera"], sd, device=device)
+    exec_obs = bool(raw.get("exec_obs", 0))        # prop = [prop(9), exec_ref(27)] (env/robosuite_wrapper.py)
+    agent = SimDistAgent(False, (3, S, S), (PROP_DIM + (EXEC_OBS_DIM if exec_obs else 0),), 7, raw["rl_camera"], sd,
+                         device=device)
     agent.load_state_dict(torch.load(ckpt, map_location=device))
     agent = agent.to(device).eval()
 
@@ -123,6 +128,7 @@ def load_agent(ckpt, device):
         rl_camera = raw["rl_camera"]
         sim2real_cell = raw.get("sim2real_cell") or ""
         simdist = sd
+    _Cfg.exec_obs = exec_obs
     return agent, _Cfg
 
 
@@ -318,6 +324,23 @@ class ReferenceArm:
     def ref_reset(self):
         self.q_ref, self.v_ref = None, np.zeros(7)
 
+    def exec_obs(self, q_real, last_action):
+        """The ckpt's exec_obs block (env/robosuite_wrapper.py EXEC_OBS_*): SimRefController.hidden_state() of this
+        reference vs the measured q -- grip-site position and rotation vector of ref vs measured in the base frame,
+        q_ref - q, v_ref -- scaled by EXEC_OBS_SCALE, then the last (clipped) action. Call it BEFORE step_ref: the
+        env reads it after the previous step, i.e. before the next resync check. No reference yet = it would be
+        seeded at q_real = zeros, as after the env's reset_goal. Overwrites the sim's arm qpos (site_pose)."""
+        from env.exec_layer import _quat2axisangle_of
+        from env.robosuite_wrapper import EXEC_OBS_SCALE
+        q_real = np.asarray(q_real, np.float64)
+        q_ref = q_real if getattr(self, "q_ref", None) is None else self.q_ref
+        v_ref = np.zeros(7) if getattr(self, "q_ref", None) is None else self.v_ref
+        p_r, R_r = self.site_pose(q_ref)
+        p_m, R_m = self.site_pose(q_real)
+        Rb = np.array(self.sim.data.body_xmat[self.sim.model.body_name2id(self.rob.robot_model.root_body)]).reshape(3, 3)
+        h = np.concatenate([Rb.T @ (p_r - p_m), Rb.T @ _quat2axisangle_of(R_r @ R_m.T), q_ref - q_real, v_ref])
+        return np.concatenate([h * EXEC_OBS_SCALE, np.asarray(last_action, np.float64)]).astype(np.float32)
+
     def step_ref(self, q_real, action, fingers, resync_m):
         """--action_map sim_ref: step the reference trajectory (its own q AND qvel) by one
         action, exactly as in training. Re-synced to the real arm (at rest) only when the
@@ -416,6 +439,9 @@ class Server:
             self.agent, self.cfg = load_agent(a.ckpt, a.device)
             rl_cameras = self.agent.rl_cameras
         self.S = int(self.cfg.rl_image_size)
+        self.exec_obs = bool(getattr(self.cfg, "exec_obs", False))
+        if self.exec_obs and a.action_map != "sim_ref":
+            raise SystemExit("the ckpt observes the reference arm (exec_obs): it needs --action_map sim_ref")
         self.cammap = sim_camera_map(rl_cameras)    # ROS cam -> sim cam
         self.fovy, self.cell_cam = self._sim_cameras()
         self.arm = ReferenceArm(self.cfg.task_name, self.cfg.sim2real_cell)
@@ -518,6 +544,7 @@ class Server:
     def _reset_ref(self):
         """New episode / client: the reference re-seeds at the next measured q."""
         self.arm.ref_reset()
+        self.last_action = np.zeros(7)
         self.last_cmd_pose, self.last_step_t, self.last_cmd_z = None, None, None
 
     def _sim_cameras(self):
@@ -582,6 +609,9 @@ class Server:
         self.arm.set_state(q, dq, fingers)
         prop = self.arm.prop(fingers)
         eef = self.arm.eef()
+        if self.exec_obs:
+            exec_ref = self.arm.exec_obs(q, self.last_action)
+            prop = np.concatenate([prop, exec_ref])
         torch = self.torch
         t1 = time.perf_counter()
         info = None
@@ -610,6 +640,7 @@ class Server:
                 action = self.agent.act(obs, eval_mode=True).numpy().astype(np.float64)
         t2 = time.perf_counter()
         action = np.clip(action, -1.0, 1.0)
+        self.last_action = action.copy()
         warn = []
         if self.a.action_map == "sim_ref":
             q_ref_before = None if getattr(self.arm, "q_ref", None) is None else np.array(self.arm.q_ref)

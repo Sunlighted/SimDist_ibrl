@@ -29,7 +29,18 @@ prop = the training env's own observables + `prop_frame: base` ⇒ FK(q) in the 
 training (`scripts/test_sim2real.py` M). Client: `--gripper-state-topic /gripper/joint_states` (it sends the
 one `robotiq_85_left_knuckle_joint` value; the server maps it). Server: pass `--z_min` (measure it with a
 closed-fingertip touch-off, `eef[2]` + 2 mm; sim estimate ≈ 0.950). Full real-side list:
-`docs/real-teleop-stage2.md` §2b. ⚠️ No policy exists for this cell yet (control rate undecided).
+`docs/real-teleop-stage2.md` §2b.
+
+**exec_obs ckpts (2026-10-27, e.g. `exps/sim2real/threading_robotiq_pixel_stage1_seed1`, 10 Hz):** prop is 9 + 27 —
+the reference arm vs the measured arm (grip-site position / rotvec in the base frame, q_ref − q, v_ref, ×
+`EXEC_OBS_SCALE`) and the last clipped action, computed by `ReferenceArm.exec_obs` before each `step_ref`. The server
+reads `exec_obs` from the ckpt cfg and refuses `--action_map reseed`. Parity with the training env:
+`scripts/test_policy_server_exec_obs.py` — with the env's q_ref/v_ref copied in, q_ref − q / v_ref / last action are
+bit-equal and the pose dims differ by ~0.1 mm (the env reads `site_xpos` one substep stale); left free-running, the two
+references drift apart by MuJoCo solver noise (~1e-3 rad after one step, compounding) — both are valid references.
+The env's first observation carries the base DR as a fake pose offset (shadow geometry synced at the first step); the
+robot's is 0. ⚠️ The server's floor is the fixed `--z_min`; the sim's follows the DR'd table and also keeps the closed
+gripper 0.5 mm off it (`gripper_clear_table`), which the server does not have.
 
 Tracking-lag test (no policy): `policy_server.py --scripted track --task ... --cell ...` + client `--joint-log`; analysis `real2sim/zed_capture/calib_20261014/tools/analyze_tracking.py`; procedure in `calib_20261014/NEXT_VISIT.md` §1.
 
