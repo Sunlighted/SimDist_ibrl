@@ -221,6 +221,7 @@ def add_demos_to_replay(
     record_sim_state: bool,
     is_demo: bool = True,
     extra_state_keys: tuple = (),
+    extra_prop_keys: tuple = (),
 ):
     f = h5py.File(data_path)
     num_episode: int = len(list(f["data"].keys()))  # type: ignore
@@ -247,6 +248,8 @@ def add_demos_to_replay(
             for key in PROP_KEYS:
                 robot_locs.append(episode["obs"][key])  # type: ignore
             props = np.concatenate(robot_locs, axis=1).astype(np.float32)
+        if extra_prop_keys:     # exec_obs: the env's prop is PROP + the execution-layer block (prop_from_state)
+            props = np.concatenate([props] + [episode["obs"][k] for k in extra_prop_keys], axis=1).astype(np.float32)
 
         if use_state:
             all_states = []

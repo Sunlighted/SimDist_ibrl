@@ -930,6 +930,7 @@ class Workspace:
                 reward_scale=self.cfg.env_reward_scale,
                 record_sim_state=bool(self.cfg.save_per_success > 0),
                 extra_state_keys=(EXEC_OBS_KEY,) if self.cfg.exec_obs else (),
+                extra_prop_keys=(EXEC_OBS_KEY,) if self.cfg.exec_obs else (),
             )
         if self.cfg.freeze_bc_replay:
             assert self.cfg.save_per_success <= 0, "cannot save a non-growing replay"
