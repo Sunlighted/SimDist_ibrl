@@ -174,9 +174,15 @@ def robotiq_real_to_sim(knuckle_real) -> np.ndarray:
     return np.array([v, v])
 
 
+# The cell PixelRobosuite was given (set by the wrapper right before robosuite.make). Without it the class read
+# REAL_CELL_ROBOTIQ_YAML (10-15) for exec_layer / table / init_qpos / gripper mount whatever cell the run passed: the
+# 10-30 floor change was silently ignored (every earlier cell agreed with 10-15 on these fields, so nothing else moved).
+_ROBOTIQ_CELL_OVERRIDE = None
+
+
 def _robotiq_cell():
     from env.sim2real import load_sim2real
-    cfg = load_sim2real(REAL_CELL_ROBOTIQ_YAML)
+    cfg = _ROBOTIQ_CELL_OVERRIDE if _ROBOTIQ_CELL_OVERRIDE is not None else load_sim2real(REAL_CELL_ROBOTIQ_YAML)
     assert cfg.enabled and cfg.table_above_base is not None, REAL_CELL_ROBOTIQ_YAML
     assert cfg.gripper_types == "Robotiq85Gripper", (
         f"{REAL_CELL_ROBOTIQ_YAML}: Threading_RealCellRobotiq needs gripper_types: Robotiq85Gripper")

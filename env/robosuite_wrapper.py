@@ -302,6 +302,9 @@ class PixelRobosuite:
             assert float(env_kwargs.get("control_freq", sim2real.control_freq)) == float(sim2real.control_freq), \
                 "env_kwargs.control_freq disagrees with the sim2real cell"
             env_kwargs["control_freq"] = sim2real.control_freq
+        if env_name == "Threading_RealCellRobotiq" and sim2real is not None and sim2real.enabled:
+            import env.threading_variants as _tv     # the class's own cell fields (exec_layer, table, ...) = this cell
+            _tv._ROBOTIQ_CELL_OVERRIDE = sim2real
         self.env = robosuite.make(
             env_name=env_name,
             robots=robots,
