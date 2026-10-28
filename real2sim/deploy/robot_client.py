@@ -76,6 +76,9 @@ class Args:
     """Live, impedance controller inactive (e.g. after reset_arm found the arm already at the
     start pose): pause the GELLO, hold the MEASURED pose and activate the controller, so the arm
     does not jump to wherever the GELLO is."""
+    no_gello: bool = False
+    """Stack without the GELLO (simdist_runner/bringup_nogello.py + home_nogello.py): no gello_publisher to
+    pause or resume; implies --activate (the controller is inactive between runs and nothing else commands)."""
     namespace: str = ""
     """Controller-manager namespace (reset_arm.py reads it from the robot config; usually empty)."""
     robot_joint_topic: str = "/franka/joint_states"
@@ -333,17 +336,26 @@ def main(a: Args):
 
         if a.live:
             states = node.controller_states()
-            activate = a.activate and states.get(IMPEDANCE_CONTROLLER) == "inactive"
+            activate = (a.activate or a.no_gello) and states.get(IMPEDANCE_CONTROLLER) == "inactive"
             if states.get(IMPEDANCE_CONTROLLER) != "active" and not activate:
                 raise SystemExit(f"{IMPEDANCE_CONTROLLER} is not active ({states.get(IMPEDANCE_CONTROLLER)}). "
                                  "Start a teleop session (or run reset_arm.py, or pass --activate) first.")
-            paused = gello_publisher_pid()
-            if paused is None:
-                raise SystemExit("gello_publisher not found; it must be paused so it stops commanding the arm.")
+            if a.no_gello:
+                if gello_publisher_pid() is not None:
+                    raise SystemExit("--no-gello, but gello_publisher is running: drop --no-gello.")
+                if states.get(IMPEDANCE_CONTROLLER) != "inactive":
+                    raise SystemExit(f"--no-gello needs {IMPEDANCE_CONTROLLER} loaded and inactive "
+                                     f"({states.get(IMPEDANCE_CONTROLLER)}): run bringup_nogello.py / home_nogello.py.")
+                activate = True
+            else:
+                paused = gello_publisher_pid()
+                if paused is None:
+                    raise SystemExit("gello_publisher not found; it must be paused so it stops commanding the arm.")
             spin_for(node, 0.2)
             # inactive: the GELLO pose is not where the arm is, so hold the measured pose
             held = node.snapshot()[0] if activate else (node.gello_cmd or node.snapshot()[0])
-            os.kill(paused, signal.SIGSTOP)            # GELLO stops commanding now
+            if paused is not None:
+                os.kill(paused, signal.SIGSTOP)        # GELLO stops commanding now
             holder.start(held)                          # ...and we feed the watchdog within 0.5 s
             if activate:
                 time.sleep(0.2)                         # the controller has a target the moment it starts
@@ -438,7 +450,8 @@ def main(a: Args):
         node.destroy_node()
         rclpy.try_shutdown()
         if controller_on:
-            print("Next: realign the GELLO to the arm and reactivate control, e.g. run reset_arm.py.")
+            print("Next: home_nogello.py." if a.no_gello else
+                  "Next: realign the GELLO to the arm and reactivate control, e.g. run reset_arm.py.")
 
 
 if __name__ == "__main__":

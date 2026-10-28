@@ -1,3 +1,5 @@
+> ★ **10-27 robot visit (stage-1 exec_obs ckpt): grasps 100 %, never inserts.** Cause = the real in-hand needle pose (grip on the tail/top of the handle, −12 mm / +15 mm, pitch +9.8°, yaw +6.9° vs sim ≈0/0/1.3°/1.4°); placing the real pose in pure sim reproduces the failure. Sim needle also rests flat (tip 15 mm up) while the real tip rests on the table. To do + data: `real_1027/README.md`, `real_1027/results/inhand_real_1027.json`.
+
 # sim 侧准备清单（2026-10-15 真机之后，下次上机之前）
 
 真机结果见同目录 [`README.md`](README.md)；上机清单见 [`../calib_20261014/NEXT_VISIT.md`](../calib_20261014/NEXT_VISIT.md)。

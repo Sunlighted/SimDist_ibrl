@@ -485,6 +485,7 @@ class Server:
         else:
             self.log = None
         self.n = 0
+        self.ep = 0                 # episode index: obs files and steps.jsonl rows carry it (n restarts per episode)
         self._reset_ref()
         print(f"[server] action map {a.action_map}"
               + (f" (resync {a.resync_m:g} m, z slow band {a.z_slow_band:g} m)" if a.action_map == "sim_ref" else "")
@@ -692,7 +693,7 @@ class Server:
             extra = {}
             if self.a.action_map == "sim_ref":
                 extra["q_ref_before"] = None if q_ref_before is None else q_ref_before.round(6).tolist()
-            self.log.write(json.dumps(dict(res, **extra, fingers=fingers.round(4).tolist(), step=self.n, q=q.round(5).tolist(),
+            self.log.write(json.dumps(dict(res, **extra, fingers=fingers.round(4).tolist(), episode=self.ep, step=self.n, q=q.round(5).tolist(),
                                            dq=dq.round(5).tolist(), eef_full=eef.round(6).tolist(),
                                            eef_target_full=eef_tgt.round(6).tolist(),
                                            ages=h.get("ages"), t_mono=h.get("t_mono"), hz=self.hz,
@@ -701,7 +702,7 @@ class Server:
             if self.a.save_every and self.n % self.a.save_every == 0:
                 import cv2
                 row = np.concatenate([ims[c] for c in self.cammap if c in ims], 1)
-                cv2.imwrite(os.path.join(self.a.save_dir, f"obs_{self.n:05d}.png"), row[..., ::-1])
+                cv2.imwrite(os.path.join(self.a.save_dir, f"obs_ep{self.ep:02d}_{self.n:05d}.png"), row[..., ::-1])
         self.n += 1
         return res
 
@@ -765,6 +766,8 @@ class Server:
                         elif h["type"] == "step":
                             send_msg(conn, self.step(h, blobs))
                         elif h["type"] == "reset":
+                            if self.n:
+                                self.ep += 1
                             self.n = 0
                             self._reset_ref()
                             if isinstance(self.script, TrackScript):    # the grasp grid keeps its trial count
