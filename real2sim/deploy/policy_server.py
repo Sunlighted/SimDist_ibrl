@@ -179,7 +179,7 @@ class ReferenceArm:
                       f"latter (as it did in training at the time)", flush=True)
             cell = load_sim2real(cell_path)
             off = {f.name: f.default for f in dataclasses.fields(Sim2RealConfig)
-                   if f.name.startswith(("dr_", "inhand_dr_prob"))}      # no per-episode randomisation on the robot
+                   if f.name.startswith(("dr_", "inhand_dr_prob", "gripper_speed", "gripper_cmd_delay"))}      # no per-episode randomisation on the robot
             self.cell = dataclasses.replace(
                 cell, cameras=tuple(dataclasses.replace(c, randomize=False) for c in cell.cameras),
                 **off)

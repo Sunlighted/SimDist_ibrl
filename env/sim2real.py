@@ -554,6 +554,18 @@ class Sim2RealConfig:
     inhand_dr_pitch_deg: tuple = (-2.0, 12.0)
     inhand_dr_yaw_deg: tuple = (-10.0, 10.0)
     inhand_dr_lift_m: float = 0.03
+    # Robotiq closing/opening timing (2026-10-28, to_sim_1027 data). Real knuckle after a close command, per 10 Hz
+    # step: teleop (step command, demo 6) 0 / 0.08 / 0.21 / 0.34 / 0.44; policy runs (16 grasps) 0 / 0 / 0.04-0.10 /
+    # 0.17-0.26 / 0.27-0.39 / 0.42. Sim (robosuite Robotiq85Gripper.speed 0.01 per substep): 0 / 0.20 / 0.40 / 0.47,
+    # i.e. 2x faster and no dead time, so in the sim the fingers shut before the arm has moved on; on the robot the arm
+    # keeps sweeping 3-4 mm/step for ~4 steps while the fingers close (one source of the real in-hand offset).
+    # gripper_speed = robosuite's per-substep increment of the normalised command (0.006 fits both traces);
+    # dr_gripper_speed draws it per episode instead (np.random, only when set). gripper_cmd_delay = inclusive integer
+    # range of control steps the gripper command is held back (drawn per episode; the policy path shows ~1.4 steps).
+    # Sim only: the deploy reference arm (policy_server) zeroes all three, the real gripper has its own timing.
+    gripper_speed: Optional[float] = None
+    dr_gripper_speed: Optional[tuple] = None
+    gripper_cmd_delay: tuple = (0, 0)
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so

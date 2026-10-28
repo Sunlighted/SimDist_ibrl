@@ -3,6 +3,7 @@
 # of 10-27; the v6 expert held 0.98 at the real mean but 0.81 past |yaw| 10 deg and the real depth (15.3 +- 1.9 mm) sat
 # on the 16 mm edge. New ranges = what the geometry still holds: 40 mm handle cube, pads 20 x 34 mm
 # (along +-20 mm keeps >= 10 mm of pad on the handle; depth 22 mm keeps ~15 mm of pad below the handle's top face).
+# + Robotiq closing timing (2x slower than robosuite, 1-2 steps of command delay; block at the end).
 # Everything above the "10-29" block at the end is the 10-28 cell unchanged (inherit chains are not supported).
 # 2026-10-28: threading_real_cell_20261015.yaml (frozen 10-19) + the needle at rest and the in-hand pose from the
 # 10-27 robot visit (real_1027/README.md): stage 1 grasped 100 % and never inserted because the real grasp holds the
@@ -178,3 +179,9 @@ inhand_dr_along_mm: [-20.0, 20.0]
 inhand_dr_depth_mm: [-4.0, 22.0]
 inhand_dr_pitch_deg: [-6.0, 18.0]
 inhand_dr_yaw_deg: [-16.0, 16.0]
+# ---- 10-29: Robotiq timing (to_sim_1027 data; Sim2RealConfig gripper_speed docstring) ----
+# real knuckle after a close command per 10 Hz step: policy runs 0 / 0 / 0.04-0.10 / 0.17-0.26 / 0.27-0.39 / 0.42,
+# teleop 0 / 0.08 / 0.21 / 0.34 / 0.44; sim at robosuite's 0.01: 0 / 0.20 / 0.40 / 0.47. speed 0.006 + 1 step delay
+# fits the policy path; drawn per episode around it.
+dr_gripper_speed: [0.005, 0.007]
+gripper_cmd_delay: [1, 2]

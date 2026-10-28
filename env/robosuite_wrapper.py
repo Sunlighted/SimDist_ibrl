@@ -1,4 +1,5 @@
 from typing import Optional
+import types
 from collections import defaultdict, deque
 
 import torch
@@ -395,6 +396,7 @@ class PixelRobosuite:
         self.last_bg_index: Optional[int] = None
         self._s2r_active = bool(self.sim2real.enabled)
         self._inhand_pending, self.last_inhand_dr = False, None
+        self._grip_queue, self.last_gripper_timing = None, None
         self._s2r_nominal: Optional[dict] = None
         if self._s2r_active:
             # The table height must be installed BEFORE the next reset:
@@ -826,6 +828,7 @@ class PixelRobosuite:
             apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
             self.last_physics_dr = apply_physics_dr(self.env, self.sim2real)
             self._needle_reset()
+            self._gripper_timing_reset()
             # Which background photo this episode drew. The collector stores it
             # per episode so a re-render can repaint the same one (the photo is
             # in tex_rgb, which model_state does not carry).
@@ -883,6 +886,32 @@ class PixelRobosuite:
                 yaw=np.radians(np.random.uniform(*c.inhand_dr_yaw_deg)))
             self._inhand_pending = True
             self._inhand_z0 = float(self.env.sim.data.body_xpos[nb][2])
+
+    def _gripper_timing_reset(self):
+        """cell gripper_speed / dr_gripper_speed / gripper_cmd_delay (Sim2RealConfig): this episode's Robotiq closing
+        speed (robosuite's per-substep increment, patched on the gripper instance: the model is rebuilt on a hard
+        reset) and command delay. np.random only when the DR fields are set, so the other cells' RNG stream is
+        unchanged."""
+        c = self.sim2real
+        self._grip_queue, self.last_gripper_timing = None, None
+        dr_speed, delay = getattr(c, "dr_gripper_speed", None), tuple(getattr(c, "gripper_cmd_delay", (0, 0)))
+        speed = getattr(c, "gripper_speed", None)
+        if speed is None and dr_speed is None and delay == (0, 0):
+            return
+        if dr_speed is not None:
+            speed = float(np.random.uniform(*dr_speed))
+        k = int(np.random.randint(delay[0], delay[1] + 1)) if delay != (0, 0) else 0
+        if speed is not None:
+            g = self.env.robots[0].gripper
+            assert g.dof == 1, "gripper_speed: 1-DoF gripper only"
+
+            def format_action(self_g, action, _s=speed):
+                self_g.current_action = np.clip(self_g.current_action + _s * np.sign(action), -1.0, 1.0)
+                return self_g.current_action
+            g.format_action = types.MethodType(format_action, g)
+        if k > 0:
+            self._grip_queue = deque([-1.0] * k)   # the gripper starts open
+        self.last_gripper_timing = dict(speed=speed, delay=k)
 
     def _maybe_inhand_dr(self, action) -> bool:
         """Re-place the needle in the gripper once, when it is first lifted in a closed gripper (see Sim2RealConfig
@@ -982,9 +1011,15 @@ class PixelRobosuite:
         high_res_images = {}
         for i in range(num_action):
             self.time_step += 1
-            obs, step_reward, terminal, _ = self.env.step(actions[i])
+            if self._grip_queue is not None:   # cell gripper_cmd_delay: the gripper executes the command of k steps ago
+                act = np.array(actions[i], copy=True)
+                self._grip_queue.append(float(act[6]))
+                act[6] = self._grip_queue.popleft()
+            else:
+                act = actions[i]
+            obs, step_reward, terminal, _ = self.env.step(act)
             self._last_action = np.clip(np.asarray(actions[i], np.float64), -1.0, 1.0)
-            if self._inhand_pending and self._maybe_inhand_dr(actions[i]):
+            if self._inhand_pending and self._maybe_inhand_dr(act):
                 obs = self.env._get_observations(force_update=True)
             # NOTE: extract images every step for potential obs stacking
             # this is not efficient
