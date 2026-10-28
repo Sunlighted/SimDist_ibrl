@@ -113,7 +113,8 @@ stamp "replay: $nper episodes/shard, cap $cap transitions, ~${gb} GB resident"
 if ! grep -q "distill step 150000\|^150000: score" "$S1/train.log" 2>/dev/null; then
   stamp "stage 1 -> $S1"
   $PY train_simdist.py --config_path "$CFG" --source_agent "$FROZEN/expert.pt" --save_dir "$S1" \
-      --source_replay_num_data "$nper" --seq_replay_max_transitions "$cap" --sim2real_cell "$CELL" --use_wb 0
+      --source_replay_path "$DEST/part*.hdf5" --source_replay_num_data "$nper" --seq_replay_max_transitions "$cap" \
+      --sim2real_cell "$CELL" --use_wb 0
   stamp "train_simdist rc=$?"
 fi
 [ -s "$S1/model0.pt" ] || { stamp "FATAL: no $S1/model0.pt"; exit 1; }
