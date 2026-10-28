@@ -238,6 +238,36 @@ class Threading_RealCellRobotiq(Threading_RealCell):
         root.set("quat", f"{np.cos(h)!r} 0 0 {np.sin(h)!r}")
         if getattr(cfg, "gripper_parallel_linkage", False):
             self._close_robotiq_linkage()
+        self._set_needle_com()
+
+    def _set_needle_com(self):
+        """cell needle_com_y (env/sim2real.py), installed by the wrapper as self._needle_com_y before its first reset:
+        an explicit <inertial> on the needle body, so the compiler derives everything that depends on it. Writing
+        model.body_ipos at run time instead left those stale and made the resting needle explode (cvel ~900, flung
+        off the table in 2/3 test seeds). Same mass and principal inertia as the geoms give (MimicGen's)."""
+        com = getattr(self, "_needle_com_y", None)
+        if com is None:
+            return
+        import xml.etree.ElementTree as ET
+        body = self.model.worldbody.find(".//body[@name='needle_obj_root']")
+        assert body is not None and body.find("inertial") is None, "needle_obj_root not found / already has an inertial"
+        body.insert(0, ET.Element("inertial", attrib=dict(pos=f"0 {float(com)!r} 0", mass="0.0076",
+                                                          diaginertia="9.624e-06 9.624e-06 1.727e-06")))
+        # Tip-down, the shaft rests on the table on its tip EDGE, and MuJoCo 2.3.2's box-box collider then sometimes
+        # returns a bogus contact (depth -674 mm after ~0.5 s at rest) that flings the needle off the table (5/40
+        # seeds). A 2 mm collision sphere under the tip, 0.6 mm below the shaft's bottom face (> 2 mm x tan 12 deg, so it stays lower than the tip corner up to 12 deg of tilt), takes that contact
+        # (sphere-box is robust); same contact parameters as the shaft, collision only.
+        shaft = body.find("geom[@name='needle_obj_needle']")
+        assert shaft is not None, "needle_obj_needle collision geom not found"
+        sx, sy, sz = (float(v) for v in shaft.get("size").split())
+        px, py, pz = (float(v) for v in (shaft.get("pos") or "0 0 0").split())
+        r = 0.002
+        foot = ET.Element("geom", attrib={k: v for k, v in shaft.attrib.items() if k not in ("name", "type", "size", "pos", "quat")})
+        foot.set("name", "needle_obj_tipfoot")
+        foot.set("type", "sphere")
+        foot.set("size", f"{r!r}")
+        foot.set("pos", f"{px!r} {py - sy + r!r} {pz - sz + r - 0.0006!r}")
+        body.append(foot)
 
     def _close_robotiq_linkage(self):
         """robosuite's Robotiq 85 leaves both four-bar loops OPEN: the passive inner knuckle / inner finger joints are

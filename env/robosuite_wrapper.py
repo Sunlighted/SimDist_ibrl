@@ -394,6 +394,7 @@ class PixelRobosuite:
         self.sim2real = sim2real if sim2real is not None else Sim2RealConfig()
         self.last_bg_index: Optional[int] = None
         self._s2r_active = bool(self.sim2real.enabled)
+        self._inhand_pending, self.last_inhand_dr = False, None
         self._s2r_nominal: Optional[dict] = None
         if self._s2r_active:
             # The table height must be installed BEFORE the next reset:
@@ -413,6 +414,9 @@ class PixelRobosuite:
             apply_cell_arena(self.env, self.sim2real)
             apply_line_lights(self.env, self.sim2real)
             apply_init_qpos(self.env, self.sim2real)
+            # needle CoM: part of the MODEL (an <inertial> the task class adds on every hard reset), so it too must be
+            # in place before the first reset
+            self.env._needle_com_y = getattr(self.sim2real, "needle_com_y", None)
             if off is not None:
                 assert hasattr(self.env, "table_offset"), (
                     f"{env_name} has no `table_offset`; sim2real.table_above_base "
@@ -821,6 +825,7 @@ class PixelRobosuite:
             self._s2r_nominal = snapshot_visual_nominal(self.env)
             apply_sim2real(self.env, self.sim2real, nominal=self._s2r_nominal)
             self.last_physics_dr = apply_physics_dr(self.env, self.sim2real)
+            self._needle_reset()
             # Which background photo this episode drew. The collector stores it
             # per episode so a re-render can repaint the same one (the photo is
             # in tex_rgb, which model_state does not carry).
@@ -857,6 +862,61 @@ class PixelRobosuite:
             rl_obs["past_action"] = past_action
 
         return rl_obs, high_res_images
+
+    def _needle_reset(self):
+        """cell needle_com_y / inhand_dr_* (Threading): the needle's centre of mass (the model is rebuilt on a hard
+        reset, so every episode), and this episode's in-hand re-placement draw (np.random, only when enabled, so the
+        RNG stream of the other cells is unchanged)."""
+        c = self.sim2real
+        self._inhand_pending, self.last_inhand_dr = False, None
+        if c.needle_com_y is None and not c.inhand_dr_prob:
+            return
+        m = self.env.sim.model
+        nb = m.body_name2id("needle_obj_root")
+        if c.needle_com_y is not None:
+            assert abs(m.body_ipos[nb][1] - c.needle_com_y) < 1e-9, (
+                f"needle CoM {m.body_ipos[nb][1]} != cell needle_com_y {c.needle_com_y}: the task class must install it")
+        if c.inhand_dr_prob and np.random.uniform() < c.inhand_dr_prob:
+            self._inhand_draw = dict(
+                along=np.random.uniform(*c.inhand_dr_along_mm) / 1000, depth=np.random.uniform(*c.inhand_dr_depth_mm) / 1000,
+                pitch=np.radians(np.random.uniform(*c.inhand_dr_pitch_deg)),
+                yaw=np.radians(np.random.uniform(*c.inhand_dr_yaw_deg)))
+            self._inhand_pending = True
+            self._inhand_z0 = float(self.env.sim.data.body_xpos[nb][2])
+
+    def _maybe_inhand_dr(self, action) -> bool:
+        """Re-place the needle in the gripper once, when it is first lifted in a closed gripper (see Sim2RealConfig
+        inhand_dr_*). Keeps the needle's quaternion sign (the state carries the raw quaternion: q and -q, the same
+        rotation, are different inputs) and zeroes its velocity. -> True when it moved the needle."""
+        from scipy.spatial.transform import Rotation
+        sim = self.env.sim
+        m, d = sim.model, sim.data
+        nb = m.body_name2id("needle_obj_root")
+        if action[6] <= 0 or d.body_xpos[nb][2] - self._inhand_z0 < self.sim2real.inhand_dr_lift_m:
+            return False
+        self._inhand_pending = False
+        sim.forward()                     # after mj_step the x* poses are one substep behind qpos
+        gs = m.site_name2id("gripper0_grip_site")
+        Rg, pg = d.site_xmat[gs].reshape(3, 3).copy(), d.site_xpos[gs].copy()
+        s = 1.0 if (Rg.T @ d.body_xmat[nb].reshape(3, 3))[1, 1] >= 0 else -1.0   # body +y (tail) along grip +-y
+        w = self._inhand_draw
+        R0 = np.diag([-s, s, -1.0])       # body z up (grip z points down the fingers)
+        R_in = Rotation.from_rotvec([0, 0, w["yaw"]]).as_matrix() @ Rotation.from_rotvec([-s * w["pitch"], 0, 0]).as_matrix() @ R0
+        h = np.array([0.0, s * w["along"], w["depth"]])          # handle centre in the grip frame
+        p_in = h - R_in @ np.array([0.0, 0.06, 0.0])               # needle root (the handle is at body +0.06 y)
+        jid = m.joint_name2id("needle_obj_joint0")
+        qa, va = m.jnt_qposadr[jid], m.jnt_dofadr[jid]
+        q = Rotation.from_matrix(Rg @ R_in).as_quat()
+        q = np.array([q[3], q[0], q[1], q[2]])
+        if q @ d.qpos[qa + 3:qa + 7] < 0:
+            q = -q
+        d.qpos[qa:qa + 3] = pg + Rg @ p_in
+        d.qpos[qa + 3:qa + 7] = q
+        d.qvel[va:va + 6] = 0.0
+        sim.forward()
+        self.last_inhand_dr = dict(t=self.time_step, along_mm=round(w["along"] * 1000, 2), depth_mm=round(w["depth"] * 1000, 2),
+                                   pitch_deg=round(float(np.degrees(w["pitch"])), 2), yaw_deg=round(float(np.degrees(w["yaw"])), 2))
+        return True
 
     def _contact_probe(self) -> dict:
         """Threading cell contact health, current state: summed gripper <-> table normal force [N] and the deepest
@@ -924,6 +984,8 @@ class PixelRobosuite:
             self.time_step += 1
             obs, step_reward, terminal, _ = self.env.step(actions[i])
             self._last_action = np.clip(np.asarray(actions[i], np.float64), -1.0, 1.0)
+            if self._inhand_pending and self._maybe_inhand_dr(actions[i]):
+                obs = self.env._get_observations(force_update=True)
             # NOTE: extract images every step for potential obs stacking
             # this is not efficient
             curr_rl_obs, curr_high_res_images = self._extract_images(obs)

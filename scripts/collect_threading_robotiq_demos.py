@@ -99,13 +99,14 @@ def main():
     ap.add_argument("--episode_length", type=int, default=400)
     ap.add_argument("--max_attempt_factor", type=float, default=2.0)
     ap.add_argument("--merge", nargs="*", default=None)
+    ap.add_argument("--cell", default="", help="cell yaml (default: the Robotiq class's, env/threading_variants.py)")
     args = ap.parse_args()
     if args.merge:
         return merge(args.merge, args.out_dir)
     import env.threading_variants as tv
     from env.robosuite_wrapper import PixelRobosuite
     from env.sim2real import load_sim2real
-    cell_path = tv.REAL_CELL_ROBOTIQ_YAML
+    cell_path = args.cell or tv.REAL_CELL_ROBOTIQ_YAML
     cell = load_sim2real(cell_path)
     env = PixelRobosuite("Threading_RealCellRobotiq", "Panda", args.episode_length, camera_names=[], rl_cameras=[],
                          use_state=True, state_only_no_render=True, record_sim_state=True, device="cpu",

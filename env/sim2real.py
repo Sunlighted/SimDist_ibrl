@@ -537,6 +537,23 @@ class Sim2RealConfig:
     dr_arm_armature: float = 0.0
     dr_arm_frictionloss: float = 0.0
     dr_gripper_dampratio: Optional[tuple] = None
+    # NEEDLE AT REST + IN-HAND POSE (2026-10-28, calib_20261015/real_1027/README.md). Threading only, applied by the
+    # wrapper. The real needle rests TIP-DOWN (tip on the table, ~7 deg), MimicGen's flat (CoM inside the handle's
+    # footprint, tip 15 mm up); and the real grasp holds it 12 mm further toward the tip, 15 mm lower in the fingers,
+    # pitched +9.8 / yawed +6.9 deg, a pose the sim never produced (the stage-1 policy: 100 % grasp, 0 % insert).
+    # needle_com_y: the needle body's centre of mass along its shaft axis [m] (MimicGen 0.0474, inside the handle,
+    #   which spans 0.04..0.08); < 0.04 tips it tip-down. None = MimicGen's (legacy).
+    # inhand_dr_prob: per episode, the probability that the needle is re-placed ONCE in the gripper when it is first
+    #   lifted (closed gripper, needle root inhand_dr_lift_m above its reset height): handle centre along the shaft
+    #   (+ = toward the tail) / below the grip point [mm], shaft pitch (tip down +) / yaw [deg], all in the
+    #   gripper0_grip_site frame, uniform in the ranges. 0 = off (legacy).
+    needle_com_y: Optional[float] = None
+    inhand_dr_prob: float = 0.0
+    inhand_dr_along_mm: tuple = (-16.0, 16.0)
+    inhand_dr_depth_mm: tuple = (-2.0, 16.0)
+    inhand_dr_pitch_deg: tuple = (-2.0, 12.0)
+    inhand_dr_yaw_deg: tuple = (-10.0, 10.0)
+    inhand_dr_lift_m: float = 0.03
 
     # Placement tolerance of a peg that is ARENA geometry rather than a sampled
     # object (Square's peg1/peg2 live in pegs_arena.xml at fixed coordinates, so

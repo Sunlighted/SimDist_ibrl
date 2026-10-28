@@ -14,7 +14,7 @@ PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"
 # 2026-10-23: defaults = the v5 data and prior (cell with the 10-21 / 10-22 physics fixes; all older data deleted)
 DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5}"
 BC="${BC:-exps/sim2real/threading_robotiq_rnn_bc_n3000v5_h1000_ema_ep6000_seed1/model0.pt}"
-CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml
+CELL="${CELL:-real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml}"
 DIR=exps/sim2real/ibrl_robotiq_${TAG:-v3}_${ARM}_seed${SEED}
 [ -s "$DATA" ] || { echo "FATAL: no demos at $DATA (IBRL_EXPERIMENTS.md §1: copy or regenerate)"; exit 1; }
 [ -s "$BC" ] || { echo "FATAL: no BC prior $BC (git pull)"; exit 1; }
@@ -23,7 +23,7 @@ echo "=== [$(date '+%F %T')] $ARM seed $SEED: $EXTRA -> $DIR ==="
 # shellcheck disable=SC2086
 $PY train_rl.py --config_path release/cfgs/sim2real/threading_robotiq_state_ibrl.yaml --save_dir "$DIR" \
     --bc_policy "$BC" --preload_datapath "$DATA" --preload_num_data 1000 --seed "$SEED" \
-    --snapshot_period 100000 --use_wb 0 $EXTRA
+    --snapshot_period 100000 --sim2real_cell "$CELL" --use_wb 0 $EXTRA
 echo "train_rl rc=$?"
 [ -s "$DIR/model0.pt" ] || { echo "FATAL: no $DIR/model0.pt"; exit 1; }
 # (a) the arm's own init range (eval env rebuilt from its cfg, overrides included)
