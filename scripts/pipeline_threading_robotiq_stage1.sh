@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 source set_env.sh
 GPU="${GPU:-3}"
 export MUJOCO_GL=egl CUDA_VISIBLE_DEVICES="$GPU" WANDB_MODE=offline
-PY=/home/Chenyang/.conda/envs/ibrl/bin/python
+PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"   # another machine: export PY=<env>/bin/python
 RUNS="${RUNS:-exps/sim2real/ibrl_robotiq_v5_2M_fr_chunk1_execobs_seed1 exps/sim2real/ibrl_robotiq_v5_2M_fr_chunk1_execobs_seed2}"
 STEPS="${STEPS:-400000 500000 600000 700000 800000 900000 1000000}"
 GATE="${GATE:-0.9}"
@@ -111,10 +111,11 @@ stamp "replay: $nper episodes/shard, cap $cap transitions, ~${gb} GB resident"
 
 # ---- 4. SimDist stage 1 -------------------------------------------------------------------------------------------
 if ! grep -q "distill step 150000\|^150000: score" "$S1/train.log" 2>/dev/null; then
-  stamp "stage 1 -> $S1"
+  RES=(); [ -s "$S1/resume_state.pt" ] && RES=(--resume_from "$S1/resume_state.pt")   # a killed / moved run continues
+  stamp "stage 1 -> $S1 ${RES[*]}"
   $PY train_simdist.py --config_path "$CFG" --source_agent "$FROZEN/expert.pt" --save_dir "$S1" \
       --source_replay_path "$DEST/part*.hdf5" --source_replay_num_data "$nper" --seq_replay_max_transitions "$cap" \
-      --sim2real_cell "$CELL" --use_wb 0
+      --sim2real_cell "$CELL" --use_wb 0 "${RES[@]}"
   stamp "train_simdist rc=$?"
 fi
 [ -s "$S1/model0.pt" ] || { stamp "FATAL: no $S1/model0.pt"; exit 1; }

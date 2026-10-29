@@ -8,7 +8,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source set_env.sh
 export MUJOCO_GL=egl CUDA_VISIBLE_DEVICES="${GPU:-2}" WANDB_MODE=offline
-PY=/home/Chenyang/.conda/envs/ibrl/bin/python
+PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"   # another machine: export PY=<env>/bin/python
 DATA="${DATA:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v5/dataset.hdf5}"
 CELL="${CELL:-real2sim/zed_capture/calib_20261015/threading_real_cell_20261015.yaml}"
 CFG="${CFG:-release/cfgs/sim2real/threading_robotiq_state_bc_rnn.yaml}"

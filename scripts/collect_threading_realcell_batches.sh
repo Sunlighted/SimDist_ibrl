@@ -14,7 +14,7 @@
 #       > logs/realcell_collect_gpu2.log 2>&1 < /dev/null & disown
 #   GPU=3 BATCH_IDS="2 4 6 8" setsid bash ... > logs/realcell_collect_gpu3.log ...
 set -uo pipefail
-REPO=/home/Chenyang/ibrl
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
 GPU="${GPU:-2}"
@@ -44,7 +44,7 @@ CAMS="${CAMS:-agentview+robot0_eye_in_hand}"
 RL_IMAGE_SIZE="${RL_IMAGE_SIZE:-224}"
 JPEG_Q="${JPEG_Q:-90}"
 STORE_STATE="${STORE_STATE:-1}"
-PY=/home/Chenyang/.conda/envs/ibrl/bin/python
+PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"   # another machine: export PY=<env>/bin/python
 PER_WORKER_MIB="${PER_WORKER_MIB:-2706}"
 GUARD_FRAC="${GUARD_FRAC:-0.75}"
 HEADROOM_MIB="${HEADROOM_MIB:-12000}"
@@ -114,9 +114,9 @@ for b in $BATCH_IDS; do
     cp "$out/env_cfg.json" "$DEST/env_cfg_part${b}.json" 2>/dev/null || true
     echo "[batches] batch $b complete -> part${b}.hdf5"
   elif ls "$out"/_shard_*.hdf5 >/dev/null 2>&1; then
-    "$PY" - "$DEST/part${b}.hdf5" "$out"/_shard_*.hdf5 <<'PYEOF'
-import sys
-sys.path.insert(0, "/home/Chenyang/ibrl")
+    REPO="$REPO" "$PY" - "$DEST/part${b}.hdf5" "$out"/_shard_*.hdf5 <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ["REPO"])
 from scripts.generate_simdist_data import merge_shards
 tot, ns = merge_shards(sys.argv[2:], sys.argv[1])
 print(f"[batches] salvaged {tot} traj ({ns} success) -> {sys.argv[1]}")

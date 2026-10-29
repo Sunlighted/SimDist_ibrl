@@ -12,7 +12,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source set_env.sh >/dev/null 2>&1
 export MUJOCO_GL=egl WANDB_MODE=offline
-PY=/home/Chenyang/.conda/envs/ibrl/bin/python
+PY="${PY:-/home/Chenyang/.conda/envs/ibrl/bin/python}"   # another machine: export PY=<env>/bin/python
 export CELL=real2sim/zed_capture/calib_20261015/threading_real_cell_20261030.yaml
 DEMOS="${DEMOS:-/user_data/Chenyang/simdist_data/threading_robotiq_expert_n3000_v8}"
 BC_DIR=exps/sim2real/threading_robotiq_rnn_bc_n3000v8_h1000_ema_ep6000_seed1
