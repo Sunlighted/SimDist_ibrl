@@ -9,7 +9,7 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
 1. **The 10-27 failure is fixed.** Open loop on the 10-27 human demos, post-grasp mean x: old ckpt −0.01 / +0.03,
    v8 60k −0.23 / −0.17, 70k −0.23 / −0.19. On the robot every v8 grasp that held went to the ring; no +x stall.
 2. **60k ≫ 70k on the robot** (as the sim handover predicted, 7/8 vs 1/8): 70k 0/7 insertions; 60k reaches the ring
-   with the needle in hand in most episodes (counts below; insertion itself is the operator's call, see the table).
+   with the needle in hand in most episodes. **60k: 5/12 inserted (~42 %); 70k: 0/7.**
 3. **New bottleneck: the first grasp always misses, along the shaft.** At the first close command the handle sits at
    wrist-image x **202–215 px** (224 px image, centre 112; 60k, 11/11 episodes) — half out of the view. The sim
    policy closes "on the move" too, but with the handle at **159–199 px** (v8 60k, 6 sim episodes). The 2nd attempt
@@ -46,7 +46,7 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
 | `v8_s1_60k_1030_1706` | 60k | 2 | ep0 inserted (end grip−ring (+0.039, −0.009, +0.001)); ep1 no grasp |
 | `v8_s1_60k_1030_1714` | 60k | 2 | ep0 inserted (+0.040, −0.038, +0.005); ep1 at the ring 2.5 cm high at 400 steps |
 | `v8_s1_70k_1030_1801` | 70k | 7 | 0 insertions; 3 lifted (pitch +10/+16/+26°), 4 dropped |
-| `v8_s1_60k_1030_1818` | 60k | 8 | ep0/ep1 never held the needle (ep1: the arm swung toward the scene camera, operator stop); ep2–ep7 re-grasped and ended at the ring with the needle in hand — see `figs/60k_1818_last_frames.jpg`; insertion per episode = operator's notes |
+| `v8_s1_60k_1030_1818` | 60k | 8 | **3/8 inserted (ep2, ep6, ep7)**; ep0/ep1 never held the needle (ep1: the arm swung toward the scene camera, operator stop); ep3 needle hanging near-vertical (tip-down), poked down beside the post; ep4 needle tilted past the loop (operator stop at 268); ep5 tip on the loop edge. Judged from the images (loop around the shaft in both views, as in the two reference successes), not by the operator |
 
 First-close handle position (wrist px) per 60k episode in `1818`: 215, 202, 207, 206, 211, 214, 206, 214; attempts
 before a holding grasp 2–5. Session logs: only `franka_gripper_node died` (Franka hand node, unused with the
