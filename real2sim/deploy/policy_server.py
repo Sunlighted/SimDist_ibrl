@@ -174,9 +174,10 @@ class ReferenceArm:
             from env.sim2real import Sim2RealConfig, load_sim2real
             assert cell_path, "the ckpt cfg records no sim2real_cell"
             if os.path.realpath(cell_path) != os.path.realpath(tv.REAL_CELL_ROBOTIQ_YAML):
-                print(f"[server] ⚠️ ckpt cell {cell_path} != the class's model cell "
-                      f"{tv.REAL_CELL_ROBOTIQ_YAML}: the Robotiq/arena geometry comes from the "
-                      f"latter (as it did in training at the time)", flush=True)
+                # since 1dadab7 the wrapper hands the class the cell it is given (_ROBOTIQ_CELL_OVERRIDE): the
+                # Robotiq / arena / exec-layer fields come from the ckpt's cell, as in its training
+                print(f"[server] ckpt cell {cell_path} (the class default {os.path.basename(tv.REAL_CELL_ROBOTIQ_YAML)} "
+                      f"is overridden by it, as in training)", flush=True)
             cell = load_sim2real(cell_path)
             off = {f.name: f.default for f in dataclasses.fields(Sim2RealConfig)
                    if f.name.startswith(("dr_", "inhand_dr_prob", "gripper_speed", "gripper_cmd_delay"))}      # no per-episode randomisation on the robot

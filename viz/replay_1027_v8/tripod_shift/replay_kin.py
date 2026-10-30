@@ -97,6 +97,8 @@ def main():
                          "(> --grip_onset rad), shifted earlier by --grip_lead steps")
     ap.add_argument("--grip_onset", type=float, default=0.05)
     ap.add_argument("--tripod_mass_scale", type=float, default=1.0, help="tripod bodies' mass+inertia x this")
+    ap.add_argument("--dump_at", default="", help="comma list of steps t: save the full sim state after step t "
+                    "(<video>/<demo>_state_t<t>.npz) for a policy handover (real_1027/tools/sim_handover.py)")
     ap.add_argument("--needle_mass_scale", type=float, default=1.0,
                     help="DIAGNOSTIC: scale the needle's mass + inertia (sim 7.6 g)")
     ap.add_argument("--grip_solref", type=float, nargs=2, default=None,
@@ -280,6 +282,12 @@ def main():
                 a = acts[t] if t < T else np.r_[np.zeros(6), acts[-1, 6]]
             e.timestep = 0
             e.step(np.clip(a, -1, 1))
+            if args.dump_at and t in [int(x) for x in args.dump_at.split(",")]:
+                sim.forward()
+                os.makedirs(args.video, exist_ok=True)
+                np.savez(os.path.join(args.video, f"{name}_state_t{t}.npz"), qpos=sim.data.qpos.copy(),
+                         qvel=sim.data.qvel.copy(), grip_action=np.array(rob.gripper.current_action, copy=True),
+                         grip_cmd=float(a[6]), t=t, nq=m.nq, body_names=np.array([m.body_id2name(i) or "" for i in range(m.nbody)]))
             # contact health (the wrapper's probe; e.step bypasses the wrapper's own bookkeeping)
             for k_, v_ in env._contact_probe().items():
                 env.contact_health[k_] = max(env.contact_health.get(k_, 0.0), v_)
