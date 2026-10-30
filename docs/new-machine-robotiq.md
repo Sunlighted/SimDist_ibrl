@@ -16,6 +16,7 @@ curie 的 4 张卡被别人占满（GPU 0/1 是别人的，GPU 2/3 上也有别�
 | v8 BC prior | `exps/sim2real/threading_robotiq_rnn_bc_n3000v8_h1000_ema_ep6000_seed1` | ✅ 独立 300 局 model0 **0.75**（门槛 0.3） |
 | v8 IBRL ×2 | `exps/sim2real/ibrl_robotiq_v8_fr_chunk1_execobs_seed{1,2}` | ⏳ 刚开训。**`train_rl.py` 没有断点续跑 ⇒ 新机器上从头重开** |
 | v8 stage 1 | `exps/sim2real/threading_robotiq_v8_pixel_stage1_seed1`、数据 `/user_data/.../threading_robotiq_pixel_v8` | 还没开始（等 IBRL 过 0.9 自动接） |
+| **10-30 更新** | v8 expert = IBRL seed1 @400k（独立 300 局 **0.943**）已冻结；pixel 数据 8/8（36000 条）在 `/user_data`；stage 1 在 curie 上停在 **70k/150k**（GPU 被别人抢到 2.25 s/it） | 断点 + expert 已拷到 `/user_data/Chenyang/ibrl_move_20261029/ibrl/exps/sim2real/threading_robotiq_v8_{expert,pixel_stage1_seed1}`：rsync 回 `exps/sim2real/` 后用 ④ 的 stage-1 命令（`CELL` = 10-30、`FROZEN`/`DEST`/`S1` 换成 v8）续跑，日志要出现 `--resume_from` |
 | v6 专家（备用） | `exps/sim2real/threading_robotiq_v6_expert` | ✅ 0.953（10-28 cell，没有地板修正和闭合时序） |
 | v6 stage 1（备用） | `exps/sim2real/threading_robotiq_v6_pixel_stage1_seed1`、数据 `/user_data/.../threading_robotiq_pixel_v6`（123 GB） | ⏳ ~13.5k/150k，**有 `resume_state.pt`，可续跑** |
 

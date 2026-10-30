@@ -1,0 +1,159 @@
+{
+ "_source": "refit_needle_wrist_1017.py: needle (x, y, yaw) from the frame-0 scene view + the last 10 wrist views before the close; tripod kept from the scene fit | ep3 refit with the knuckle open-close at t 9-16 (idle, at home) masked",
+ "episode_0001": {
+  "needle": [
+   0.55566,
+   -0.10922,
+   -102.52832
+  ],
+  "tripod": [
+   0.523,
+   0.1873,
+   -29.7426
+  ],
+  "scene_fit_needle": [
+   0.5534,
+   -0.1007,
+   -108.8474
+  ],
+  "moved_mm_deg": [
+   2.3,
+   -8.5,
+   6.3
+  ],
+  "loss_before_after": [
+   1.2363,
+   0.9239
+  ]
+ },
+ "episode_0002": {
+  "needle": [
+   0.55332,
+   -0.10843,
+   -102.47262
+  ],
+  "tripod": [
+   0.5218,
+   0.1879,
+   -35.528
+  ],
+  "scene_fit_needle": [
+   0.5563,
+   -0.1013,
+   -109.3059
+  ],
+  "moved_mm_deg": [
+   -3.0,
+   -7.1,
+   6.8
+  ],
+  "loss_before_after": [
+   1.2543,
+   0.8462
+  ]
+ },
+ "episode_0003": {
+  "needle": [
+   0.55715,
+   -0.10765,
+   -102.41257
+  ],
+  "tripod": [
+   0.5164,
+   0.1915,
+   -34.8238
+  ],
+  "scene_fit_needle": [
+   0.5532,
+   -0.1007,
+   -108.7141
+  ],
+  "moved_mm_deg": [
+   4.0,
+   -6.9,
+   6.3
+  ],
+  "loss_before_after": [
+   1.0502,
+   0.9356
+  ]
+ },
+ "episode_0004": {
+  "needle": [
+   0.56393,
+   -0.10967,
+   -102.43858
+  ],
+  "tripod": [
+   0.5159,
+   0.1891,
+   -30.8763
+  ],
+  "scene_fit_needle": [
+   0.5563,
+   -0.1011,
+   -108.7589
+  ],
+  "moved_mm_deg": [
+   7.6,
+   -8.6,
+   6.3
+  ],
+  "loss_before_after": [
+   1.0111,
+   0.8239
+  ]
+ },
+ "episode_0005": {
+  "needle": [
+   0.55479,
+   -0.10812,
+   -102.38015
+  ],
+  "tripod": [
+   0.5221,
+   0.1873,
+   -36.1058
+  ],
+  "scene_fit_needle": [
+   0.5493,
+   -0.0997,
+   -109.1308
+  ],
+  "moved_mm_deg": [
+   5.5,
+   -8.4,
+   6.8
+  ],
+  "loss_before_after": [
+   1.1325,
+   0.9622
+  ]
+ },
+ "episode_0006": {
+  "needle": [
+   0.55568,
+   -0.1099,
+   -101.20338
+  ],
+  "tripod": [
+   0.5192,
+   0.1909,
+   -34.1769
+  ],
+  "scene_fit_needle": [
+   0.5491,
+   -0.101,
+   -108.1044
+  ],
+  "moved_mm_deg": [
+   6.6,
+   -8.9,
+   6.9
+  ],
+  "loss_before_after": [
+   1.081,
+   0.9122
+  ]
+ }
+}

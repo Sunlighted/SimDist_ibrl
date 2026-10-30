@@ -96,6 +96,30 @@ Board photos `~/simdist/calib/run_1027_1853` (5 samples, inconclusive at mm leve
   pose, `fit.py` real in-hand fit, `needle_rest.py`, `fingers.py`, `roll2.py` sim rollouts). They run from
   `~/simdist/deploy_simdist_1015` with `MUJOCO_GL=egl`.
 
+## 10-27 demos in the v8 sim (10-30 cell, done 10-30)
+
+Six demos: ep1–2 clean human, ep3–6 = policy stalls, operator takes over with the GELLO. Converted to
+`/user_data/Chenyang/real_stage2/threading_robotiq_1027_c1030/dataset.hdf5`. Layout per demo:
+`../demo_layout/layout_demos_1027{,_wristrefit}.json` (scene fit, then the needle refit on the wrist camera).
+Scripts, tables and videos: `viz/replay_1027_v8/` (mp4/png/npz are gitignored, on curie only).
+
+- **Replay = OSC track of FK(real q)** (TCP error p50 0.2–0.3 mm while inserting). Writing q straight into the sim
+  (`--mode kin`, spline per substep) drops the needle from the Robotiq on the lift in 6/6: not usable.
+  Gripper: h5 command + the cell's 1–2 step delay, speed 0.006; in-hand DR off; tip-down rest on (6.9°).
+- **As fitted: 2/6** (ep1, ep2). ep3–5 are *in* the ring (lateral 3–4 mm) but only 17–42 mm deep (success needs ≈50):
+  the needle shoves the tripod 24–71 mm away. ep6 misses laterally (~20 mm) all the way.
+- **Tripod offset sweep** (63 cells, dx/dy ±20/±15 mm): best at **dx +5…+10 mm (away from the base), dy −10…0**
+  → 4/6 and the highest final wrist-camera red-mask IoU (0.789 vs 0.705). Selection-free check: shift each tripod
+  by that demo's own needle scene→wrist correction (≈ +4, −8 mm, +6.5°) → also 4/6. ⇒ the scene-camera fit of the
+  tripod likely carries the same bias the wrist refit removed from the needle.
+- **Tripod mass (sim 18 g) is not the issue**: ×1/×3/×10 at (+10, 0) → 4/4/3 of 6; summed |sim − real push| over the
+  6 demos 35/42/53 mm, best at ×1. ×10 at the fitted spot also gives 4/6 but freezes the tripod (ep3 1 mm vs real 32).
+  Replays are deterministic (×1 reproduces the sweep cell bit for bit) but chaotic in the parameters.
+- **No v9**: the corrected tripod (≈0.53, 0.18) is ≥13 mm inside `layout_tripod_*` (±25 mm), so training already
+  covers it. Unresolved: ep5 never gets past ~30 mm, ep6 never (the real tripod turned −13° during it); the sim
+  in-hand pose is still shallower/flatter than real. Next visit: weigh the tripod; one ChArUco shot at the needle
+  spot seen by both cameras to fix the scene-camera bias.
+
 ## Traps hit today
 - **Colour map omitted**: the NEXT_VISIT_STAGE1 commands had no `--color_json`, so the server used the Peg splat
   map `real2sim/deploy/color_correction.json` (+40 levels, 18 % saturated). Threading needs
