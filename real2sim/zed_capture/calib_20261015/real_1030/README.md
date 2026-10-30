@@ -10,11 +10,17 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
    v8 60k −0.23 / −0.17, 70k −0.23 / −0.19. On the robot every v8 grasp that held went to the ring; no +x stall.
 2. **60k ≫ 70k on the robot** (as the sim handover predicted, 7/8 vs 1/8): 70k 0/7 insertions; 60k reaches the ring
    with the needle in hand in most episodes. **60k: 5/12 inserted (~42 %); 70k: 0/7.**
-3. **New bottleneck: the first grasp always misses, along the shaft.** At the first close command the handle sits at
+3. **New bottleneck: the first grasp closes askew — the handle is not fully between the fingers** (operator's reading, confirmed below). At the first close command the handle sits at
    wrist-image x **202–215 px** (224 px image, centre 112; 60k, 11/11 episodes) — half out of the view. The sim
    policy closes "on the move" too, but with the handle at **159–199 px** (v8 60k, 6 sim episodes). The 2nd attempt
    lands at ~185–191 px, the 3rd at ~170 px; 60k recovers by re-grasping (2–5 extra attempts, 50–150 steps).
-   Image-right = along the shaft (grip +y), not the finger closing axis.
+   ⚠️ Correction (an earlier draft said image-right = along the shaft): in the wrist view the shaft runs **up** the
+   image and the two fingers sit bottom-left / bottom-right, so **image x = the finger closing axis**. The handle at
+   the right edge = the cube partly under one finger. Shaft angle in the wrist view at the close command (yaw
+   misalignment): sim |10|° (−24…+15), real 60k small (−6…+4, many frames unmeasurable), **real 70k 21–35° in 3/7**.
+   **The sim also closes off-centre (mean 183 px) and still lifts 5/6 ⇒ the sim finger contact is too forgiving** —
+   it sweeps a half-caught handle into the grasp; the real gripper does not. (Pixel → mm is rough: the 40 mm cube is
+   ~60–70 px wide, so real 60k is ~1.5 cm further off-centre than the sim.)
    - At the first close the real arm still trails its target by ~2 cm (4–6 cm a few steps earlier; v8 descends at up
      to 0.28 m/s vs 0.09 for the old ckpt) and keeps moving 1.5–2.5 cm while the Robotiq closes.
 4. **70k grasps off the handle's tail → the needle pivots tip-down beyond the sim DR.** Fitted in-hand pose (wrist +
@@ -24,19 +30,22 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
    IoU 0.67) — roughly +4…+6°.
 
 ### v9 changes, in priority order
-1. **Grasp timing / tracking at the bottom of the descent.** Compare, at the sim close command, eef − reference
-   target and the eef travel between the close command and finger contact against the real numbers above (real:
-   ~2 cm lag, 1.5–2.5 cm travel). If the sim arm is "on target" when it closes, the exec layer under-models lag at
-   v8's descent speed; fix that (or DR it) before anything else. Optionally wider `gripper_cmd_delay` (1–3).
-2. **Off-centre grasp physics.** In sim, grasp the handle 10–15 mm toward its tail and lift: the real needle pivots
-   to +16…+26° tip-down. If the sim needle stays level, the finger contact is too sticky in torsion — calibrate it
-   (this is the root cause; DR is the bandage).
-3. **Wider in-hand grasp-pose DR** (operator, 10-30): pitch to ~[−6, +30]° (70k measured +26°, 60k ep3 near-vertical with a not-fully-closed gripper), and widen along/depth/yaw too — real grasps land wherever the first close happens.
-4. Keep the re-grasp behaviour (it is what makes 60k work); don't select it away.
-5. **Checkpoint selection:** the sim handover-with-real-in-hand-pose test ranked 60k/70k correctly; use it (with the
-   10-27 and 10-30 in-hand poses) as a selection metric, not the in-training eval alone.
-6. Planning: not tested and not worth it at stage 1 (sim planner ≈ policy head; the failures are sim-physics gaps
-   the world model shares; MPPI p95 latency 71–75 ms > 60 ms on 10-27). Revisit after stage-3 real adaptation.
+1. **Make the sim grasp as unforgiving as the real one.** Twin test: handle 1–3 cm off-centre along the closing axis
+   and/or 15–30° yaw off, close, lift. If the sim still lifts the needle level, tune the finger contact until a
+   half-caught handle tilts / drops as on the robot. Otherwise the policy keeps learning "close when roughly there".
+2. **Wider grasp-pose DR** (operator, 10-30): pitch to ~[−6, +30]° (70k +26°, 60k ep3 near-vertical with a
+   not-fully-closed gripper), and widen along/depth/yaw — the in-hand pose after a skewed grasp.
+3. **Descent/close timing (secondary).** At the first close the real arm still trails its target by ~2 cm and keeps
+   moving 1.5–2.5 cm while the Robotiq closes (v8 descends at up to 0.28 m/s); check the sim exec layer gives the
+   same lag, optionally `gripper_cmd_delay` 1–3. This adds to the lateral miss but is not its root cause.
+4. Keep the re-grasp behaviour (it is what makes 60k work).
+5. **Checkpoint selection** with the sim handover-with-real-in-hand-pose test (ranked 60k/70k correctly).
+6. Planning: not at stage 1 (sim planner ≈ policy head; the failures are sim-physics gaps the world model shares;
+   MPPI p95 71–75 ms > 60 ms on 10-27). Revisit after stage-3 real adaptation.
+
+Next visit: v9 vs 60k alternating, ≥ 8–10 each; per episode also the first-close handle x in the wrist view (target
+≈ 112 px, today 210) and the shaft angle, attempts before a holding grasp; check the Robotiq holds the needle at
+knuckle ≈ 0.44 before starting.
 
 ## Runs (`~/simdist/deploy_simdist_1015/runs/`)
 
