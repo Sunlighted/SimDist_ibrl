@@ -1,3 +1,5 @@
+> ★ **10-30 robot visit (v8 stage 1):** the 10-27 stall is gone; 60k ≫ 70k (70k 0/7, grasps the handle tail → +10/+16/+26° tip-down, beyond the DR). New bottleneck: the first grasp always closes too early along the shaft (handle at 202–215 px vs sim 159–199); 60k recovers by re-grasping. v9 list: `real_1030/README.md`.
+
 > ★ **10-27 robot visit (stage-1 exec_obs ckpt): grasps 100 %, never inserts.** Cause = the real in-hand needle pose (grip on the tail/top of the handle, −12 mm / +15 mm, pitch +9.8°, yaw +6.9° vs sim ≈0/0/1.3°/1.4°); placing the real pose in pure sim reproduces the failure. Sim needle also rests flat (tip 15 mm up) while the real tip rests on the table. To do + data: `real_1027/README.md`, `real_1027/results/inhand_real_1027.json`.
 
 # sim 侧准备清单（2026-10-15 真机之后，下次上机之前）

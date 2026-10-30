@@ -1,0 +1,110 @@
+[
+ {
+  "ep": 0,
+  "success": true,
+  "close": {
+   "k": 15,
+   "grip_minus_handle_grip": [
+    -0.0045,
+    0.0035,
+    0.0037
+   ],
+   "grip_minus_handle_world": [
+    0.0009,
+    -0.0056,
+    -0.0036
+   ]
+  },
+  "steps": 52
+ },
+ {
+  "ep": 1,
+  "success": true,
+  "close": {
+   "k": 20,
+   "grip_minus_handle_grip": [
+    0.004,
+    -0.0152,
+    -0.003
+   ],
+   "grip_minus_handle_world": [
+    -0.014,
+    0.007,
+    0.0031
+   ]
+  },
+  "steps": 60
+ },
+ {
+  "ep": 2,
+  "success": true,
+  "close": {
+   "k": 20,
+   "grip_minus_handle_grip": [
+    -0.0027,
+    -0.0278,
+    -0.0034
+   ],
+   "grip_minus_handle_world": [
+    -0.0276,
+    0.0038,
+    0.0039
+   ]
+  },
+  "steps": 58
+ },
+ {
+  "ep": 3,
+  "success": true,
+  "close": {
+   "k": 15,
+   "grip_minus_handle_grip": [
+    0.0002,
+    -0.0071,
+    -0.0047
+   ],
+   "grip_minus_handle_world": [
+    -0.0067,
+    0.0019,
+    0.0048
+   ]
+  },
+  "steps": 60
+ },
+ {
+  "ep": 4,
+  "success": true,
+  "close": {
+   "k": 16,
+   "grip_minus_handle_grip": [
+    -0.0134,
+    -0.0091,
+    0.0001
+   ],
+   "grip_minus_handle_world": [
+    -0.0137,
+    -0.0087,
+    0.0005
+   ]
+  },
+  "steps": 50
+ },
+ {
+  "ep": 5,
+  "success": false,
+  "close": {
+   "k": 14,
+   "grip_minus_handle_grip": [
+    -0.0128,
+    -0.0189,
+    -0.0024
+   ],
+   "grip_minus_handle_world": [
+    -0.0209,
+    -0.0089,
+    0.0036
+   ]
+  },
+  "steps": 400
+ }
+]
