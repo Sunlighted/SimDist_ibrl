@@ -31,7 +31,7 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
 2. **Off-centre grasp physics.** In sim, grasp the handle 10–15 mm toward its tail and lift: the real needle pivots
    to +16…+26° tip-down. If the sim needle stays level, the finger contact is too sticky in torsion — calibrate it
    (this is the root cause; DR is the bandage).
-3. **In-hand pitch DR to ~[−6, +30]°** (70k measured +26°).
+3. **Wider in-hand grasp-pose DR** (operator, 10-30): pitch to ~[−6, +30]° (70k measured +26°, 60k ep3 near-vertical with a not-fully-closed gripper), and widen along/depth/yaw too — real grasps land wherever the first close happens.
 4. Keep the re-grasp behaviour (it is what makes 60k work); don't select it away.
 5. **Checkpoint selection:** the sim handover-with-real-in-hand-pose test ranked 60k/70k correctly; use it (with the
    10-27 and 10-30 in-hand poses) as a selection metric, not the in-training eval alone.
@@ -46,7 +46,7 @@ no-GELLO stack). Data: handoff tar `to_sim_1030.tar` (runs below).
 | `v8_s1_60k_1030_1706` | 60k | 2 | ep0 inserted (end grip−ring (+0.039, −0.009, +0.001)); ep1 no grasp |
 | `v8_s1_60k_1030_1714` | 60k | 2 | ep0 inserted (+0.040, −0.038, +0.005); ep1 at the ring 2.5 cm high at 400 steps |
 | `v8_s1_70k_1030_1801` | 70k | 7 | 0 insertions; 3 lifted (pitch +10/+16/+26°), 4 dropped |
-| `v8_s1_60k_1030_1818` | 60k | 8 | **3/8 inserted (ep2, ep6, ep7)**; ep0/ep1 never held the needle (ep1: the arm swung toward the scene camera, operator stop); ep3 needle hanging near-vertical (tip-down), poked down beside the post; ep4 needle tilted past the loop (operator stop at 268); ep5 tip on the loop edge. Judged from the images (loop around the shaft in both views, as in the two reference successes), not by the operator |
+| `v8_s1_60k_1030_1818` | 60k | 8 | **3/8 inserted (ep2, ep6, ep7; confirmed by the operator)**; ep0/ep1 never held the needle (ep1: the arm swung toward the scene camera, operator stop); **ep3: the Robotiq was not fully closing (bad gripper initialisation, operator)** — the needle hung near-vertical and poked down beside the post; ep4 needle tilted past the loop (operator stop at 268); ep5 tip on the loop edge. ⚠️ Holding knuckle (median of the last 60 steps) is **0.88 in ep2–ep4 vs 0.44 in ep5–ep7** (0.42–0.44 on 10-27 and earlier today): the gripper state changed between ep4 and ep5 — account for it when replaying ep2–ep4 |
 
 First-close handle position (wrist px) per 60k episode in `1818`: 215, 202, 207, 206, 211, 214, 206, 214; attempts
 before a holding grasp 2–5. Session logs: only `franka_gripper_node died` (Franka hand node, unused with the
